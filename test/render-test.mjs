@@ -876,6 +876,15 @@ try {
   overOk ? pass++ : fail++;
   console.log('  ' + (overOk ? 'OK   ' : 'FAIL ') + '设置页：超范围存量值落到 60 档，不出现越界选项');
 
+  // 手改成非正数（运行时按默认 10 生效）时界面也必须显示 10 —— 否则保存一下就把用户的值改成 1 了
+  const zeroHtml = ctx.renderChatSection({ ...cfg, sticker: { ...cfg.sticker, promptMaxStickers: -5 } });
+  const zeroSelect = /<select id="cfg-sticker-max">([\s\S]*?)<\/select>/.exec(zeroHtml)?.[1] || '';
+  const zeroOk = /value="10" selected/.test(zeroSelect)
+    && !zeroSelect.includes('value="-5"') && !zeroSelect.includes('value="1"');
+  zeroOk ? pass++ : fail++;
+  console.log('  ' + (zeroOk ? 'OK   ' : 'FAIL ') + '设置页：非正数存量值按运行时的 10 档显示'
+    + (zeroOk ? '' : ` -> ${zeroSelect.slice(0, 120)}`));
+
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');
   maxNode.value = '500';

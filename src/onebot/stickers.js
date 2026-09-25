@@ -183,10 +183,15 @@ export function formatStickerList(entries, query = '', limit = 48) {
 }
 
 /** 提示词里的【可用表情包】摘要（不暴露完整 URL，控制上下文体积）。 */
-export function buildStickerContext(entries, max = 10) {
-  const list = (Array.isArray(entries) ? entries : [])
+export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
+  const all = (Array.isArray(entries) ? entries : [])
     .map(normalizeStickerEntry)
     .filter((entry) => entry && !entry.hidden);
+  // 关闭图片输入（api.vision=false）时 get_sticker_image 会被从工具表里摘掉：没备注的表情
+  // 既看不懂、也没法看图，留在清单里只是每轮多烧一行 token。所以那种配置下只列有备注的。
+  const list = vision
+    ? all
+    : all.filter((entry) => Boolean(String(entry.desc || entry.localNote || '').trim()));
   if (!list.length) return '';
   // 名单上限 60：这是"给模型看多少"，不是库容量（同步一律拉 500，见 sticker-manager.sync）。
   const limit = Math.max(1, Math.min(60, Number(max) || 10));
@@ -226,11 +231,15 @@ export function buildStickerContext(entries, max = 10) {
   const scope = rotation.length
     ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的（换着发，别老是同一张）`
     : `以下是常用的 ${top.length} 个`;
-  return `【可用表情包】你的表情库里有 ${list.length} 个表情包（${scope}，完整列表可用 list_stickers 查询；没用过的可以先 get_sticker_image 看一眼再用）：\n${lines.join('\n')}`;
+  // 关闭图片输入时不能提 get_sticker_image（那个工具已经不在工具表里了）
+  const tail = vision
+    ? '，完整列表可用 list_stickers 查询；没用过的可以先 get_sticker_image 看一眼再用'
+    : '，完整列表可用 list_stickers 查询';
+  return `【可用表情包】你的表情库里有 ${list.length} 个表情包（${scope}${tail}）：\n${lines.join('\n')}`;
 }
 
 /** 发送前的表情包策略提示（软策略）。 */
-export function buildStickerStrategyHint(level = 1) {
+export function buildStickerStrategyHint(level = 1, { vision = true } = {}) {
   // 活跃度引导放在系统提示的策略段里（而不是"本次输入"的【表情包用法】）——
   // 同一主题两处引导会左右脑互搏（Kondius 2026-09-07）：策略讲时机、档位讲频率，
   // 合并成一处由档位直接改写频率行。
@@ -246,7 +255,10 @@ export function buildStickerStrategyHint(level = 1) {
     '- 合适时机：被戳中笑点/槽点、接梗、赞同、自嘲、安慰、无语、赢了/输了、告别/晚安，都可以自然用；别人发了表情包/图片时，接完话基本都要回一张自己的。',
     `- ${freqByLevel}`,
     '- 选择：先看备注/笔记/标签能不能对上语境——完全贴切的优先，语义接近、氛围对的也可以用，不用等 100% 契合；只有明显不搭才别发。',
-    '- 清单里标「没用过」的也可以直接用，不确定是什么就先 get_sticker_image 看一眼；用掉一张，下一张没用过的会自己顶上来。',
+    // 关掉图片输入时 get_sticker_image 不在工具表里，这条要换口径：只让模型用看得懂的（有备注的）
+    vision
+      ? '- 清单里标「没用过」的也可以直接用，不确定是什么就先 get_sticker_image 看一眼；用掉一张，下一张没用过的会自己顶上来。'
+      : '- 清单里标「没用过」的挑有备注的用（清单里没备注的不会列出来）；看不到图，别对没把握的图硬发挥。',
     '- 发送：用 send_sticker；一条消息只能是一张表情，不能在同一气泡里附带文字；想说的话先用 send_message 作为单独气泡发出，再单独发表情。',
     '- 选图很简单：stickerId 直接填【可用表情包】里的备注名（如“别墨迹”“大肥鱼”），备注里独特的一小段也行，系统会自动匹配；命中不唯一时才需要完整 id（可用 list_stickers 看全库）。',
     '- 不要：在严肃/正式/敏感话题硬塞表情；不要每次都用同一个；不要一条消息里塞多个表情；不要把文字和表情混在同一个气泡里。'

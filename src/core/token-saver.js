@@ -102,12 +102,14 @@ export function tokenSaverEffective(cfg = {}) {
   ];
   // 这几项除了"被省 Token 夹上限"，运行时还有自带的上下限（升级前就有的老兜底）：
   // maxRunTokens 20000..1000000（effectiveRunLimits）、handoffMaxChars 500..12000（formatHandoffForPrompt）、
-  // dailyMomentsMaxRounds 2..16（normalizeDailyMoments）、maxRounds 至少 1。
+  // dailyMomentsMaxRounds 2..16（normalizeDailyMoments）、maxRounds 至少 1、
+  // promptMaxStickers 1..60（buildStickerContext 里 `Math.min(60, …)`）。
   // 对照表按运行时的真实读法算，否则会报出一个根本不生效的数字
   // （例如手改 maxRunTokens=5000，实际仍会花到 20000，界面不能显示 5000）。
   const bounds = {
     maxRounds: [1, null], maxRunTokens: [20000, 1000000],
-    handoffMaxChars: [500, 12000], dailyMomentsMaxRounds: [2, 16]
+    handoffMaxChars: [500, 12000], dailyMomentsMaxRounds: [2, 16],
+    promptMaxStickers: [1, 60]
   };
   return {
     mode,

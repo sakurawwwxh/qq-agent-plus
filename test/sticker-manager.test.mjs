@@ -16,7 +16,7 @@ fs.writeFileSync(path.join(root, 'stickers.json'), JSON.stringify([{
 
 const { StickerManager } = await import('../src/onebot/sticker-manager.js');
 const { buildToolDefs } = await import('../src/tools/tools.js');
-const { buildStickerContext, findSticker } = await import('../src/onebot/stickers.js');
+const { buildStickerContext, buildStickerStrategyHint, findSticker } = await import('../src/onebot/stickers.js');
 
 test('refreshes a collected QQ image URL from its source message before sending', async (t) => {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -192,4 +192,26 @@ test('sticker list keeps familiar ones and rotates unused ones in', () => {
   for (let i = 0; i < 200; i++) big.push({ id: `b-${i}`, url: `https://example.com/b${i}.png` });
   assert.equal(ids(buildStickerContext(big, 500)).length, 60);
   assert.equal(ids(buildStickerContext(entries, 500)).length, 40);
+});
+
+test('prompt never teaches get_sticker_image when image input is off', () => {
+  // 关闭图片输入时 get_sticker_image 会被从工具表里摘掉（orchestrator 的工具过滤）：
+  // 提示词再提它就是"教模型调一个不存在的工具"，而没备注的图那种配置下本来也看不懂。
+  const entries = [
+    { id: 'st-1', desc: '无语团子', url: 'https://example.com/1.png', useCount: 2 },
+    { id: 'st-2', desc: '', url: 'https://example.com/2.png' }
+  ];
+  const withVision = buildStickerContext(entries, 10);
+  assert.match(withVision, /get_sticker_image/);
+  assert.match(withVision, /可先看图/, '能看图时才说"可先看图"');
+  const noVision = buildStickerContext(entries, 10, { vision: false });
+  assert.doesNotMatch(noVision, /get_sticker_image/);
+  assert.doesNotMatch(noVision, /可先看图/);
+  assert.match(noVision, /无语团子/, '有备注的仍然要列出来');
+  assert.doesNotMatch(noVision, /st-2/, '没备注且看不到图的图不占清单名额');
+  // 一张有备注的都没有时整段不出现（否则会留下一串看不懂的 id）
+  assert.equal(buildStickerContext([{ id: 'st-9', url: 'https://example.com/9.png' }], 10, { vision: false }), '');
+  // 策略段同理：两种配置都不能提那个工具
+  assert.match(buildStickerStrategyHint(2), /get_sticker_image/);
+  assert.doesNotMatch(buildStickerStrategyHint(2, { vision: false }), /get_sticker_image/);
 });

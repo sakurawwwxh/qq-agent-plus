@@ -8341,9 +8341,18 @@ const STICKER_LEVELS = [
 // 那段），条数=每轮成本，上限 60 与 stickers.js 的 buildStickerContext 一致。用输入框会让人
 // 以为能随便填，填 500 又只会被静默夹成 60，界面上还一直显示 500（保存后不重画）。
 const STICKER_MAX_CHOICES = [10, 20, 30, 45, 60];
+/**
+ * 清单条数归一化，必须与运行时的读法一致（prompt.js 是"非正数/坏值按 10"，buildStickerContext 夹 1~60）：
+ * 手改成 -5 实际生效的是 10，界面就不能显示 1 —— 否则保存一下就把用户的值改成 1 了。
+ */
+function normalizeStickerMax(current) {
+  const n = Number(current);
+  if (!Number.isFinite(n) || n <= 0) return 10;
+  return Math.min(60, Math.max(1, Math.round(n)));
+}
 /** 清单条数的下拉项：固定档位 + 存量配置里的自定义值时补一项（免得显示成别的档）。 */
 function stickerMaxSelectOptions(current) {
-  const value = Math.min(60, Math.max(1, Math.round(Number(current) || 10)));
+  const value = normalizeStickerMax(current);
   const choices = [...new Set([...STICKER_MAX_CHOICES, value])].sort((a, b) => a - b);
   return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 条</option>`).join('');
 }
@@ -8845,8 +8854,7 @@ function renderOnebotSection(c) {
 function syncClampedInputs() {
   const stickerMax = $('#cfg-sticker-max');
   if (stickerMax) {
-    const saved = Math.min(60, Math.max(1, Math.round(Number(state.config?.sticker?.promptMaxStickers) || 10)));
-    stickerMax.value = String(saved);
+    stickerMax.value = String(normalizeStickerMax(state.config?.sticker?.promptMaxStickers));
   }
 }
 

@@ -176,11 +176,14 @@ function memoryRules(identityPilotAvailable = false, friendProposalAvailable = f
 
 function stickerRules(grounded = false) {
   // 活跃度档位直接改写策略段的频率行（引导统一在系统提示，不在"本次输入"重复）
-  const lvl = Math.min(3, Math.max(0, Number(getConfig().sticker?.encourage) || 0));
+  const cfg = getConfig();
+  const lvl = Math.min(3, Math.max(0, Number(cfg.sticker?.encourage) || 0));
+  // 图片输入关掉时 get_sticker_image 会被摘掉工具，策略里的看图引导同步换口径
+  const vision = cfg.api?.vision !== false;
   return [
     grounded
-      ? `${buildStickerStrategyHint(0)}\n- 表情偏好：${['少用', '适中', '较多', '喜欢用'][lvl]}；只是倾向，不按轮数凑配额，场景、关系与认真交流优先。`
-      : buildStickerStrategyHint(lvl),
+      ? `${buildStickerStrategyHint(0, { vision })}\n- 表情偏好：${['少用', '适中', '较多', '喜欢用'][lvl]}；只是倾向，不按轮数凑配额，场景、关系与认真交流优先。`
+      : buildStickerStrategyHint(lvl, { vision }),
     '',
     '【拍一拍】send_poke 可以发 QQ 拍一拍。收到消息里的 [拍一拍] 事件时可以自然回应（"？干嘛""再拍试试""哈哈"），也可以回一个拍一拍。有时也可以主动戳一下正在聊的人/熟人，像真人手贱一下反而更拟真；但别频繁。'
   ].join('\n');
@@ -387,7 +390,8 @@ export function buildSystemPrompt({
     const wantStickers = Number(getConfig().sticker?.promptMaxStickers);
     const stickerCtx = buildStickerContext(
       stickerEntries,
-      cappedByTokenSaver(wantStickers > 0 ? wantStickers : 10, stickerCap)
+      cappedByTokenSaver(wantStickers > 0 ? wantStickers : 10, stickerCap),
+      { vision: cfg.api?.vision !== false }
     );
     if (stickerCtx) parts.push('', stickerCtx);
   }
