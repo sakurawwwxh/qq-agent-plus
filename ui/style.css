@@ -438,7 +438,7 @@ html.boot-show .loading-overlay { opacity: 1; }
   white-space: nowrap;
 }
 .session-trigger > span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.trigger-method { flex: 0 0 auto; color: var(--mode-color, var(--text)); font-weight: 600; }
+.trigger-method { flex: 0 0 auto; color: color-mix(in srgb, var(--mode-color, var(--text)) 85%, var(--text)); font-weight: 550; }
 .session-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--muted); align-items: center; }
 
 .status-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; max-width: 100%; white-space: normal; }
@@ -457,10 +457,10 @@ html.boot-show .loading-overlay { opacity: 1; }
 .mode-chip,
 .thread-pill {
   max-width: 100%;
-  border: 1px solid color-mix(in srgb, var(--mode-color) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mode-color) 30%, transparent);
   border-radius: 7px;
   background: var(--mode-soft);
-  color: var(--mode-color);
+  color: color-mix(in srgb, var(--mode-color) 82%, var(--text));
   padding: 1px 6px;
   font-size: 10.5px;
   line-height: 1.4;
@@ -786,14 +786,14 @@ html.boot-show .loading-overlay { opacity: 1; }
   background: var(--bg-3); border: 1px solid var(--border); color: var(--text);
   border-radius: 6px; padding: 6px 6px; font-size: 12.5px; outline: none;
 }
-/* 用量按天成本比例条 */
-.usage-cost-cell { display: inline-flex; align-items: center; gap: 8px; }
+/* 用量按天“走势”列（比例条独立成列，不跟金额挤在一格） */
+.usage-trend-td { min-width: 72px; }
 .usage-cost-bar {
-  display: inline-block; width: 56px; height: 6px;
+  display: inline-block; width: 64px; height: 6px;
   background: var(--bg-3); border-radius: 3px; overflow: hidden;
   vertical-align: middle;
 }
-.usage-cost-bar i { display: block; height: 100%; background: var(--accent); }
+.usage-cost-bar i { display: block; height: 100%; background: var(--accent); opacity: .75; }
 /* 手动添加提供商：两列模型行给足呼吸空间 */
 .model-rows-table input { padding: 8px 10px; font-size: 12.5px; }
 .model-rows-table th { padding: 6px 8px; }
@@ -1189,10 +1189,13 @@ html.boot-show .loading-overlay { opacity: 1; }
 .pd-msg.bad .bubble { opacity: .72; border-color: rgba(255, 107, 107, .35); }
 .pd-msg.ok .mark { color: var(--green); }
 .pd-empty { color: var(--faint); font-size: 12.5px; padding: 10px 0; }
-.model-rows-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
-.model-rows-table th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 400; padding: 4px 6px; }
-.model-rows-table td { padding: 4px 6px; }
-.model-rows-table input { width: 100%; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 9px; font-size: 12.5px; outline: none; }
+.model-rows-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin-bottom: 6px; }
+.model-rows-table th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 400; padding: 4px 8px; }
+.model-rows-table td { padding: 6px 8px; vertical-align: middle; }
+.model-rows-table th:first-child, .model-rows-table td:first-child { width: 46%; padding-left: 0; }
+.model-rows-table th:nth-child(2), .model-rows-table td:nth-child(2) { width: 46%; }
+.model-rows-table th:last-child, .model-rows-table td:last-child { width: 8%; text-align: right; padding-right: 0; }
+.model-rows-table input { width: 100%; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 8px 10px; font-size: 12.5px; outline: none; }
 .model-rows-table input:focus { border-color: var(--accent); }
 
 /* 模型选择/添加/删除 模态框 */
@@ -1896,7 +1899,9 @@ html.boot-show .loading-overlay { opacity: 1; }
 .update-deploy-progress-elapsed { color: var(--muted); flex: none; }
 .update-deploy-settings {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(140px, .5fr) auto;
+  /* auto-fill：字段铺满整行宽度，不留右侧空带（此前 1fr/.5fr/auto 的组合
+     加上数字字段的 220px 限宽，整个表单挤在左半边） */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   align-items: end;
   gap: 9px;
   margin-top: 12px;
@@ -2806,19 +2811,20 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 .chat-item-sub, .session-meta, .session-time { color: var(--muted); }
 .list-head, .detail-header, .control-section-title { letter-spacing: .2px; }
 
-/* ── 状态徽标：从描边改成"淡底 + 同色文字"的胶囊 ── */
+/* ── 状态徽标：从描边改成"淡底 + 同色文字"的胶囊 ──
+   文字用 color-mix 往前景色里收一点：纯饱和色在成排徽章里显得生硬。 */
 .status-badge, .vbadge, .mode-chip, .persona-chip, .member-chip, .unread-pill, .sent-badge, .thread-pill, .mode-state-token {
-  border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 550;
+  border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 500;
   border: 1px solid var(--border); background: var(--bg-3); color: var(--muted);
 }
 .status-done, .status-waiting, .mode-lifecycle {
-  background: rgba(47, 208, 122, .12); border-color: rgba(47, 208, 122, .38); color: var(--green);
+  background: rgba(47, 208, 122, .09); border-color: rgba(47, 208, 122, .28); color: color-mix(in srgb, var(--green) 80%, var(--text));
 }
 .status-running, .mode-threaded {
-  background: rgba(76, 141, 255, .12); border-color: rgba(76, 141, 255, .40); color: var(--accent);
+  background: rgba(76, 141, 255, .09); border-color: rgba(76, 141, 255, .30); color: color-mix(in srgb, var(--accent) 82%, var(--text));
 }
 .status-error, .status-aborted {
-  background: rgba(255, 107, 107, .12); border-color: rgba(255, 107, 107, .40); color: var(--red);
+  background: rgba(255, 107, 107, .09); border-color: rgba(255, 107, 107, .30); color: color-mix(in srgb, var(--red) 82%, var(--text));
 }
 .status-noreply, .mode-legacy {
   background: rgba(247, 185, 85, .13); border-color: rgba(247, 185, 85, .40); color: var(--orange);
@@ -2897,9 +2903,10 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 }
 /* 行里只有一个字段时占满整行，不要缩成半宽挂在左侧 */
 .field-row > :only-child { grid-column: 1 / -1; }
-/* 数字/短文本字段不再额外限宽：以前给它们 max-width:220px，在均分列宽的网格里
-   会缩在格子左侧、右边空出一截，"框都偏左"的观感主要来自这里。 */
-.update-deploy-settings > label:has(input[type=number]) { max-width: 220px; }
+/* 数字/短文本字段不限宽：此前给它们 max-width:220px，在均分列宽的网格里
+   会缩在格子左侧、右边空出一截，"框都偏左"的观感主要来自这里。
+   （注释写着不再限宽，规则却把 220px 留下了——2026-09-26 按注释本意删掉。） */
+.update-deploy-settings > label:has(input[type=number]) { max-width: none; }
 .field { min-width: 0; }
 .field label {
   display: block;

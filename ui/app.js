@@ -2981,7 +2981,7 @@ function renderUsagePage(stats, st, prices) {
       <div data-block="days">
         <h3 class="usage-h3">按天</h3>
         <table class="usage-table clickable" data-table="days">
-          <thead><tr><th>日期</th><th class="r">调用</th><th class="r">输入</th><th class="r">输出</th><th class="r">缓存命中</th><th class="r">命中率</th><th class="r">成本</th></tr></thead>
+          <thead><tr><th>日期</th><th class="r">调用</th><th class="r">输入</th><th class="r">输出</th><th class="r">缓存命中</th><th class="r">命中率</th><th class="r">走势</th><th class="r">成本</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -3296,7 +3296,7 @@ function updateUsagePage(stats, st, prices) {
     return '';
   };
 
-  // 按天成本加比例条：一眼看出哪天是大头（数据同源，纯展示）
+  // 按天成本加“走势”列：比例条独立成列，不跟金额挤在同一个格子里
   const dayRows = stats?.days || [];
   const maxDayCost = Math.max(0, ...dayRows.map((d) => Number(d.cost) || 0));
   fill('days', dayRows, (d) => {
@@ -3310,7 +3310,8 @@ function updateUsagePage(stats, st, prices) {
       <td class="r">${fmtTok(d.completionTokens)}</td>
       <td class="r">${fmtTok(d.cachedTokens)}</td>
       <td class="r">${((d.cacheHitRate || 0) * 100).toFixed(0)}%</td>
-      <td class="r"><span class="usage-cost-cell"><span class="usage-cost-bar" aria-hidden="true"><i style="width:${pct}%"></i></span>${costCell(d)}</span></td>
+      <td class="r usage-trend-td"><span class="usage-cost-bar" aria-hidden="true" title="相对所选区间内成本最高的一天"><i style="width:${pct}%"></i></span></td>
+      <td class="r">${costCell(d)}</td>
     </tr>`;
   });
 
