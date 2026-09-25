@@ -153,3 +153,43 @@ test('prompt exposes sticker IDs and exact unique labels remain compatible', () 
     { id: 'sticker-3', desc: '无语团子', url: 'https://example.com/3.png' }
   ], '无语团子'), null);
 });
+
+test('sticker list keeps familiar ones and rotates unused ones in', () => {
+  // 复现用户反馈的场景：收藏很多，但发过的图永远占住名额，其余永远不露面。
+  const entries = [];
+  for (let i = 1; i <= 40; i++) {
+    entries.push({
+      id: `st-${String(i).padStart(2, '0')}`,
+      desc: i <= 20 ? `备注${i}` : '',
+      url: `https://example.com/${i}.png`,
+      // 前 6 个用过；其中 1~3 是最近发过的，4~6 是更早发过的
+      useCount: i <= 6 ? 3 : 0,
+      lastUsedAt: i <= 3 ? 1_700_000_000_000 + i : (i <= 6 ? 1_600_000_000_000 + i : 0),
+      createdAt: new Date(1_700_000_000_000 + i).toISOString()
+    });
+  }
+  const ids = (text) => [...text.matchAll(/stickerId：([\w-]+)/g)].map((m) => m[1]);
+  const prompt = buildStickerContext(entries, 10);
+  const shown = ids(prompt);
+  assert.equal(shown.length, 10, '清单条数按 max 取满');
+  // 常用位（前一半）：只放用过的，按次数与最近使用排
+  assert.deepEqual(shown.slice(0, 5).sort(), ['st-01', 'st-02', 'st-03', 'st-05', 'st-06']);
+  // 轮换位：没用过的顶上来了（改造前这里是"发过的占满、其余永不出现"）
+  assert.ok(shown.slice(5).every((id) => Number(id.slice(3)) > 6),
+    `轮换位应全是没用过的，实际：${shown.join(',')}`);
+  // 没用过的会标出来，模型才知道可以直接试
+  assert.match(prompt, /（没用过）（stickerId：st-\d+）/);
+  // 幂等：同一份库连着渲染两次结果完全一致（这段清单常驻系统提示、属于缓存前缀）
+  assert.equal(buildStickerContext(entries, 10), prompt);
+  // 用掉一张轮换位上的图 → 下一张没用过的顶上来
+  const afterUse = entries.map((e) => e.id === 'st-07' ? { ...e, useCount: 1, lastUsedAt: Date.now() } : e);
+  const next = ids(buildStickerContext(afterUse, 10));
+  assert.equal(next.length, 10);
+  assert.ok(!next.includes('st-07'), '用过的图离开轮换位');
+  assert.ok(next.includes('st-12'), `下一张没用过的应补进来，实际：${next.join(',')}`);
+  // 上限 60：手改配置写大了也不会把整库塞进提示词
+  const big = [];
+  for (let i = 0; i < 200; i++) big.push({ id: `b-${i}`, url: `https://example.com/b${i}.png` });
+  assert.equal(ids(buildStickerContext(big, 500)).length, 60);
+  assert.equal(ids(buildStickerContext(entries, 500)).length, 40);
+});

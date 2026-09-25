@@ -188,18 +188,45 @@ export function buildStickerContext(entries, max = 10) {
     .map(normalizeStickerEntry)
     .filter((entry) => entry && !entry.hidden);
   if (!list.length) return '';
-  const top = [...list]
-    .sort((a, b) => (b.useCount || 0) - (a.useCount || 0) || ((b.desc || b.localNote) ? 1 : 0) - ((a.desc || a.localNote) ? 1 : 0))
-    .slice(0, Math.max(1, Math.min(30, Number(max) || 10)));
+  // 名单上限 60：这是"给模型看多少"，不是库容量（同步一律拉 500，见 sticker-manager.sync）。
+  const limit = Math.max(1, Math.min(60, Number(max) || 10));
+  // 选图口径 = 常用保底 + 没用过的轮换。
+  // 以前整份清单按 useCount 降序取前 N，发过的图永远占住名额 —— 几百个收藏里
+  // 只有最先发出去的那几张能被模型看见（用户反馈"收藏了很多，但只会发那几张"）。
+  // 现在一半留给"没用过/最久没用"的：发掉一张，下一张就自然顶上来。
+  // 排序只看 useCount / lastUsedAt / createdAt / id，同一份库每轮结果完全一致 ——
+  // 这段清单常驻系统提示、属于缓存前缀，不能每次运行都换一批。
+  const hasNote = (e) => Boolean(String(e.desc || e.localNote || '').trim());
+  const byUsage = [...list].sort((a, b) =>
+    (b.useCount || 0) - (a.useCount || 0)
+    || (hasNote(b) ? 1 : 0) - (hasNote(a) ? 1 : 0)
+    || (b.lastUsedAt || 0) - (a.lastUsedAt || 0)
+    || String(a.id).localeCompare(String(b.id)));
+  const familiarCount = Math.max(1, Math.ceil(limit / 2));
+  const familiar = byUsage.slice(0, familiarCount);
+  const picked = new Set(familiar.map((e) => e.id));
+  const rotation = list
+    .filter((e) => !picked.has(e.id))
+    .sort((a, b) =>
+      ((a.lastUsedAt || 0) ? 1 : 0) - ((b.lastUsedAt || 0) ? 1 : 0)   // 没用过的排最前
+      || (hasNote(b) ? 1 : 0) - (hasNote(a) ? 1 : 0)                  // 能看懂的优先
+      || (a.lastUsedAt || 0) - (b.lastUsedAt || 0)                    // 用得越早越先上榜
+      || String(a.createdAt || '').localeCompare(String(b.createdAt || ''))
+      || String(a.id).localeCompare(String(b.id)))
+    .slice(0, limit - familiar.length);
+  const top = [...familiar, ...rotation];
   const lines = top.map((e) => {
     // 备注/标签由模型按群友暗示写入（sticker_note 工具可写），最终拼进**系统提示**的
     // 【可用表情包】段 —— 不过清洗就是一个可持久化的注入位（写了每轮都在）。
     const label = sanitizeUserText(e.desc || e.localNote || '') || '（无备注，可先看图）';
     const extra = e.tags?.length ? ` [${e.tags.map((t) => sanitizeUserText(t)).join('/')}]` : '';
-    const used = e.useCount ? `（用过${e.useCount}次）` : '';
+    const used = e.useCount ? `（用过${e.useCount}次）` : '（没用过）';
     return `- ${label}${extra}${used}（stickerId：${e.id}）`;
   });
-  return `【可用表情包】你的表情库里有 ${list.length} 个表情包（以下是常用/有备注的 ${top.length} 个，完整列表可用 list_stickers 查询）：\n${lines.join('\n')}`;
+  const scope = rotation.length
+    ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的（换着发，别老是同一张）`
+    : `以下是常用的 ${top.length} 个`;
+  return `【可用表情包】你的表情库里有 ${list.length} 个表情包（${scope}，完整列表可用 list_stickers 查询；没用过的可以先 get_sticker_image 看一眼再用）：\n${lines.join('\n')}`;
 }
 
 /** 发送前的表情包策略提示（软策略）。 */
@@ -219,6 +246,7 @@ export function buildStickerStrategyHint(level = 1) {
     '- 合适时机：被戳中笑点/槽点、接梗、赞同、自嘲、安慰、无语、赢了/输了、告别/晚安，都可以自然用；别人发了表情包/图片时，接完话基本都要回一张自己的。',
     `- ${freqByLevel}`,
     '- 选择：先看备注/笔记/标签能不能对上语境——完全贴切的优先，语义接近、氛围对的也可以用，不用等 100% 契合；只有明显不搭才别发。',
+    '- 清单里标「没用过」的也可以直接用，不确定是什么就先 get_sticker_image 看一眼；用掉一张，下一张没用过的会自己顶上来。',
     '- 发送：用 send_sticker；一条消息只能是一张表情，不能在同一气泡里附带文字；想说的话先用 send_message 作为单独气泡发出，再单独发表情。',
     '- 选图很简单：stickerId 直接填【可用表情包】里的备注名（如“别墨迹”“大肥鱼”），备注里独特的一小段也行，系统会自动匹配；命中不唯一时才需要完整 id（可用 list_stickers 看全库）。',
     '- 不要：在严肃/正式/敏感话题硬塞表情；不要每次都用同一个；不要一条消息里塞多个表情；不要把文字和表情混在同一个气泡里。'

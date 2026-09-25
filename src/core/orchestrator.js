@@ -36,11 +36,14 @@ function readProactiveLastAttempt() {
 /**
  * "我说了话但没人接" 的补话判定（纯函数，便于单测）。
  * 只给一次机会：20 分钟内不重复安排；有人刚说话/已有安排/不在发言时段都不安排。
+ * followUpEnabled 是控制台里的独立开关（proactive.followUpEnabled）：关了就不安排，
+ * 它跟"冷场开话题"(proactive.enabled) 互不影响。
  */
 export function followUpPlan({
   sentCount = 0, unread = 0, lastFollowUpAt = 0, hasScheduledWake = false,
-  windowActive = true, now = Date.now(), random = Math.random
+  windowActive = true, followUpEnabled = true, now = Date.now(), random = Math.random
 } = {}) {
+  if (!followUpEnabled) return { schedule: false, reason: '补话开关已关闭' };
   if (!sentCount) return { schedule: false, reason: '本轮没发言' };
   if (unread > 0) return { schedule: false, reason: '有人刚说话，走正常回复' };
   if (hasScheduledWake) return { schedule: false, reason: '已有唤醒安排' };
@@ -455,19 +458,26 @@ export class Orchestrator {
    */
   #maybeScheduleFollowUp(chatKey, session) {
     try {
-      const window = proactiveWindowState(getConfig().proactive?.activeHours, Date.now());
+      const cfgNow = getConfig();
+      const window = proactiveWindowState(cfgNow.proactive?.activeHours, Date.now());
       const plan = followUpPlan({
         sentCount: Array.isArray(session?.sent) ? session.sent.length : 0,
         unread: this.store.unreadCount(chatKey),
         lastFollowUpAt: this.followUpAt?.get(chatKey) || 0,
         hasScheduledWake: this.scheduledWakes?.has(chatKey) === true,
-        windowActive: window.active === true
+        windowActive: window.active === true,
+        // 独立开关：关掉后不再安排（已经排上的那份会在派发时被作废）
+        followUpEnabled: cfgNow.proactive?.followUpEnabled !== false
       });
-      if (!plan.schedule) return;
+      if (!plan.schedule) {
+        if (plan.reason === '补话开关已关闭') console.log(`[follow-up] ${chatKey} 跳过：补话开关已关闭`);
+        return;
+      }
       if (!this.followUpAt) this.followUpAt = new Map();
       this.followUpAt.set(chatKey, Date.now());
       this.scheduleInitiativeWake(chatKey, plan.minutes * 60 * 1000,
-        '【系统提醒】你刚才发过言，到现在没人接话。想补就补一句很短的（“？”/“人呢”/“算了”）——只有这一次机会，不补就到此为止；也可以判断没必要，直接安静结束。');
+        '【系统提醒】你刚才发过言，到现在没人接话。想补就补一句很短的（“？”/“人呢”/“算了”）——只有这一次机会，不补就到此为止；也可以判断没必要，直接安静结束。',
+        { kind: 'followUp' });
       console.log(`[follow-up] ${chatKey} 发言后没人接话，${plan.minutes} 分钟后给它一次补话机会`);
     } catch { /* 安排不上也不影响正常回复 */ }
   }
@@ -1344,9 +1354,13 @@ export class Orchestrator {
     const identityPilot = this.getIdentityPilot();
     const identityAvailable = identityPilotEnabled(cfg) && identityPilot?.active === true;
     const friendProposalAvailable = identityAvailable && friendProposalEnabled() && promptFriendProposalEnabled(cfg);
+    // 模型自安排唤醒的独立开关：关掉后连工具带提示词一起摘掉，
+    // 否则模型还会去调一个"安排了也不会开口"的工具（生成一串假的"我到点再说"）。
+    const selfWakeEnabled = cfg.proactive?.selfWakeEnabled !== false;
     const toolDefs = this.toolDefs.filter((d) => {
       if (!visionEnabled && (d.name === 'get_message_images' || d.name === 'get_sticker_image')) return false;
       if (!searchEnabled && (d.name === 'web_search' || d.name === 'web_fetch')) return false;
+      if (!selfWakeEnabled && d.name === 'schedule_wake') return false;
       if (d.feature === 'identityPilot' && !identityAvailable) return false;
       if (d.feature === 'friendProposal' && !friendProposalAvailable) return false;
       return true;
@@ -1459,9 +1473,12 @@ export class Orchestrator {
         ? String(wakeNote).slice(0, 300)
         : `这是你自己之前安排的：${String(wakeNote).slice(0, 300)}。现在时间到了，看看当前情况决定要不要说话。`)
       : '（主动机会）群里已经安静了一会儿。';
+    const selfWakeOn = cfg.proactive?.selfWakeEnabled !== false;
     const pacedLead = (wakeNote ? `你之前给自己留过话：${String(wakeNote).slice(0, 200)}\n` : '')
-      + '这些消息是攒着等你按自己的节奏来看的。决定要不要说话、说什么；不想接就安静结束，'
-      + '并用 schedule_wake 给自己安排下一次醒来的时间（比如几分钟后、或二三十分钟后）。';
+      + '这些消息是攒着等你按自己的节奏来看的。决定要不要说话、说什么；不想接就安静结束'
+      + (selfWakeOn
+        ? '，并用 schedule_wake 给自己安排下一次醒来的时间（比如几分钟后、或二三十分钟后）。'
+        : '。（自安排唤醒已关闭，不用安排下次唤醒，系统会按配置的节奏再唤醒你。）');
     const wakeTail = String(wakeNote).startsWith('【系统提醒】')
       ? '就按上面那条提醒处理：想补就补一句很短的，补完就放下；不想补就安静结束。'
       : '你可以主动抛一个自然的话题（像随口说的，不要像播报），也可以判断没必要说话就安静结束。';
@@ -1803,17 +1820,26 @@ export class Orchestrator {
 
   #fireDueScheduledWakes() {
     const now = Date.now();
+    const cfgNow = getConfig();
     for (const [chatKey, item] of [...this.scheduledWakes.entries()]) {
       if (!item || item.at > now) continue;
+      const kind = item.kind || (item.paced ? 'paced' : 'selfWake');
+      // 开关关掉后，已经排上队的主动开口一并作废（不然关了开关旧的安排还会冒出来一次）
+      const blocked = (kind === 'followUp' && cfgNow.proactive?.followUpEnabled === false)
+        || (kind === 'selfWake' && cfgNow.proactive?.selfWakeEnabled === false);
       this.scheduledWakes.delete(chatKey);
       if (item.timer) clearTimeout(item.timer);
+      if (blocked) {
+        console.log(`[wake] ${chatKey} 跳过：${kind === 'followUp' ? '补话' : '自安排唤醒'}开关已关闭，这次安排作废`);
+        continue;
+      }
       // 系统提醒的补话：等待期间有人说话了（正常流程已经在处理），这次就不必再唤一次
       if (String(item.note || '').startsWith('【系统提醒】') && this.store.unreadCount(chatKey) > 0) continue;
       if (!item.paced) {
-        const window = proactiveWindowState(getConfig().proactive?.activeHours, now);
+        const window = proactiveWindowState(cfgNow.proactive?.activeHours, now);
         if (!window.active) {
           // 静默时段不主动开口：顺延到下一个活跃窗口
-          this.scheduleInitiativeWake(chatKey, Math.max(60000, window.nextActiveAt - now + 1000), item.note);
+          this.scheduleInitiativeWake(chatKey, Math.max(60000, window.nextActiveAt - now + 1000), item.note, { kind });
           continue;
         }
       }
@@ -1824,8 +1850,8 @@ export class Orchestrator {
     }
   }
 
-  /** 安排一次稍后的主动发言（模型调用 schedule_wake 时使用）。 */
-  scheduleInitiativeWake(chatKey, delayMs, note = '', { paced = false } = {}) {
+  /** 安排一次稍后的主动发言（模型调用 schedule_wake / 补话 / 自主节奏唤醒共用）。 */
+  scheduleInitiativeWake(chatKey, delayMs, note = '', { paced = false, kind = '' } = {}) {
     const minMs = 60 * 1000;
     const maxMs = 4 * 60 * 60 * 1000;
     const wait = Math.max(minMs, Math.min(Number(delayMs) || minMs, maxMs));
@@ -1834,7 +1860,9 @@ export class Orchestrator {
     if (prev?.timer) clearTimeout(prev.timer);
     const timer = setTimeout(() => { try { this.#fireDueScheduledWakes(); } catch { /* 忽略 */ } }, wait + 50);
     if (timer.unref) timer.unref();
-    this.scheduledWakes.set(chatKey, { at, note: String(note || '').slice(0, 200), timer, paced });
+    // kind 只用于派发时按开关作废（followUp=补话 / selfWake=模型自安排 / paced=自主节奏），不进提示词
+    const label = kind || (paced ? 'paced' : 'selfWake');
+    this.scheduledWakes.set(chatKey, { at, note: String(note || '').slice(0, 200), timer, paced, kind: label });
     return at;
   }
 

@@ -8634,6 +8634,14 @@ return `
       <div class="field"><label>检查间隔上限（毫秒）</label><input type="number" id="cfg-pro-max" min="120000" value="${esc(c.proactive.checkIntervalMaxMs)}" /></div>
       <div class="field"><label>触发概率 0~1</label><input type="number" id="cfg-pro-prob" step="0.05" min="0" max="1" value="${esc(c.proactive.probability)}" /></div>
     </div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-pro-followup" ${c.proactive?.followUpEnabled !== false ? 'checked' : ''} />
+      <label for="cfg-pro-followup">说完话没人接，过十来分钟补一句（"？"/"人呢"）</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-pro-selfwake" ${c.proactive?.selfWakeEnabled !== false ? 'checked' : ''} />
+      <label for="cfg-pro-selfwake">允许模型给自己安排稍后的主动发言</label></div>
+    <div class="hint">
+      这三项互不影响：只取消第一条，机器人仍可能在说完话没人接时补一句、也可能按自己安排的时机开口；
+      完全不想让它主动开口就把三个都取消。后两项在较早版本里一直生效，本版起可以在控制台关掉。
+    </div>
 
     <h3>所有模式 · 表情包</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-sticker" ${c.sticker.enabled ? 'checked' : ''} />
@@ -8648,6 +8656,15 @@ return `
       </select>
       <div class="hint">
         这是"引导"不是"强制"，模型仍会自行判断什么时机合适。
+      </div>
+    </div>
+
+    <div class="field">
+      <label>系统提示里的表情清单条数</label>
+      <input type="number" id="cfg-sticker-max" min="1" max="60" value="${esc(c.sticker?.promptMaxStickers ?? 10)}" />
+      <div class="hint">
+        清单一半放常用的，一半放没用过/很久没用的，发掉一张自动换下一张上来（不会再总是那几张）。
+        调大能选的范围更宽，代价是每轮提示词变长；省 Token 模式还会再夹到 3~5 条。库容量不受这一项影响。
       </div>
     </div>
 
@@ -10833,7 +10850,10 @@ async function saveConfig({ quiet = false } = {}) {
       enabled: chk('#cfg-proactive', !!c.proactive?.enabled),
       checkIntervalMinMs: Number(val('#cfg-pro-min', c.proactive?.checkIntervalMinMs)) || 1800000,
       checkIntervalMaxMs: Number(val('#cfg-pro-max', c.proactive?.checkIntervalMaxMs)) || 5400000,
-      probability: Number(val('#cfg-pro-prob', c.proactive?.probability)) || 0.25
+      probability: Number(val('#cfg-pro-prob', c.proactive?.probability)) || 0.25,
+      // 默认 true（与升级前行为一致）：没这个控件时才退回已保存配置
+      followUpEnabled: chk('#cfg-pro-followup', c.proactive?.followUpEnabled !== false),
+      selfWakeEnabled: chk('#cfg-pro-selfwake', c.proactive?.selfWakeEnabled !== false)
     };
     patch.sticker = {
       ...c.sticker,
@@ -10841,7 +10861,9 @@ async function saveConfig({ quiet = false } = {}) {
       // 先取界面实时值（没这个控件时才退回已保存配置），再钳到 0~3
       encourage: Math.min(3, Math.max(0, Number(
         $('#cfg-sticker-encourage') ? $('#cfg-sticker-encourage').value : (c.sticker?.encourage ?? 1)
-      ) || 0))
+      ) || 0)),
+      // 上限 60 与 stickers.js 的 buildStickerContext 一致
+      promptMaxStickers: clampInt(val('#cfg-sticker-max', c.sticker?.promptMaxStickers), 1, 60, 10)
     };
     // 读取历史档位（替代原来的「最多条数 + 字符预算」两个固定值）
     patch.store = {

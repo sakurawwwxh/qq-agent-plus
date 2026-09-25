@@ -9,6 +9,7 @@ process.env.QQ_AGENT_DATA_DIR = root;
 const {
   Orchestrator,
   estimateNextPromptTokens,
+  followUpPlan,
   randomWakeDelay,
   triggerKindForTier
 } = await import('../src/core/orchestrator.js');
@@ -608,6 +609,79 @@ describe('Orchestrator', () => {
     assert.equal(calls, 1);
   });
 
+  it('removes schedule_wake and the follow-up reminder when their switches are off', async (t) => {
+    // 用户反馈：关掉「冷场主动开话题」照样会主动发消息 —— 因为补话与自安排唤醒
+    // 从来没读过任何开关。现在它们各有独立开关，关掉后工具与提示词引导一起撤掉。
+    const { cfg, runner, append } = fixture(t);
+    cfg.proactive.enabled = false;
+    cfg.proactive.followUpEnabled = false;
+    cfg.proactive.selfWakeEnabled = false;
+    setRuntimeConfig(cfg);
+    const bodies = [];
+    globalThis.fetch = async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return Response.json({
+        choices: [{ message: { content: 'done' } }],
+        usage: { total_tokens: 10 }
+      });
+    };
+    append(1, '在吗', '42');
+    await runner.wake('group:1');
+    assert.equal(bodies.length, 1);
+    assert.ok(!bodies[0].tools.some((tool) => tool.function.name === 'schedule_wake'),
+      '开关关闭时不应再注入 schedule_wake');
+    assert.doesNotMatch(bodies[0].messages[0].content, /schedule_wake/, '提示词里也不该再教它');
+    assert.doesNotMatch(bodies[0].messages[0].content, /刚发的话没人接/, '补话提醒随开关一起撤掉');
+  });
+
+  it('keeps schedule_wake available by default (升级前后行为一致)', async (t) => {
+    const { cfg, runner, append } = fixture(t);
+    setRuntimeConfig(cfg);
+    const bodies = [];
+    globalThis.fetch = async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return Response.json({
+        choices: [{ message: { content: 'done' } }],
+        usage: { total_tokens: 10 }
+      });
+    };
+    append(1, '在吗', '42');
+    await runner.wake('group:1');
+    assert.ok(bodies[0].tools.some((tool) => tool.function.name === 'schedule_wake'));
+  });
+
+  it('feeds both familiar and unused stickers into the system prompt', async (t) => {
+    const { cfg, runner, append } = fixture(t);
+    cfg.sticker.enabled = true;
+    cfg.sticker.promptMaxStickers = 10;
+    setRuntimeConfig(cfg);
+    const entries = [];
+    for (let i = 1; i <= 30; i++) {
+      entries.push({
+        id: `st-${i}`,
+        desc: i <= 3 ? `常用备注${i}` : '',
+        url: `https://example.com/${i}.png`,
+        useCount: i <= 3 ? 4 : 0,
+        lastUsedAt: i <= 3 ? 1_700_000_000_000 + i : 0,
+        createdAt: new Date(1_700_000_000_000 + i).toISOString()
+      });
+    }
+    runner.stickers = { sync: async () => ({ entries }), list: async () => ({ total: entries.length, stickers: [] }) };
+    let system = '';
+    globalThis.fetch = async (_url, options) => {
+      system = JSON.parse(options.body).messages[0].content;
+      return Response.json({
+        choices: [{ message: { content: 'done' } }],
+        usage: { total_tokens: 10 }
+      });
+    };
+    append(1, '哈哈', '42');
+    await runner.wake('group:1');
+    assert.match(system, /stickerId：st-1/, '常用的要在清单里');
+    assert.match(system, /（没用过）（stickerId：st-\d+）/, '没用过的也要有机会进清单');
+    assert.equal([...system.matchAll(/stickerId：/g)].length, 10, '条数按配置取满');
+  });
+
   it('keeps slang injection retired even with legacy config and slang assets', async (t) => {
     // 黑话研究已下线（stable-feature-policy: slangPilot=false）：即使旧配置里
     // enabled=true、磁盘上还有 slang.json，提示词也不应再注入任何黑话段落，
@@ -1122,6 +1196,20 @@ describe('Orchestrator', () => {
 
     assert.equal(store.findByMid('group:1', 1).read, true);
     assert.equal(store.getConversationThread('group:1'), null);
+  });
+
+  it('skips the "nobody replied" follow-up when its own switch is off', () => {
+    const base = { sentCount: 1, unread: 0, lastFollowUpAt: 0, windowActive: true, random: () => 0 };
+    // 默认（开关缺省）仍按老行为给一次机会
+    assert.deepEqual(followUpPlan(base), { schedule: true, minutes: 10, reason: '发言后没人接话' });
+    // 开关关掉：连"有没有说过话"都不再看，直接不安排（以前它只听 proactive.enabled，等于常开）
+    assert.deepEqual(
+      followUpPlan({ ...base, followUpEnabled: false }),
+      { schedule: false, reason: '补话开关已关闭' }
+    );
+    // 开关打开：判据与老行为逐条一致
+    assert.equal(followUpPlan({ ...base, followUpEnabled: true }).schedule, true);
+    assert.equal(followUpPlan({ ...base, followUpEnabled: true, unread: 1 }).schedule, false);
   });
 });
 

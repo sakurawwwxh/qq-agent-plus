@@ -844,6 +844,27 @@ try {
   saverOk ? pass++ : fail++;
   console.log('  ' + (saverOk ? 'OK   ' : 'FAIL ') + '省 Token 分区：三档选择 + 生效值对照表 + 设置菜单入口');
 
+  // 设置 → 闲聊：主动开口的三个开关（冷场/补话/自安排唤醒）+ 表情清单条数
+  const chatHtml = ctx.renderChatSection({
+    ...cfg,
+    proactive: { ...cfg.proactive, followUpEnabled: false, selfWakeEnabled: false },
+    sticker: { ...cfg.sticker, promptMaxStickers: 24 }
+  });
+  const openSwitchesOk = chatHtml.includes('id="cfg-proactive"')
+    && chatHtml.includes('id="cfg-pro-followup"') && chatHtml.includes('id="cfg-pro-selfwake"')
+    && !/id="cfg-pro-followup"[^>]*checked/.test(chatHtml)
+    && !/id="cfg-pro-selfwake"[^>]*checked/.test(chatHtml)
+    && /id="cfg-sticker-max"[^>]*value="24"/.test(chatHtml);
+  openSwitchesOk ? pass++ : fail++;
+  console.log('  ' + (openSwitchesOk ? 'OK   ' : 'FAIL ') + '设置页：主动开口三个开关 + 表情清单条数可改');
+  // 缺省 / 老配置（字段不存在）按"开"渲染：升级后行为不变
+  const defaultHtml = ctx.renderChatSection(cfg);
+  const defaultOnOk = /id="cfg-pro-followup"[^>]*checked/.test(defaultHtml)
+    && /id="cfg-pro-selfwake"[^>]*checked/.test(defaultHtml)
+    && /id="cfg-sticker-max"[^>]*value="10"/.test(defaultHtml);
+  defaultOnOk ? pass++ : fail++;
+  console.log('  ' + (defaultOnOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下两项开关默认勾选、清单条数默认 10');
+
   // 总开关开着、但统一身份库没起来时（active=false），好友页的三个接口都会 409：
   // 加载器要自己给提示，不能因为请求失败把整页（连同设置表单）换成一整块错误信息。
   let friendFetchCalls = 0;

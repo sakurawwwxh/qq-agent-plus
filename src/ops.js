@@ -915,6 +915,7 @@ async function auditServer(args) {
     const windows = (proactive.activeHours?.windows || []).map((win) => `[${win.start}-${win.end}]`).join(' ');
     const interval = (min, max) => `${(Number(min) / 3.6e6).toFixed(1)}-${(Number(max) / 3.6e6).toFixed(1)}h`;
     noteLine(`主动开话题: enabled=${proactive.enabled} 概率=${proactive.probability} 间隔=${interval(proactive.checkIntervalMinMs, proactive.checkIntervalMaxMs)} 窗口=${windows} 冷场=${Math.round(Number(proactive.idleThresholdMs || 0) / 60000)}分钟`);
+    noteLine(`主动开口另两项: 补话=${proactive.followUpEnabled !== false} 自安排唤醒=${proactive.selfWakeEnabled !== false}`);
     noteLine(`思考开关: ${JSON.stringify(cfgJson.api?.thinking ?? null)}`);
     noteLine(`自动更新: ${cfgJson.autoUpdate?.enabled}`);
     noteLine(`时间控制: ${cfgJson.timeControl?.enabled}`);

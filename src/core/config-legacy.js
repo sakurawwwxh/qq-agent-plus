@@ -201,7 +201,12 @@ export const DEFAULT_CONFIG = {
     checkIntervalMinMs: 1800000,
     checkIntervalMaxMs: 5400000,
     idleThresholdMs: 1800000,   // 群里静默多久才算"冷场"
-    probability: 0.25
+    probability: 0.25,
+    // 下面两条是独立开关（控制台「主动开话题」分区各一个复选框），**不跟随上面的 enabled**：
+    // 补话与模型自安排唤醒在引入开关之前一直是常开，默认 true 保持升级前后行为一致；
+    // 只想关掉它们的人各关各的，不想主动开口的三个一起关。
+    followUpEnabled: true,      // 发言后没人接话，过十来分钟补一句
+    selfWakeEnabled: true       // 模型用 schedule_wake 给自己安排稍后的主动发言
   },
   // 自主节奏（可选）：消息不再即时触发，改由模型按自己安排的节奏醒来统一处理。
   // 默认关闭；开启后建议先在小范围（scope）试，确认能接受"延迟接话"的节奏。
