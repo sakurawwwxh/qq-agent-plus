@@ -34,7 +34,11 @@ refreshStatus = async function refreshStatus() {
     state.paused = s.paused;
     state.pauseReason = s.pauseReason;
     $('#pause-btn').textContent = state.paused ? '恢复' : '暂停';
-    if ($('#runtime-mode')) $('#runtime-mode').value = s.orchestrator.mode || 'observe';
+    // 与 app.js 的状态处理同一语义：首次状态到达后放开运行模式下拉
+    // （index.html 初始为 disabled，避免把"还没加载"看成"观察模式"）
+    const runtimeMode = $('#runtime-mode');
+    if (runtimeMode && runtimeMode.disabled) runtimeMode.disabled = false;
+    if (runtimeMode) runtimeMode.value = s.orchestrator.mode || 'observe';
     if (s.timeControl?.enabled) {
       setStatusLabel('#model-label', $('#model-label').textContent + (s.timeControl.active ? ' · 活跃时段' : ' · 非活跃时段'));
     }
