@@ -30,6 +30,13 @@ export function classifyTransportFailure(error) {
   return { evidence, definite, uncertain };
 }
 
+/** 被禁言时报给模型的错误文案（模型当轮可见，可直接决定"先不发言"）。 */
+function muteError(untilTs) {
+  return untilTs
+    ? `本群禁言中（预计 ${formatClockTime(untilTs)} 解除），本轮先不发言`
+    : '本群全员禁言中，本轮先不发言';
+}
+
 export class SendQueue {
   constructor({ onebot, store, onSent = null, onIncident = null }) {
     this.onebot = onebot;
@@ -44,6 +51,37 @@ export class SendQueue {
   #chain(chatKey) {
     if (!this.chains.has(chatKey)) this.chains.set(chatKey, createSendChain());
     return this.chains.get(chatKey);
+  }
+
+  // 群禁言前置检测：被禁言时直接把原因报给模型，而不是发出后吃协议端拒发
+  // （result=120 / retcode 120），模型既不知道失败原因，还会原话重试。
+  // 结果缓存 60 秒：批量发送不应逐条查；查询失败不阻塞发送，交给 QQ 服务端兜底。
+  #muteCache = new Map(); // chatKey -> { muted: boolean, untilTs: number, checkedAt: number }
+  async #assertNotMuted(chatKey) {
+    if (!chatKey.startsWith('group:')) return;
+    const cached = this.#muteCache.get(chatKey);
+    const now = Date.now();
+    if (cached && now - cached.checkedAt < 60_000) {
+      if (cached.muted) throw new Error(muteError(cached.untilTs));
+      return;
+    }
+    const entry = { muted: false, untilTs: 0, checkedAt: now };
+    try {
+      const groupId = chatKey.slice('group:'.length);
+      const selfId = this.onebot.selfId;
+      if (selfId) {
+        // 优先查自己的成员信息：shut_up_timestamp = 禁言截止的 epoch 秒（0 = 未禁言）
+        const info = await this.onebot.getGroupMemberInfo(groupId, selfId);
+        const shut = Number(info?.shut_up_timestamp || 0);
+        if (shut > now / 1000) { entry.muted = true; entry.untilTs = shut * 1000; }
+      } else {
+        // 拿不到自身 uin 时退查全员禁言标志
+        const info = await this.onebot.getGroupInfo(groupId);
+        if (Number(info?.group_all_shut || 0) > 0) entry.muted = true;
+      }
+    } catch { /* 查询失败不能阻塞正常发送 */ }
+    this.#muteCache.set(chatKey, entry);
+    if (entry.muted) throw new Error(muteError(entry.untilTs));
   }
 
   #checkRate(chatKey) {
@@ -75,6 +113,7 @@ export class SendQueue {
   }
 
   async #deliver(chatKey, options, payload, send) {
+    await this.#assertNotMuted(chatKey);
     assertCanSend(chatKey, options.signal);
     const id = this.store.beginSend(chatKey, options.runId, payload);
     try {
