@@ -844,7 +844,7 @@ try {
   saverOk ? pass++ : fail++;
   console.log('  ' + (saverOk ? 'OK   ' : 'FAIL ') + '省 Token 分区：三档选择 + 生效值对照表 + 设置菜单入口');
 
-  // 设置 → 闲聊：主动开口的三个开关（冷场/补话/自安排唤醒）+ 表情清单条数
+  // 设置 → 闲聊：主动开口的三个开关（冷场/补话/自安排唤醒）+ 表情清单条数（下拉档位）
   const chatHtml = ctx.renderChatSection({
     ...cfg,
     proactive: { ...cfg.proactive, followUpEnabled: false, selfWakeEnabled: false },
@@ -854,16 +854,39 @@ try {
     && chatHtml.includes('id="cfg-pro-followup"') && chatHtml.includes('id="cfg-pro-selfwake"')
     && !/id="cfg-pro-followup"[^>]*checked/.test(chatHtml)
     && !/id="cfg-pro-selfwake"[^>]*checked/.test(chatHtml)
-    && /id="cfg-sticker-max"[^>]*value="24"/.test(chatHtml);
+    // 清单条数是下拉：固定档位 + 存量自定义值（24）补一项并被选中
+    && /<select id="cfg-sticker-max">/.test(chatHtml)
+    && /<option value="24" selected>/.test(chatHtml)
+    && /<option value="60"/.test(chatHtml);
   openSwitchesOk ? pass++ : fail++;
-  console.log('  ' + (openSwitchesOk ? 'OK   ' : 'FAIL ') + '设置页：主动开口三个开关 + 表情清单条数可改');
-  // 缺省 / 老配置（字段不存在）按"开"渲染：升级后行为不变
+  console.log('  ' + (openSwitchesOk ? 'OK   ' : 'FAIL ') + '设置页：主动开口三个开关 + 表情清单条数下拉');
+  // 缺省 / 老配置（字段不存在）按"开"渲染：升级后行为不变；条数默认 10 档
   const defaultHtml = ctx.renderChatSection(cfg);
   const defaultOnOk = /id="cfg-pro-followup"[^>]*checked/.test(defaultHtml)
     && /id="cfg-pro-selfwake"[^>]*checked/.test(defaultHtml)
-    && /id="cfg-sticker-max"[^>]*value="10"/.test(defaultHtml);
+    && /<option value="10" selected>/.test(defaultHtml)
+    // 自由输入框必须不复存在：填多大都只会被静默夹住，那种控件不该出现
+    && !/id="cfg-sticker-max"[^>]*type="number"/.test(defaultHtml);
   defaultOnOk ? pass++ : fail++;
-  console.log('  ' + (defaultOnOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下两项开关默认勾选、清单条数默认 10');
+  console.log('  ' + (defaultOnOk ? 'OK   ' : 'FAIL ') + '设置页：缺省开关勾选、清单条数默认 10 档且不再是输入框');
+  // 存量的超范围值（手改过 config.json 的 500）落到 60 档，不会渲染出 500 这种选项
+  const overHtml = ctx.renderChatSection({ ...cfg, sticker: { ...cfg.sticker, promptMaxStickers: 500 } });
+  const overOk = /<option value="60" selected>/.test(overHtml)
+    && !/<option value="500"/.test(overHtml);
+  overOk ? pass++ : fail++;
+  console.log('  ' + (overOk ? 'OK   ' : 'FAIL ') + '设置页：超范围存量值落到 60 档，不出现越界选项');
+
+  // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
+  const maxNode = document.querySelector('#cfg-sticker-max');
+  maxNode.value = '500';
+  vm.runInContext(`state.config = ${JSON.stringify({
+    ...cfg, sticker: { ...cfg.sticker, promptMaxStickers: 60 }
+  })};`, ctx);
+  ctx.syncClampedInputs();
+  const syncOk = maxNode.value === '60';
+  syncOk ? pass++ : fail++;
+  console.log('  ' + (syncOk ? 'OK   ' : 'FAIL ') + '设置页：保存后把夹住的值回填到清单条数控件'
+    + (syncOk ? '' : ` -> value=${maxNode.value}`));
 
   // 总开关开着、但统一身份库没起来时（active=false），好友页的三个接口都会 409：
   // 加载器要自己给提示，不能因为请求失败把整页（连同设置表单）换成一整块错误信息。

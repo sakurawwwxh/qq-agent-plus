@@ -8337,6 +8337,17 @@ const STICKER_LEVELS = [
   [3, '3 · 很积极（表情包爱好者）']
 ];
 
+// 表情清单条数档位。这里给下拉而不是自由输入框：这份清单每轮都进系统提示（还是有缓存前缀的
+// 那段），条数=每轮成本，上限 60 与 stickers.js 的 buildStickerContext 一致。用输入框会让人
+// 以为能随便填，填 500 又只会被静默夹成 60，界面上还一直显示 500（保存后不重画）。
+const STICKER_MAX_CHOICES = [10, 20, 30, 45, 60];
+/** 清单条数的下拉项：固定档位 + 存量配置里的自定义值时补一项（免得显示成别的档）。 */
+function stickerMaxSelectOptions(current) {
+  const value = Math.min(60, Math.max(1, Math.round(Number(current) || 10)));
+  const choices = [...new Set([...STICKER_MAX_CHOICES, value])].sort((a, b) => a - b);
+  return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 条</option>`).join('');
+}
+
 // 读取历史档位：名称与说明（档位制，累积生效）
 /** 把输入钳制到 [min,max]，非法值退回 fallback。 */
 /**
@@ -8660,11 +8671,11 @@ return `
     </div>
 
     <div class="field">
-      <label>系统提示里的表情清单条数</label>
-      <input type="number" id="cfg-sticker-max" min="1" max="60" value="${esc(c.sticker?.promptMaxStickers ?? 10)}" />
+      <label for="cfg-sticker-max">系统提示里的表情清单条数</label>
+      <select id="cfg-sticker-max">${stickerMaxSelectOptions(c.sticker?.promptMaxStickers)}</select>
       <div class="hint">
         清单一半放常用的，一半放没用过/很久没用的，发掉一张自动换下一张上来（不会再总是那几张）。
-        调大能选的范围更宽，代价是每轮提示词变长；省 Token 模式还会再夹到 3~5 条。库容量不受这一项影响。
+        档位越大能选的范围越宽，代价是每轮提示词变长；省 Token 模式还会再夹到 3~5 条。库容量不受这一项影响。
       </div>
     </div>
 
@@ -8826,6 +8837,19 @@ function renderOnebotSection(c) {
     <div class="hint">改完 OneBot 地址或令牌后，执行 <code>manage.sh restart</code> 生效（连接只在启动时建立一次，改完不重启还是旧地址）。</div>`;
 }
 
+/**
+ * 保存成功后把"服务端实际存下来的值"回填到控件上。
+ * 以前只有省 Token 页保存后会重画，别的页不回填：控件里留着旧输入，看着像保存成功了、
+ * 其实存的是另一个值（夹上限、换算档位这类字段都会这样）。先从清单条数这一个做起。
+ */
+function syncClampedInputs() {
+  const stickerMax = $('#cfg-sticker-max');
+  if (stickerMax) {
+    const saved = Math.min(60, Math.max(1, Math.round(Number(state.config?.sticker?.promptMaxStickers) || 10)));
+    stickerMax.value = String(saved);
+  }
+}
+
 function bindSettingsEvents(c) {
   if (state.settingsSection === 'time-control') bindTimeControlEvents();
   // 保存当前区块设置（通用保存按钮）。只有当前区块的字段才会被读取，不会 null 报错。
@@ -8844,6 +8868,8 @@ function bindSettingsEvents(c) {
       res.classList.remove('saved-flash');
       void res.offsetWidth;
       res.classList.add('saved-flash');
+      // 回填被夹过的字段（服务端存下来的值可能与框里显示的不一样）
+      syncClampedInputs();
       // 保存成功后，人设页那条"还没生效"的提示就没意义了，清掉它
       if (state.settingsSection === 'persona') {
         personaEditNote = '';
@@ -10862,7 +10888,7 @@ async function saveConfig({ quiet = false } = {}) {
       encourage: Math.min(3, Math.max(0, Number(
         $('#cfg-sticker-encourage') ? $('#cfg-sticker-encourage').value : (c.sticker?.encourage ?? 1)
       ) || 0)),
-      // 上限 60 与 stickers.js 的 buildStickerContext 一致
+      // 下拉只提供 1~60 内的档位；这里的 clampInt 是防手工改 DOM 的兜底（服务端也会再夹一次）
       promptMaxStickers: clampInt(val('#cfg-sticker-max', c.sticker?.promptMaxStickers), 1, 60, 10)
     };
     // 读取历史档位（替代原来的「最多条数 + 字符预算」两个固定值）
