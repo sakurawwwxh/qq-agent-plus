@@ -2150,6 +2150,35 @@ function renderSessionContextInspector(s) {
           ? '模型请求进行中；当前接口为非流式，推理内容会在本轮响应完成后出现。'
           : '本次模型响应没有返回 reasoning_content。'}</div>`;
   } else {
+    // 完整输入的可读转写：按角色分块，正文用与 Release 说明同一套
+    // "先整体转义再最小 markdown"的安全渲染（formatReleaseNotes，esc 纪律不变）。
+    // 此前是把整包请求 JSON 塞 <pre>，提示词里的 markdown 全变成 \n 转义串，难以阅读；
+    // 原始 JSON 仍保留在折叠区，审计用途不变。
+    const messages = Array.isArray(request.messages) ? request.messages : [];
+    const roleLabel = { system: '系统提示', user: '会话消息', assistant: '模型', tool: '工具返回' };
+    const msgBody = (message) => {
+      const parts = [];
+      const calls = message?.tool_calls || [];
+      if (Array.isArray(message?.content)) {
+        for (const part of message.content) {
+          if (part?.type === 'text') parts.push(`<div class="context-msg-text">${formatReleaseNotes(String(part.text || ''))}</div>`);
+          else if (part?.type === 'image_url') parts.push('<div class="context-msg-text context-msg-dim">（内联图片：二进制不进审计文件，仅保留消息结构）</div>');
+          else parts.push(`<div class="context-msg-text">${esc(JSON.stringify(part))}</div>`);
+        }
+      } else if (message?.content != null && String(message.content) !== '') {
+        const text = String(message.content);
+        parts.push(message.role === 'tool'
+          ? `<pre class="context-json">${esc(text)}</pre>`
+          : `<div class="context-msg-text">${formatReleaseNotes(text)}</div>`);
+      }
+      for (const call of calls) {
+        const fn = call?.function || {};
+        const args = typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments ?? {});
+        parts.push(`<div class="context-msg-tool">调用工具 <code>${esc(fn.name || '?')}</code>`
+          + `${args && args !== '{}' ? `<pre class="context-json">${esc(args)}</pre>` : ''}</div>`);
+      }
+      return parts.join('') || '<div class="context-msg-text context-msg-dim">（空内容）</div>';
+    };
     body = `
       ${s.inputHasOmittedImages
         ? '<div class="context-warning">内联图片二进制未重复写入审计文件；消息结构和原始字符体积已保留。</div>'
@@ -2157,7 +2186,15 @@ function renderSessionContextInspector(s) {
       ${tools.length
         ? ''
         : '<div class="context-warning">该 Session 创建于完整请求审计上线前，工具 schema 未留存。</div>'}
-      <pre class="context-json">${esc(JSON.stringify(request, null, 2))}</pre>`;
+      ${messages.map((message, index) => `
+        <section class="context-msg context-msg-${esc(message?.role || 'unknown')}">
+          <div class="context-msg-head"><span>#${index + 1} · ${esc(roleLabel[message?.role] || message?.role || '未知')}</span></div>
+          <div class="context-msg-body">${msgBody(message)}</div>
+        </section>`).join('') || '<div class="context-empty">该轮没有留存消息。</div>'}
+      <details class="context-raw-json">
+        <summary>原始请求 JSON（审计用，与发给模型的内容逐字一致）</summary>
+        <pre class="context-json">${esc(JSON.stringify(request, null, 2))}</pre>
+      </details>`;
   }
 
   return `

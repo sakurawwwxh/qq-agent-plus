@@ -1417,9 +1417,10 @@ try {
     inputPayloadChars: 4096,
     injectedMessages: [{ role: 'assistant', content: '上一轮回复' }],
     inputMessages: [
-      { role: 'system', content: '系统提示' },
-      { role: 'assistant', content: '上一轮回复', reasoning_content: '上一轮推理' },
-      { role: 'user', content: '本轮输入' }
+      { role: 'system', content: '系统提示\n- 规则一\n**重点**' },
+      { role: 'user', content: '本轮输入' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'finish', arguments: '{"summary":"ok"}' } }] },
+      { role: 'tool', tool_call_id: 'call_1', content: '{"ok":true}' }
     ],
     inputTools: [{ type: 'function', function: { name: 'finish' } }],
     inputRequestOptions: { toolChoice: 'auto', temperature: 0.8 },
@@ -1458,7 +1459,7 @@ try {
     && contextMetrics.toolCalls === 1
     && contextMetrics.webSearchCount === 2
     && contextMetrics.estimatedCost === 0.0123
-    && inputInspector.includes('完整输入 · 3')
+    && inputInspector.includes('完整输入 · 4')
     && inputInspector.includes('Session 全局统计 · 2 次模型调用')
     && inputInspector.includes('首轮缓存命中率')
     && inputInspector.includes('70.0%')
@@ -1480,6 +1481,16 @@ try {
     && inputInspector.includes('1,400')
     && inputInspector.includes('1,100')
     && inputInspector.includes('&quot;tools&quot;')
+    && inputInspector.includes('#1 · 系统提示')
+    && inputInspector.includes('#2 · 会话消息')
+    && inputInspector.includes('#3 · 模型')
+    && inputInspector.includes('#4 · 工具返回')
+    && inputInspector.includes('• 规则一')
+    && inputInspector.includes('<strong>重点</strong>')
+    && inputInspector.includes('调用工具 <code>finish</code>')
+    && inputInspector.includes('&quot;summary&quot;:&quot;ok&quot;')
+    && inputInspector.includes('&quot;ok&quot;:true')
+    && inputInspector.includes('原始请求 JSON')
     && injectedInspector.includes('上一轮回复')
     && reasoningInspector.includes('检查上下文后调用工具')
     && reasoningInspector.includes('任务已完成');
