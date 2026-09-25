@@ -96,6 +96,8 @@ loginctl enable-linger qqagent
 linger 是服务在开机后无需用户登录即可持续运行的前提。预先开启 linger 可避免使用 `sudo`：
 `deploy.sh` 仅在 linger 未开启时才尝试执行 `sudo loginctl enable-linger`（安装收尾处）。
 
+若服务 unit 配置了 `NoNewPrivileges=true`（本指南第 273 行附近的加固建议），服务重启后由 systemd 拉起的进程无法执行 `sudo`——`deploy.sh` 对此做了预检：此时会跳过 `sudo` 并提示手动执行一次 `loginctl enable-linger`，linger 未开只影响下次开机自启，不会让本次部署或手动更新回滚（Issue #15）。
+
 父目录同样需要在此创建。`deploy.sh` 会自行 `mkdir -p` 安装目录与数据目录，但 `/mnt` 属主为
 root，以 `qqagent` 身份执行时无法创建 `data` 这一级目录。`docs/LINUX.md` 要求「先以合适
 的属主创建父目录」，即指此处。

@@ -278,3 +278,26 @@ test('installed manage launcher uses the exact deployed Node runtime', (t) => {
     ['scripts/manage.mjs', 'health']
   );
 });
+
+// Issue #15（2026-09-25）：unit 带 NoNewPrivileges 时重启后 sudo 必死，linger 步骤
+// 一失败整个更新就回滚。linger 只影响下次开机自启，必须是尽力而为：先预检 NNP
+// 别让 sudo 去撞内核限制，sudo 失败走警告分支（if/elif 保护，不触发 ERR 回滚）。
+test('deploy script treats linger as best-effort and never rolls back over it', () => {
+  const source = fs.readFileSync(path.join(repo, 'deploy.sh'), 'utf8');
+  assert.match(
+    source,
+    /loginctl show-user "\$USER" -p Linger --value 2>\/dev\/null \|\| true/,
+    'loginctl 查询失败要当作"未开 linger"处理，不能让命令替换触发 ERR'
+  );
+  assert.match(
+    source,
+    /if grep -q 'NoNewPrivs:\[\[:space:\]\]\*1' \/proc\/self\/status/,
+    '先预检 NoNewPrivileges：被加固时跳过 sudo，给出手动指引而不是内核报错'
+  );
+  assert.match(
+    source,
+    /elif ! sudo loginctl enable-linger "\$USER"/,
+    'sudo 失败必须走 elif 警告分支，不能裸跑触发 ERR 回滚'
+  );
+  assert.match(source, /下次开机不会自启/, '警告要说明后果与手动补救命令');
+});

@@ -363,8 +363,15 @@ systemd-analyze --user verify "$UPDATE_TIMER_FILE"
 systemctl --user daemon-reload
 systemctl --user enable --now "$SERVICE.service"
 systemctl --user enable --now "$UPDATE_SERVICE.timer"
-if [[ "$(loginctl show-user "$USER" -p Linger --value)" != yes ]]; then
-  sudo loginctl enable-linger "$USER"
+if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]]; then
+  # Issue #15：unit 带 NoNewPrivileges（docs/BAOTA.md 推荐的加固）时，重启后由
+  # systemd 拉起的进程跑不了 sudo，这一步曾让整个更新回滚。linger 只影响"下次
+  # 开机自启"，不该一票否决本次部署——预检 + 尽力而为，失败只警告。
+  if grep -q 'NoNewPrivs:[[:space:]]*1' /proc/self/status 2>/dev/null; then
+    printf '警告：服务被 NoNewPrivileges 加固，无法代为开启 linger；本次部署不受影响，但服务下次开机不会自启。\n请在服务账号的交互终端执行一次：sudo loginctl enable-linger %s\n' "$USER" >&2
+  elif ! sudo loginctl enable-linger "$USER" 2>/dev/null; then
+    printf '警告：启用 linger 失败（sudo 不可用或被拒绝）；本次部署不受影响，但服务下次开机不会自启。\n请在服务账号的交互终端执行一次：sudo loginctl enable-linger %s\n' "$USER" >&2
+  fi
 fi
 case "$HOST" in
   0.0.0.0) HEALTH_HOST=127.0.0.1 ;;
