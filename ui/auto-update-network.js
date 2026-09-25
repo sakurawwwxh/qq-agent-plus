@@ -156,8 +156,10 @@
         <label><span>Git 拉取超时（秒）</span><input type="number" id="auto-update-fetch-timeout" min="30" max="1800" value="${esc(status.fetchTimeoutSeconds ?? 300)}" /></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="auto-update-http11" ${status.forceHttp11 !== false ? 'checked' : ''} /><span>强制 Git HTTP/1.1</span></label>
         <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="auto-update-disable-failure" ${status.disableOnFailure !== false ? 'checked' : ''} /><span>失败后禁用自动更新</span></label>
-        <button type="button" class="btn btn-small" id="auto-update-network-save" ${status.busy ? 'disabled' : ''}>保存网络策略</button>
-        <button type="button" class="btn btn-small" id="auto-update-connectivity-test" ${!status.installed || status.busy ? 'disabled' : ''}>测试 GitHub 连通性</button>
+        <div class="settings-actions" style="grid-column:1 / -1">
+          <button type="button" class="btn btn-small" id="auto-update-network-save" ${status.busy ? 'disabled' : ''}>保存网络策略</button>
+          <button type="button" class="btn btn-small" id="auto-update-connectivity-test" ${!status.installed || status.busy ? 'disabled' : ''}>测试 GitHub 连通性</button>
+        </div>
       </div>
       <div id="auto-update-network-result" class="control-result ${connectivityClass}" data-auto-update-connectivity style="margin-top:8px" role="status" aria-live="polite">${esc(connectivityText(status))}</div>
       <div class="muted" data-auto-update-network-note style="margin-top:4px">GitHub 预检使用目标仓库 + 目标分支；开启 HTTP/1.1 可规避部分 GnuTLS / HTTP2 链路抖动。npm 安装优先使用本地缓存并继承相同重试参数。</div>`;

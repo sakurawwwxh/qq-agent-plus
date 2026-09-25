@@ -70,7 +70,8 @@
 
       <div class="side-foot">
         <label class="runtime-control" title="新实例运行模式">
-          <select id="runtime-mode" aria-label="运行模式">
+          <!-- 首次 /api/status 返回前保持禁用：避免把"还没加载"渲染成"观察模式"误导人 -->
+          <select id="runtime-mode" aria-label="运行模式" disabled>
             <option value="observe">观察</option>
             <option value="active">启用</option>
           </select>
@@ -83,8 +84,8 @@
     <div id="workspace">
       <header id="topbar" data-page-node-id="DeBgpH1MJHGjjjZ348ThQJ">
         <div class="top-status" data-page-node-id="bJ0ckrJT6G2Tmd3CRV0BDG">
-          <span id="onebot-dot" class="dot dot-off" title="OneBot 连接状态" data-page-node-id="kZj99OAhFFri832S3xi5AY"></span>
-          <span id="onebot-label" class="muted" data-page-node-id="fFZerwgFQ1Y2b5Ypm3z9jJ">OneBot 未连接</span>
+          <span id="onebot-dot" class="dot dot-wait" title="OneBot 连接状态" data-page-node-id="kZj99OAhFFri832S3xi5AY"></span>
+          <span id="onebot-label" class="muted" data-page-node-id="fFZerwgFQ1Y2b5Ypm3z9jJ">OneBot 连接中…</span>
           <span id="model-label" class="muted" data-page-node-id="mxYqKFiIVWYn1SDTF1HQvJ">模型：-</span>
           <span id="usage-label" class="muted" data-page-node-id="ASGoXILEnFSWWqgmj2pS4B">今日：-</span>
           <span id="search-count-label" class="muted" title="今日联网搜索次数（web_search / web_fetch）" data-page-node-id="OLNka4FykNQRaxEpBoEK6t">搜索：-</span>
@@ -115,6 +116,16 @@
     <section id="view-chats" class="view" data-page-node-id="vrl1zysqFxujSPCndQWW5B">
       <aside id="chat-list" class="list-pane" data-page-node-id="oHomcx4PNl2n51xeHfeIXI">
         <div class="list-head muted" data-page-node-id="vlqc8FbmqzRhAk07MYf9xH">消息存档</div>
+        <div class="archive-filter">
+          <input type="text" id="archive-search" placeholder="搜索会话名 / 最近消息" />
+          <select id="archive-filter-type" aria-label="筛选会话类型">
+            <option value="all">全部</option>
+            <option value="group">群聊</option>
+            <option value="private">私聊</option>
+            <option value="failed">有失败</option>
+            <option value="held">有待确认</option>
+          </select>
+        </div>
         <div id="chat-items" data-page-node-id="mLpAwb09QMOwznGinF4aiy"></div>
       </aside>
       <div id="chat-detail" class="detail-pane" data-page-node-id="4Rt59kYD5wtdJBqdZ57bLM">

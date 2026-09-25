@@ -730,7 +730,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 .context-json,
 .reasoning-entry pre {
   margin: 0;
-  color: #aab3c5;
+  color: var(--muted);
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.6;
@@ -775,6 +775,33 @@ html.boot-show .loading-overlay { opacity: 1; }
 .context-raw-json { margin-top: 10px; }
 .context-raw-json summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
 .context-raw-json[open] summary { color: var(--accent); }
+/* 存档筛选（关键字 + 类型） */
+.archive-filter { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+.archive-filter input {
+  flex: 1; min-width: 0;
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 6px 9px; font-size: 12.5px; outline: none;
+}
+.archive-filter select {
+  background: var(--bg-3); border: 1px solid var(--border); color: var(--text);
+  border-radius: 6px; padding: 6px 6px; font-size: 12.5px; outline: none;
+}
+/* 用量按天成本比例条 */
+.usage-cost-cell { display: inline-flex; align-items: center; gap: 8px; }
+.usage-cost-bar {
+  display: inline-block; width: 56px; height: 6px;
+  background: var(--bg-3); border-radius: 3px; overflow: hidden;
+  vertical-align: middle;
+}
+.usage-cost-bar i { display: block; height: 100%; background: var(--accent); }
+/* 手动添加提供商：两列模型行给足呼吸空间 */
+.model-rows-table input { padding: 8px 10px; font-size: 12.5px; }
+.model-rows-table th { padding: 6px 8px; }
+.model-rows-table td { padding: 6px 8px; }
+@media (max-width: 600px) {
+  /* 移动端：状态 pills 允许整段换行显示，不再 OneB…/模型：dee… 截断 */
+  .top-status > .muted { white-space: normal; overflow: visible; text-overflow: clip; }
+}
 .context-empty {
   min-height: 116px;
   display: grid;
@@ -798,7 +825,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 .collapsible { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 14px; background: var(--bg-2); }
 .collapsible > summary::before { content: '▸ '; }
 .collapsible[open] > summary::before { content: '▾ '; }
-.collapsible .coll-body { padding: 4px 14px 12px; white-space: pre-wrap; font-family: var(--mono); font-size: 11.5px; color: #aab3c5; line-height: 1.65; max-height: 300px; overflow-y: auto; }
+.collapsible .coll-body { padding: 4px 14px 12px; white-space: pre-wrap; font-family: var(--mono); font-size: 11.5px; color: var(--muted); line-height: 1.65; max-height: 300px; overflow-y: auto; }
 .memory-handoff .coll-body { max-height: none; overflow: visible; white-space: normal; font-family: inherit; }
 .memory-handoff-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 10px; }
 .memory-handoff-actions .muted { margin-right: auto; font-size: 11px; }
@@ -826,7 +853,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 .tool-card.tool-error { border-color: rgba(255,107,107,.5); }
 .tool-head { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
 .tool-name { color: var(--orange); font-family: var(--mono); font-size: 12px; font-weight: 600; }
-.tool-args { font-family: var(--mono); font-size: 11.5px; color: #aab3c5; white-space: pre-wrap; }
+.tool-args { font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: pre-wrap; }
 .tool-result { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 5px; white-space: pre-wrap; border-top: 1px dashed var(--border); padding-top: 5px; }
 .tool-result.is-error { color: var(--red); }
 
@@ -862,7 +889,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 .chat-item.unread-row { background: rgba(255,180,84,.07); }
 .unread-pill { background: var(--red); color: #fff; font-size: 11px; border-radius: 9px; padding: 0 7px; }
 .chat-item-sub { color: var(--muted); font-size: 12px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-chip { cursor: pointer; font-size: 12px; color: #dbe2f0; background: var(--bg-3); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.member-chip { cursor: pointer; font-size: 12px; color: var(--text); background: var(--bg-3); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
 .member-chip:hover { border-color: var(--accent); }
 .member-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .member-table td, .member-table th { padding: 5px 6px; border-bottom: 1px solid var(--border); text-align: left; }

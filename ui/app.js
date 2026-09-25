@@ -967,10 +967,10 @@ function renderControlHub(data = {}) {
       <div class="update-deploy-settings">
         <label><span>告警管理员 QQ</span><input type="text" id="auto-update-owner" inputmode="numeric" value="${esc(update.ownerUin || '')}" /></label>
         <label><span>检查间隔（小时）</span><input type="number" id="auto-update-interval" min="1" max="168" value="${esc(update.intervalHours || 6)}" /></label>
-        <button type="button" class="btn btn-small" id="auto-update-save" ${update.busy ? 'disabled' : ''}>保存设置</button>
       </div>
       <div class="control-result error hidden" id="hub-deploy-error" style="margin-top:8px"></div>
       <div class="settings-actions">
+        <button type="button" class="btn btn-small" id="auto-update-save" ${update.busy ? 'disabled' : ''}>保存设置</button>
         <button type="button" class="btn btn-primary btn-small" id="auto-update-run" ${!update.installed || update.busy ? 'disabled' : ''}>↻ 手动更新</button>
         <button type="button" class="btn btn-small" id="auto-update-pause" ${update.enabled && !update.busy ? '' : 'disabled'}>暂停自动更新</button>
         <button type="button" class="btn btn-small" id="auto-update-resume" ${!update.enabled && update.installed && !update.busy ? '' : 'disabled'}>恢复自动更新</button>
@@ -1408,6 +1408,9 @@ async function refreshStatus() {
     state.paused = s.paused;
     state.pauseReason = s.pauseReason;
     $('#pause-btn').textContent = state.paused ? '恢复' : '暂停';
+    // 首次状态到达后放开运行模式下拉（此前禁用，避免把"还没加载"看成"观察模式"）
+    const runtimeMode = $('#runtime-mode');
+    if (runtimeMode && runtimeMode.disabled) runtimeMode.disabled = false;
     if ($('#runtime-mode')) $('#runtime-mode').value = s.orchestrator.mode || 'observe';
     if (s.timeControl?.enabled) {
       setStatusLabel('#model-label', $('#model-label').textContent + (s.timeControl.active ? ' · 活跃时段' : ' · 非活跃时段'));
@@ -2564,7 +2567,20 @@ async function openUnknownOperations(chatKey) {
 function renderChatList() {
   const box = $('#chat-items');
   state.seenChatKeys = state.seenChatKeys || new Set();
-  const chatRows = state.chats.map((c) => {
+  // 存档筛选（关键字 + 类型，纯前端过滤）；控件是 index.html 里的静态元素，绑一次即可
+  if (!box.__archiveFilterBound) {
+    box.__archiveFilterBound = true;
+    $('#archive-search')?.addEventListener('input', () => renderChatList());
+    $('#archive-filter-type')?.addEventListener('change', () => renderChatList());
+  }
+  const q = String($('#archive-search')?.value || '').trim().toLowerCase();
+  const ftype = String($('#archive-filter-type')?.value || 'all');
+  let visibleChats = state.chats;
+  if (q) visibleChats = visibleChats.filter((c) => `${formatChatTitle(c.key, chatNameOf(c.key))} ${c.lastText || ''}`.toLowerCase().includes(q));
+  if (ftype === 'group' || ftype === 'private') visibleChats = visibleChats.filter((c) => c.key.startsWith(`${ftype}:`));
+  else if (ftype === 'failed') visibleChats = visibleChats.filter((c) => (c.failed || 0) > 0);
+  else if (ftype === 'held') visibleChats = visibleChats.filter((c) => (c.held || 0) > 0);
+  const chatRows = visibleChats.map((c) => {
     const name = formatChatTitle(c.key, chatNameOf(c.key));
     const isNew = !state.seenChatKeys.has(c.key);
     const mode = conversationModeForChat(c.key);
@@ -2593,9 +2609,9 @@ function renderChatList() {
         <div class="chat-item-sub">${esc(c.lastText || '（空）')}</div>
         <div class="session-meta"><span>${c.total} 条 · 失败 ${c.failed || 0} · 待确认 ${c.held || 0}${c.thread ? ` · 线程 v${c.thread.version}` : ''}</span><span>${fmtTime(c.lastTs)}</span></div>
       </div>`;
-  }).map((html, index) => ({ key: String(state.chats[index].key), html }));
+  }).map((html, index) => ({ key: String(visibleChats[index].key), html }));
   patchKeyedList(box, chatRows, 'data-key');
-  if (!chatRows.length) box.innerHTML = '<div class="list-head muted">还没有消息存档（等白名单里的群/好友来消息）</div>';
+  if (!visibleChats.length) box.innerHTML = `<div class="list-head muted">${state.chats.length ? '没有匹配筛选条件的会话' : '还没有消息存档（等白名单里的群/好友来消息）'}</div>`;
   for (const c of state.chats) state.seenChatKeys.add(c.key);
   $$('.chat-item', box).forEach((el) => {
     if (el.__bound) return;      // 增量更新会保留旧行，别重复绑定
@@ -3280,7 +3296,13 @@ function updateUsagePage(stats, st, prices) {
     return '';
   };
 
-  fill('days', stats?.days, (d) => `
+  // 按天成本加比例条：一眼看出哪天是大头（数据同源，纯展示）
+  const dayRows = stats?.days || [];
+  const maxDayCost = Math.max(0, ...dayRows.map((d) => Number(d.cost) || 0));
+  fill('days', dayRows, (d) => {
+    const cost = Number(d.cost) || 0;
+    const pct = maxDayCost > 0 ? Math.max(4, Math.round((cost / maxDayCost) * 100)) : 0;
+    return `
     <tr data-key="${esc(d.day)}">
       <td>${esc(d.day)}</td>
       <td class="r">${d.runs}</td>
@@ -3288,8 +3310,9 @@ function updateUsagePage(stats, st, prices) {
       <td class="r">${fmtTok(d.completionTokens)}</td>
       <td class="r">${fmtTok(d.cachedTokens)}</td>
       <td class="r">${((d.cacheHitRate || 0) * 100).toFixed(0)}%</td>
-      <td class="r">${costCell(d)}</td>
-    </tr>`);
+      <td class="r"><span class="usage-cost-cell"><span class="usage-cost-bar" aria-hidden="true"><i style="width:${pct}%"></i></span>${costCell(d)}</span></td>
+    </tr>`;
+  });
 
   fill('chats', stats?.chats, (c) => `
     <tr data-key="${esc(c.key)}">
@@ -6506,7 +6529,7 @@ function renderApiSection(c) {
     <h3>手动添加提供商</h3>
     <div class="field"><label>Base URL（可填写）</label>
       <div style="display:flex;gap:8px">
-        <input type="text" id="new-baseurl" placeholder="例如 https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4" style="flex:1" />
+        <input type="text" id="new-baseurl" placeholder="例如 https://api.deepseek.com/v1 或 https://open.bigmodel.cn/api/paas/v4" value="${esc(currentProvider?.baseURL || c.api.baseUrl || '')}" style="flex:1" />
         <button class="btn btn-small" id="fetch-models-btn">获取列表</button>
       </div></div>
     <div class="field"><label>API Key（手动添加时填写）</label>
@@ -7622,7 +7645,7 @@ function renderIncidentFeaturePage(c, status, incidents = []) {
           <td><span class="incident-severity severity-${esc(incident.severity)}">${esc(INCIDENT_SEVERITY_LABELS[incident.severity] || incident.severity)}</span></td>
           <td>${esc(incident.source || '-')}</td>
           <td>${esc(incident.chatKey || '-')}</td>
-          <td><details><summary>${esc(incident.message || incident.code)}</summary>
+          <td><details><summary>${esc(String(incident.message || incident.code || '').slice(0, 160))}${String(incident.message || '').length > 160 ? ' …（点开看全文）' : ''}</summary>
             <div class="incident-detail"><code>${esc(incident.code)}</code>
               ${incident.sessionId ? `<div>Session：${esc(incident.sessionId)}</div>` : ''}
               ${incident.operationId ? `<div>Operation：${esc(incident.operationId)}</div>` : ''}

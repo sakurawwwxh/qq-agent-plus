@@ -188,7 +188,13 @@ export function upsertProvider({ baseUrl, apiKey, models = [] }) {
   providers.push(provider);
   const keys = { ...(getConfig().providerKeys || {}) };
   if (apiKey) keys[id] = String(apiKey).trim();
-  updateConfig({ providers, ...(apiKey ? { providerKeys: keys } : {}) });
+  // 新建的提供商自动切换为当前模型（控制台"确认添加"的文案一直这么承诺，
+  // 此前却只建目录不切换 —— 用户添加完看到「尚未选择模型」+ 空的模型目录框）。
+  updateConfig({
+    providers,
+    ...(apiKey ? { providerKeys: keys } : {}),
+    api: { provider: id, model: entries[0]?.id || '' }
+  });
   return { provider: withResolvedKey(provider), created: true };
 }
 
