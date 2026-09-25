@@ -525,7 +525,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 }
 .thread-timeline-head strong,
 .thread-timeline-head span { display: block; }
-.thread-timeline-head strong { color: var(--mode-color); font-size: 13px; }
+.thread-timeline-head strong { color: color-mix(in srgb, var(--mode-color) 85%, var(--text)); font-size: 13px; }
 .thread-timeline-head > div > span {
   margin-top: 2px;
   color: var(--faint);
@@ -1014,13 +1014,13 @@ html.boot-show .loading-overlay { opacity: 1; }
 .conversation-mode-option small { display: block; overflow-wrap: anywhere; }
 .conversation-mode-option span { color: var(--text); font-size: 13px; font-weight: 650; }
 .conversation-mode-option small { margin-top: 3px; color: var(--muted); font-size: 11px; }
-.conversation-mode-option:hover { border-color: color-mix(in srgb, var(--mode-color) 55%, var(--border)); }
+.conversation-mode-option:hover { border-color: color-mix(in srgb, var(--mode-color) 35%, var(--border)); }
 .conversation-mode-option.active {
-  border-color: var(--mode-color);
+  border-color: color-mix(in srgb, var(--mode-color) 45%, var(--border));
   background: var(--mode-soft);
-  box-shadow: inset 0 -2px 0 var(--mode-color);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--mode-color) 60%, transparent);
 }
-.conversation-mode-option.active span { color: var(--mode-color); }
+.conversation-mode-option.active span { color: color-mix(in srgb, var(--mode-color) 80%, var(--text)); }
 .conversation-mode-stage {
   min-height: 190px;
   border-bottom: 1px solid var(--border);
@@ -1038,14 +1038,14 @@ html.boot-show .loading-overlay { opacity: 1; }
 }
 .conversation-mode-heading strong,
 .conversation-mode-heading span { display: block; }
-.conversation-mode-heading strong { color: var(--mode-color); font-size: 15px; }
+.conversation-mode-heading strong { color: color-mix(in srgb, var(--mode-color) 85%, var(--text)); font-size: 15px; }
 .conversation-mode-heading > div > span { margin-top: 3px; color: var(--muted); font-size: 12px; }
 .mode-state-token {
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--mode-color) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mode-color) 30%, transparent);
   border-radius: 7px;
   background: var(--mode-soft);
-  color: var(--mode-color);
+  color: color-mix(in srgb, var(--mode-color) 82%, var(--text));
   padding: 4px 8px;
   font-size: 11px;
 }
@@ -2821,22 +2821,25 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 .list-head, .detail-header, .control-section-title { letter-spacing: .2px; }
 
 /* ── 状态徽标：从描边改成"淡底 + 同色文字"的胶囊 ──
-   文字用 color-mix 往前景色里收一点：纯饱和色在成排徽章里显得生硬。 */
+   注意：这里只认 status-* 这类"徽章专用"类名。mode-lifecycle / mode-threaded /
+   mode-legacy 是**上下文类**（模块面板、会话卡片、模式选项都带），
+   早期把它们写进徽章组，导致徽章的 999px 圆角 + 色底 + 2px 内边距
+   糊到整个面板上（"对话模式那块看着别扭"的根源，2026-09-26 修）。 */
 .status-badge, .vbadge, .mode-chip, .persona-chip, .member-chip, .unread-pill, .sent-badge, .thread-pill, .mode-state-token {
   border-radius: 999px; padding: 2px 9px; font-size: 12px; font-weight: 500;
   border: 1px solid var(--border); background: var(--bg-3); color: var(--muted);
 }
-.status-done, .status-waiting, .mode-lifecycle {
+.status-done, .status-waiting {
   background: rgba(47, 208, 122, .09); border-color: rgba(47, 208, 122, .28); color: color-mix(in srgb, var(--green) 80%, var(--text));
 }
-.status-running, .mode-threaded {
+.status-running {
   background: rgba(76, 141, 255, .09); border-color: rgba(76, 141, 255, .30); color: color-mix(in srgb, var(--accent) 82%, var(--text));
 }
 .status-error, .status-aborted {
   background: rgba(255, 107, 107, .09); border-color: rgba(255, 107, 107, .30); color: color-mix(in srgb, var(--red) 82%, var(--text));
 }
-.status-noreply, .mode-legacy {
-  background: rgba(247, 185, 85, .13); border-color: rgba(247, 185, 85, .40); color: var(--orange);
+.status-noreply {
+  background: rgba(247, 185, 85, .09); border-color: rgba(247, 185, 85, .28); color: color-mix(in srgb, var(--orange) 82%, var(--text));
 }
 
 /* ── 气泡 ── */
