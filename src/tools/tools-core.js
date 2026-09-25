@@ -654,7 +654,7 @@ export function buildToolDefs() {
           const knownHint = known.length
             ? `（这张你之前看过并记过：「${known.join('」「')}」——按这个理解回，别再描述画面）`
             : '';
-          return { content: imageParts(`消息 ${args.messageId} 的图片内容${note}${knownHint}（先判断它想表达的情绪/态度：无语呆滞、嘲讽、卖萌、赞同、挑衅、摆烂、委屈…再针对态度回话，不要复述画面）：`, dataUrls) };
+          return { content: imageParts(`消息 ${args.messageId} 的图片内容${note}${knownHint}（若是 2×2 四宫格：那是动图 GIF 按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容。先判断它想表达的情绪/态度：无语呆滞、嘲讽、卖萌、赞同、挑衅、摆烂、委屈…再针对态度回话，不要复述画面）：`, dataUrls) };
         } catch (error) {
           return err(error?.message ?? error);
         }

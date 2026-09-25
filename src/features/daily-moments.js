@@ -1315,7 +1315,7 @@ export class DailyMomentsManager {
           context.inspectedImages.add(imageId);
           return {
             content: [
-              { type: 'text', text: `候选图片 ${imageId}` },
+              { type: 'text', text: `候选图片 ${imageId}（若为 2×2 四宫格：那是动图 GIF 按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容）` },
               { type: 'image_url', image_url: { url: prepared.dataUrl } }
             ]
           };

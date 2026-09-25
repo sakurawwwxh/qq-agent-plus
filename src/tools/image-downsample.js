@@ -154,25 +154,93 @@ export async function fetchOversizedImageAsJpeg(safeUrl, originalError, signal, 
   }
   if (!buffer?.length || !/^image\//i.test(String(contentType || ''))) throw originalError;
   // 动图走帧条（与常规 GIF 路径同一口径，别只给模型一帧）；其他图按尺寸降采样
-  const vf = /^image\/gif/i.test(String(contentType || ''))
-    ? 'fps=2,scale=512:-2,tile=2x2'
-    : "scale='min(2048,iw)':-2";
+  let vf = "scale='min(2048,iw)':-2";
+  if (/^image\/gif/i.test(String(contentType || ''))) {
+    vf = gifStripVf(await countGifFrames(ffmpegPath, buffer, signal));
+  }
   const jpeg = await runFfmpeg(ffmpegPath, buffer, vf, signal);
   return { buffer: jpeg, contentType: 'image/jpeg' };
+}
+
+/** 数 GIF 总帧数：-f null 全量解一遍，取 stderr 末尾 progress 的 frame= N。
+ * 数不出（异常流/超时/中止）返回 null，由调用方退回"取前 4 帧"的保底滤镜。 */
+async function countGifFrames(ffmpegPath, buffer, signal) {
+  signal?.throwIfAborted();
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-ffmpeg-'));
+  const inputPath = path.join(workDir, 'input');
+  const cleanup = () => { try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* 尽力清理 */ } };
+  let child;
+  try {
+    fs.writeFileSync(inputPath, buffer);
+  } catch {
+    cleanup();
+    return null;
+  }
+  return new Promise((resolve) => {
+    let stderr = '';
+    let settled = false;
+    let timer = null;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      try { child.kill(); } catch { /* 已退出 */ }
+      cleanup();
+      resolve(value);
+    };
+    const onAbort = () => settle(null);
+    try {
+      child = spawn(ffmpegPath, [
+        '-hide_banner', '-i', inputPath,
+        '-map', '0:v:0', '-f', 'null', '-'
+      ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch {
+      cleanup();
+      resolve(null);
+      return;
+    }
+    timer = setTimeout(() => settle(null), 30000);
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+    child.on('error', () => settle(null));
+    child.on('close', () => {
+      const matches = [...stderr.matchAll(/frame=\s*(\d+)/g)];
+      const total = matches.length ? parseInt(matches[matches.length - 1][1], 10) : 0;
+      settle(total > 0 ? total : null);
+    });
+  });
+}
+
+/**
+ * GIF 帧条滤镜：按帧序号均匀采样 4 帧拼 2x2，tpad 克隆尾帧保证不足 4 帧也满格。
+ * 旧口径 fps=2 按时间轴采样，行为完全由时长决定：≤0.2s 采 0 帧整单失败、
+ * 0.3~1.9s 采 1~3 帧 tile 补黑格、≥2s 只见开头 1.5s——本机与服务器双实测确认。
+ * 帧序号步长对帧率/时长免疫；数不出总帧数时退回"前 4 帧 + 克隆补格"，保底无黑格。
+ */
+function gifStripVf(frameCount) {
+  const step = frameCount && frameCount > 4 ? Math.ceil(frameCount / 4) : 1;
+  const select = step > 1 ? `select=not(mod(n\\,${step})),` : '';
+  return `${select}scale=512:-2,tpad=stop_mode=clone:stop=3,tile=2x2`;
 }
 
 /**
  * GIF → JPEG 帧条（Issue 反馈：模型读不了 GIF——主流视觉网关不接受
  * image/gif，且动图的情绪信息在动作里，单帧会丢）。
- * 做法：按每秒 2 帧采样最多 4 帧，拼成 2x2 帧条输出单张 JPEG，视觉模型
- * 一次就能看到动作走向；透明背景按 ffmpeg 默认合成（黑底）。
+ * 做法：先数总帧数，再按帧序号均匀采样 4 帧拼成 2x2 帧条输出单张 JPEG
+ * （gifStripVf）；透明背景按 ffmpeg 默认合成（黑底）。
  * 返回 JPEG Buffer；ffmpeg 缺失或转换失败返回 null，由调用方回退原始 GIF。
  */
 export async function convertGifToStillStrip(buffer, signal) {
   const ffmpegPath = await resolveFfmpeg();
   if (!ffmpegPath) return null;
   try {
-    const jpeg = await runFfmpeg(ffmpegPath, buffer, 'fps=2,scale=512:-2,tile=2x2', signal);
+    const frameCount = await countGifFrames(ffmpegPath, buffer, signal);
+    const jpeg = await runFfmpeg(ffmpegPath, buffer, gifStripVf(frameCount), signal);
     if (!jpeg?.length) return null;
     return jpeg;
   } catch {
