@@ -8,6 +8,20 @@ refreshStatus = async function refreshStatus() {
   try {
     state.status = await api('/api/status');
     const s = state.status;
+    // 前端构建戳变了 → 服务端已更新，提示刷新。
+    // 控制台是单页应用：部署只换服务器上的文件，已打开的页面还在跑旧 JS/CSS，
+    // 此前只能靠人记得按 F5（2026-09-26 用户反馈"服务器上的没变"就是这么来的）。
+    if (s.uiBuild) {
+      if (!state.uiBuildAtLoad) state.uiBuildAtLoad = s.uiBuild;
+      else if (state.uiBuildAtLoad !== s.uiBuild && !document.querySelector('#ui-build-banner')) {
+        const banner = document.createElement('button');
+        banner.id = 'ui-build-banner';
+        banner.type = 'button';
+        banner.textContent = '控制台已更新 · 点击刷新';
+        banner.addEventListener('click', () => location.reload());
+        document.body.appendChild(banner);
+      }
+    }
     const dot = $('#onebot-dot');
     const label = $('#onebot-label');
     dot.className = 'dot ' + (s.onebot.connected ? 'dot-on' : (s.onebot.everConnected ? 'dot-wait' : 'dot-off'));

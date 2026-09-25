@@ -798,6 +798,15 @@ html.boot-show .loading-overlay { opacity: 1; }
 .model-rows-table input { padding: 8px 10px; font-size: 12.5px; }
 .model-rows-table th { padding: 6px 8px; }
 .model-rows-table td { padding: 6px 8px; }
+/* 前端构建戳变了时的刷新提示（部署后单页应用不会自己换新前端） */
+#ui-build-banner {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 9999; cursor: pointer;
+  border: 1px solid var(--accent); border-radius: 999px;
+  background: var(--bg-2); color: var(--accent);
+  font-size: 12.5px; padding: 6px 14px; box-shadow: var(--shadow-md);
+}
+#ui-build-banner:hover { background: var(--bg-3); }
 @media (max-width: 600px) {
   /* 移动端：状态 pills 允许整段换行显示，不再 OneB…/模型：dee… 截断 */
   .top-status > .muted { white-space: normal; overflow: visible; text-overflow: clip; }

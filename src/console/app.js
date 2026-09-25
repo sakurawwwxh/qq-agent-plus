@@ -61,6 +61,21 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.resolve(__dirname, '..', '..', 'ui');
 
+// 前端构建戳：进程启动时按 ui/ 关键文件的体积+修改时间算一次。
+// 用途：/api/status 带上它，前端轮询发现戳变了就提示"控制台已更新，点此刷新"
+// —— 控制台是单页应用，部署不会自动替换已打开的页面，此前只能靠人记得按 F5。
+function uiBuildStamp() {
+  return ['index.html', 'app.js', 'style.css', 'stable-features.js', 'status-refresh.js', 'auto-update-network.js']
+    .map((name) => {
+      try {
+        const s = fs.statSync(path.join(UI_DIR, name));
+        return `${name}:${s.size}:${Math.round(s.mtimeMs)}`;
+      } catch { return `${name}:missing`; }
+    })
+    .join('|');
+}
+const UI_BUILD = uiBuildStamp();
+
 // ── 白名单判断（移植自原版 allowed()） ───────────────────────────────────
 function allowed(kind, id, cfg) {
   const s = String(id);
@@ -1522,6 +1537,8 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
           cost,
           cacheHitRate: totals.cacheHitRate,
           webSearchCount: usage.webSearchCount || 0,
+          // 前端构建戳：轮询时发现它变了 → 前端提示"控制台已更新，点击刷新"
+          uiBuild: UI_BUILD,
           // 省 Token 模式：模式 + 每项的"用户值 / 生效值"（设置页渲染用）
           tokenSaver,
           ...(cfgNow.timeControl?.enabled ? {
@@ -3081,7 +3098,14 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
         const data = fs.readFileSync(fullPath);
         const ext = path.extname(fullPath);
         const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
-        res.writeHead(200, { 'content-type': types[ext] ?? 'application/octet-stream', 'cache-control': 'no-cache' });
+        const stat = fs.statSync(fullPath);
+        res.writeHead(200, {
+          'content-type': types[ext] ?? 'application/octet-stream',
+          // no-cache = 每次使用前必须回源校验；带 ETag/Last-Modified 让未变时走 304
+          'cache-control': 'no-cache',
+          etag: `W/"${stat.size.toString(16)}-${Math.round(stat.mtimeMs).toString(16)}"`,
+          'last-modified': stat.mtime.toUTCString()
+        });
         res.end(data);
         return;
       } catch {
