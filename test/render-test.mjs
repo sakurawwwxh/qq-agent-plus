@@ -982,7 +982,10 @@ try {
   const installedHtml = ctx.renderAsrSection({
     ...cfg, asr: { ...cfg.asr, provider: 'local', localBinResolved: '/x/whisper-cli', localModelResolved: '/x/ggml-small.bin' }
   });
-  const choiceOk = notInstalledHtml.includes('两种用法二选一')
+  const choiceOk = /id="asr-install-field" style=""/.test(notInstalledHtml)          // 本机支：显示
+    && /id="asr-install-field" style="display:none"/.test(openaiHtml)                 // API Key 支：不显示
+    && /class="btn btn-primary btn-small" id="asr-install-btn"/.test(notInstalledHtml) // 强调色按钮
+    && notInstalledHtml.includes('两种用法二选一')
     && notInstalledHtml.includes('免费 · 本机转写') && notInstalledHtml.includes('API Key · 火山引擎')
     && /id="asr-install-btn"[^>]*>安装本机转写（免费）</.test(notInstalledHtml)
     && notInstalledHtml.includes('也可以改用上面两种 API Key 服务')

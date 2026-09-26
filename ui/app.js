@@ -6653,8 +6653,8 @@ function renderAsrSection(c) {
       当前会自动用：<code>${esc(c.asr?.localBinResolved || '（还没找到可执行文件）')}</code>
       ＋ <code>${esc(c.asr?.localModelResolved || '（还没找到模型文件）')}</code>
     </div>
-    <div class="field" id="asr-install-field">
-      <button class="btn btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
+    <div class="field" id="asr-install-field" style="${hide('local')}">
+      <button class="btn btn-primary btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
       <span id="asr-install-hint" class="muted">${localInstalled
         ? '已装好，无需再装。换模型可以重跑安装并选 tiny / base / small。'
         : '约 466MB（small 模型）+ 几分钟构建；装完自动生效，不用重启。也可以改用上面两种 API Key 服务。'}</span>
@@ -9211,10 +9211,13 @@ function bindSettingsEvents(c) {
       const localFields = $('#asr-local-fields');
       const keyField = $('#asr-key-field');
       const presetField = $('#asr-preset-field');
+      const installField = $('#asr-install-field');
       if (openaiFields) openaiFields.style.display = prov === 'openai' ? '' : 'none';
       if (localFields) localFields.style.display = prov === 'local' ? '' : 'none';
       if (keyField) keyField.style.display = prov === 'local' ? 'none' : '';
       if (presetField) presetField.style.display = prov === 'openai' ? '' : 'none';
+      // 安装按钮只属于"免费·本机转写"这一支：选了 API Key 服务就不该看到它
+      if (installField) installField.style.display = prov === 'local' ? '' : 'none';
     };
     if (provSel) provSel.addEventListener('change', syncAsrFields);
     syncAsrFields();
