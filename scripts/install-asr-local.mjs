@@ -201,7 +201,8 @@ async function main() {
   // 这是"装完了却还没生效"最常见的坑。检测到受管安装就明确告知，--restart 时直接代办。
   const deployed = fs.existsSync(path.join(ROOT, '.deployment.json'));
   if (!opts.writeConfig) {
-    console.log('· 装好了。把上面两个路径填进控制台「设置 → 语音转文字」后保存即可生效。');
+    // 调用方（例如控制台的一键安装）自己会写配置并即时生效，这里别劝用户去手动填
+    console.log('· 装好了（未写配置：由调用方处理路径）。');
   } else if (!deployed) {
     console.log('· 装好了。重启服务（或在控制台保存一次设置）后生效。');
   } else if (opts.restart) {
