@@ -926,8 +926,16 @@ try {
     && /id="asr-key-field" style=""/.test(openaiHtml)
     && /id="asr-openai-fields" style=""/.test(openaiHtml)
     && /id="asr-local-fields" style="display:none"/.test(openaiHtml)
-    // 免费选项写在 OpenAI 兼容那支的说明里
-    && openaiHtml.includes('whisper-large-v3-turbo') && openaiHtml.includes('硅基流动');
+    // 免费选项：说明里点名硅基流动的免费模型，预设下拉能把地址+模型填好
+    && openaiHtml.includes('FunAudioLLM/SenseVoiceSmall') && openaiHtml.includes('官方价目表标"免费"')
+    && /<select id="cfg-asr-preset">/.test(openaiHtml)
+    && /<option value="siliconflow"/.test(openaiHtml)
+    && /<option value="groq"/.test(openaiHtml)
+    && /<option value="custom" selected>/.test(openaiHtml)
+    // 已选硅基流动那套地址+模型时，预设要认出来是它（反查逻辑）
+    && /<option value="siliconflow" selected>/.test(ctx.renderAsrSection({
+      ...cfg, asr: { ...cfg.asr, provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1/', model: 'FunAudioLLM/SenseVoiceSmall' }
+    }));
   providerOk ? pass++ : fail++;
   console.log('  ' + (providerOk ? 'OK   ' : 'FAIL ') + '设置页：三家识别服务可选（本机不要 Key、OpenAI 兼容填地址+模型）');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')

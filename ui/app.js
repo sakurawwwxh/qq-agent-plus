@@ -6569,12 +6569,14 @@ function renderAsrSection(c) {
   const ready = provider === 'local' ? localReady : keyReady;
   const providerHint = {
     volc: '火山引擎语音技术的<strong>大模型录音识别（Seed-ASR）</strong>，按量计费；音频会上传到火山做识别。',
-    openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行：填服务地址（到 <code>/v1</code> 那层）与模型名即可 —— '
-      + '例如 Groq（<code>https://api.groq.com/openai/v1</code>，模型 <code>whisper-large-v3-turbo</code>，有免费额度）、'
-      + '硅基流动（<code>https://api.siliconflow.cn/v1</code>，中文可试 <code>FunAudioLLM/SenseVoiceSmall</code>）、'
-      + '或自建的 faster-whisper 网关。按各家规则计费或免费。',
+    openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行 —— 下面选一个预设就自动填好地址与模型，'
+      + '再粘一个该服务的 Key 即可。免费的推荐<b>硅基流动</b>（<code>FunAudioLLM/SenseVoiceSmall</code>，'
+      + '官方价目表标"免费"、国内可直连）；<b>Groq</b> 有免费额度（约每天 2000 次 / 8 小时音频，单文件 25MB）。'
+      + '也可以填自建的 faster-whisper 网关。按各家当期政策计费。',
     local: '本机 <strong>whisper.cpp</strong>：不联网、不需要 Key、没有按量费用，音频不出机器。'
-      + '代价是要在这台机器上装一次可执行文件与模型（<code>ggml-*.bin</code>），CPU 转写比托管服务慢，短语音够用。'
+      + '代价是要自己装一次可执行文件与模型（<code>ggml-small.bin</code> 约 466MB，中文建议从这个起步；'
+      + '<code>ggml-large-v3</code> 准但慢得多）。CPU 转写大约 1.5~2 倍实时（2 核机器上 30 秒语音约 15~25 秒），'
+      + '长音频会慢到不实用 —— 那种情况建议用托管服务。'
   }[provider];
   // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
   const status = ready
@@ -6600,6 +6602,11 @@ function renderAsrSection(c) {
         <option value="local" ${provider === 'local' ? 'selected' : ''}>本机 whisper.cpp（不联网、不要 Key）</option>
       </select>
       <div class="hint" id="cfg-asr-provider-hint">${providerHint}</div>
+    </div>
+
+    <div class="field" id="asr-preset-field" style="${hide('openai')}">
+      <label for="cfg-asr-preset">服务预设</label>
+      <select id="cfg-asr-preset">${asrPresetOptions(c.asr?.baseUrl, c.asr?.model)}</select>
     </div>
 
     <div class="field-row" id="asr-openai-fields" style="${hide('openai')}">
@@ -8441,6 +8448,27 @@ function stickerMaxSelectOptions(current) {
   return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 条</option>`).join('');
 }
 
+// OpenAI 兼容那支的服务预设：选一下就把地址/模型填好，用户只需粘一个（免费）Key。
+// 事实核查于 2026-09-26：硅基流动的 FunAudioLLM/SenseVoiceSmall 在官方价目表上标"免费"、
+// 国内可直连；Groq 有免费额度（每分钟 20 次 / 每天 2000 次 / 每天 8 小时音频，单文件 25MB）。
+// 免费政策是会变的，所以这里只当"帮你填好默认值"，填完仍可手改。
+const ASR_PRESETS = [
+  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall' },
+  { id: 'groq', label: 'Groq（有免费额度）', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo' },
+  { id: 'custom', label: '自定义（自建 / 其它服务）', baseUrl: '', model: '' }
+];
+/** 按当前填的地址+模型反查是哪个预设（手改过就落到"自定义"）。 */
+function asrPresetOf(baseUrl, model) {
+  const b = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const m = String(model || '').trim();
+  const hit = ASR_PRESETS.find((p) => p.id !== 'custom' && p.baseUrl === b && p.model === m);
+  return hit ? hit.id : 'custom';
+}
+function asrPresetOptions(baseUrl, model) {
+  const current = asrPresetOf(baseUrl, model);
+  return ASR_PRESETS.map((p) => `<option value="${p.id}" ${p.id === current ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
+}
+
 // 语音转文字每小时上限的档位：与清单条数同一套写法（固定档位 + 保留存量自定义值）。
 // 与后端 config.asrMaxPerHour 的口径一致：非正数/坏值按 12，上限 200。
 const ASR_MAX_CHOICES = [5, 10, 20, 40];
@@ -9144,12 +9172,24 @@ function bindSettingsEvents(c) {
       const openaiFields = $('#asr-openai-fields');
       const localFields = $('#asr-local-fields');
       const keyField = $('#asr-key-field');
+      const presetField = $('#asr-preset-field');
       if (openaiFields) openaiFields.style.display = prov === 'openai' ? '' : 'none';
       if (localFields) localFields.style.display = prov === 'local' ? '' : 'none';
       if (keyField) keyField.style.display = prov === 'local' ? 'none' : '';
+      if (presetField) presetField.style.display = prov === 'openai' ? '' : 'none';
     };
     if (provSel) provSel.addEventListener('change', syncAsrFields);
     syncAsrFields();
+    // 选预设 = 帮你把地址与模型填好（仍可手改；改了就显示"自定义"）
+    const presetSel = $('#cfg-asr-preset');
+    if (presetSel) presetSel.addEventListener('change', () => {
+      const hit = ASR_PRESETS.find((p) => p.id === presetSel.value);
+      if (!hit) return;
+      const bu = $('#cfg-asr-baseurl');
+      const md = $('#cfg-asr-model');
+      if (bu) bu.value = hit.baseUrl;
+      if (md) md.value = hit.model;
+    });
   }
 
   if ((state.settingsSection || 'api') === 'qzone-interactions') {

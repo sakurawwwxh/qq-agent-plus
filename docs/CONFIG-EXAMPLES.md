@@ -120,10 +120,18 @@
   | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
   | `local` | 本机 **whisper.cpp**：不联网、不要 Key、音频不出机器、无按量费用 | 装好二进制与模型，填 `localModel`（`localBin` 可留空，按 `whisper-cli` → `whisper-cpp` → `main` 找） |
 
-- 免费选项（在 `openai` 那一支填即可，具体额度以各家当期政策为准）：
-  - **Groq**：`baseUrl=https://api.groq.com/openai/v1`，`model=whisper-large-v3-turbo`，有免费额度；
-  - **硅基流动（SiliconFlow）**：`baseUrl=https://api.siliconflow.cn/v1`，中文可试 `model=FunAudioLLM/SenseVoiceSmall`，有免费额度；
-  - **完全不想用托管服务**：选 `local`，一次装好之后永久免费、离线可用（CPU 转写，短语音够用）。
+- **免费选项**（都走 `openai` 那支；控制台里选一下「服务预设」就会把地址与模型填好，你只需粘一个该服务的 Key。
+  免费政策是会变的，下面的事实核查于 2026-09-26，用之前建议看一眼各家价目表）：
+
+  | 服务 | baseUrl | model | 免费情况 |
+  | --- | --- | --- | --- |
+  | **硅基流动**（推荐，国内可直连） | `https://api.siliconflow.cn/v1` | `FunAudioLLM/SenseVoiceSmall` | 官方价目表标**免费**；单文件 ≤1 小时 / ≤50MB |
+  | Groq | `https://api.groq.com/openai/v1` | `whisper-large-v3-turbo` | 有免费额度（约每分钟 20 次、每天 2000 次、每天 8 小时音频）；单文件 25MB；国内可否直连未确认 |
+  | 自建 | 你自己的网关 | 自定 | 免费（前提是你有机器），faster-whisper 等 |
+
+  **没有任何托管服务能做到"零注册零 Key"** —— 想完全不注册账号，只有 `local`（本机 whisper.cpp）：
+  一次装好后永久免费、离线可用，但 CPU 转写大约 1.5~2 倍实时（2 核机器上 30 秒语音约 15~25 秒），
+  长音频会很慢；中文建议 `ggml-small.bin`（约 466MB）起步。
 - 没配齐时这项**完全不生效**：工具不会注入给模型、不会产生任何调用与费用，提示词照旧说"听不了语音"。
 - `language` 可选（`zh` / `en`…），留空由服务自己判；`maxPerHour` 是每小时最多转写几次的硬闸门
   （跨会话共享，默认 12，非正数按 12 处理）。
