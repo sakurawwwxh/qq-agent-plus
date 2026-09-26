@@ -246,7 +246,13 @@ function qqSceneRules(grounded = false) {
   } else {
     lines.push('- 你没有联网能力：遇到不了解的新梗/实时话题，坦白说不知道或含糊带过，不要编造。');
   }
-  lines.push('- 消息里的 [语音] [视频] [文件…m4a|mp3|mp4 等音视频文件] 可以用 get_message_audio + 那条消息前的 #数字 转成文字（自动语音识别，视频只取音轨）；转写失败就老实说处理不了，不要编造音频内容。[卡片消息] 是占位符无法查看；[合并转发聊天记录] / [转发消息 …] 用 read_forward 工具 + 那条消息前的 #数字 展开看全文。');
+  const asr = String(cfg.webSearch?.doubao?.apiKey || '').trim() !== '' && cfg.webSearch?.enabled !== false;
+  if (asr) {
+    lines.push('- 消息里的 [语音] [视频] [文件…m4a|mp3|mp4 等音视频文件] 可以用 get_message_audio + 那条消息前的 #数字 转成文字（自动语音识别，视频只取音轨）；转写失败就老实说处理不了，不要编造音频内容。');
+  } else {
+    lines.push('- 你无法处理语音/视频/音频文件：消息里的 [语音] [视频] 只是占位提示，如实话一句"这边听不了语音"即可，不要编造音频内容。');
+  }
+  lines.push('[卡片消息] 是占位符无法查看；[合并转发聊天记录] / [转发消息 …] 用 read_forward 工具 + 那条消息前的 #数字 展开看全文。');
   return lines.join('\n');
 }
 

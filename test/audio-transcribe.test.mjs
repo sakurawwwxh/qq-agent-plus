@@ -10,7 +10,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audio-transcribe-'));
 process.env.QQ_AGENT_DATA_DIR = dir;
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
-const { currentMessageAudioUrl } = await import('../src/tools/audio-transcribe.js');
+const { currentMessageAudioUrl, ffmpegToPcm } = await import('../src/tools/audio-transcribe.js');
 const { extractMediaFromSegments } = await import('../src/onebot/onebot.js');
 
 it('extractMediaFromSegments 提取 record/video/音频文件段为 audio', () => {
@@ -52,4 +52,27 @@ it('getMsg 失败时退到 entry.media 存档', async () => {
 it('无音频内容返回 null', async () => {
   const target = await currentMessageAudioUrl({ onebot: undefined }, { mid: null, media: [] });
   assert.equal(target, null);
+});
+
+// 真 ffmpeg 链路：生成 2 秒 440Hz wav → 转 16k PCM，断言有产出且采样率正确。
+// 这是评审指出的「测试全绿但 ffmpeg 链路是死的」的覆盖补丁。
+it('ffmpegToPcm 真实转换：wav 输入产出 16k mono PCM', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const wavPath = path.join(dir, 'tone.wav');
+  try {
+    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+      '-ar', '44100', '-ac', '2', wavPath]);
+  } catch {
+    return; // CI 环境没有 ffmpeg：跳过（上游 CI 有 Windows/Ubuntu 两种，无 ffmpeg 环境不挂测试）
+  }
+  const pcm = await ffmpegToPcm(wavPath);
+  // raw s16le 无文件头：2 秒 × 16000 采样 × 1 声道 × 2 字节 = 64000 字节。
+  // 字节数精确匹配即证明采样率/声道/位深全部正确（ffprobe 探不了无头 PCM）。
+  assert.equal(pcm.length, 64000);
+});
+
+it('ffmpegToPcm 无效输入报错而不是挂起', async () => {
+  const bad = path.join(dir, 'not-audio.bin');
+  fs.writeFileSync(bad, Buffer.from('this is not audio content at all'));
+  await assert.rejects(() => ffmpegToPcm(bad, { timeoutMs: 15000 }), /音频转换失败/);
 });

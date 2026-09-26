@@ -5,9 +5,12 @@ import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.mjs';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
-const ASR_MAX_PCM_SECONDS = 60 * 60;       // 最长转 1 小时
+// ponytail: PCM 全量进内存，1h≈1.9GB 会 OOM 小内存 VPS——先压到 15 分钟（≈576MB），
+// 更长音频再改边转边喂（流式给 Seed-ASR）。
+const ASR_MAX_PCM_SECONDS = 60 * 15;
 
-function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000 } = {}) {
+/** ffmpeg 转 16k mono s16le PCM（文件路径输入，导出仅供测试）。 */
+export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = {}) {
   // ⚠️ 必须用文件路径而不是 pipe:0：m4a/mp4 的 moov atom 常在文件尾部，
   // 管道输入无法 seek，demux 直接失败（moov atom not found / partial file）。
   return new Promise((resolve, reject) => {
@@ -20,24 +23,28 @@ function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000 } = {}) {
     const chunks = [];
     let size = 0;
     let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    let settled = false;
+    const fail = (e) => { if (!settled) { settled = true; clearTimeout(timer); try { child.kill('SIGKILL'); } catch { /* noop */ } reject(e); } };
+    const timer = setTimeout(() => fail(new Error('音频转换超时')), timeoutMs);
+    const onAbort = () => fail(signal?.reason ?? new Error('已中止'));
+    signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (c) => {
       size += c.length;
       if (size > ASR_MAX_PCM_SECONDS * 32000) { // 16k*2byte
-        child.kill('SIGKILL');
-        return reject(new Error('音频过长（超过 1 小时），暂不支持'));
+        return fail(new Error(`音频过长（超过 ${ASR_MAX_PCM_SECONDS / 60} 分钟），暂不支持`));
       }
       chunks.push(c);
     });
     child.stderr.on('data', (c) => { stderr = (stderr + c).slice(-500); });
-    child.on('error', (e) => { clearTimeout(timer); reject(new Error(`ffmpeg 不可用：${e.message}`)); });
+    child.on('error', (e) => fail(new Error(`ffmpeg 不可用：${e.message}`)));
     child.on('close', (code) => {
+      signal?.removeEventListener('abort', onAbort);
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       if (code === 0 && size > 0) return resolve(Buffer.concat(chunks));
       reject(new Error(`音频转换失败（ffmpeg ${code}）：${stderr.trim().slice(-200) || '无输出'}`));
     });
-    child.stdin.on('error', () => { /* EPIPE 时由 close 收尾 */ });
-    child.stdin.end(buffer);
   });
 }
 
