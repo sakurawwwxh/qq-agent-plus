@@ -6659,7 +6659,7 @@ function renderAsrSection(c) {
           <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.siliconflow.cn/v1" /></div>
         <div class="field"><label for="cfg-asr-model">模型</label>
           <div style="display:flex;gap:8px">
-            <input type="text" id="cfg-asr-model" value="${esc(c.asr?.model || '')}" placeholder="点右侧按钮从官网拉取" style="flex:1" />
+            <input type="text" id="cfg-asr-model" value="${esc(c.asr?.model || '')}" placeholder="点右侧按钮拉语音模型，或手填" style="flex:1" />
             <button class="btn btn-small" id="asr-fetch-models-btn" type="button">获取模型列表</button>
           </div>
           <select id="cfg-asr-model-pick" style="display:none;margin-top:6px"></select>
@@ -9256,7 +9256,11 @@ function bindSettingsEvents(c) {
       const pick = $('#cfg-asr-model-pick');
       const url = $('#cfg-asr-baseurl')?.value?.trim() || '';
       if (!url) {
-        if (hintEl) { hintEl.style.display = ''; hintEl.textContent = '先选服务预设（或填服务地址），再拉模型列表。'; }
+        if (hintEl) {
+          hintEl.style.display = '';
+          hintEl.textContent = '这一家（如火山 Seed-ASR）不用选模型，也就没有列表可拉；'
+            + '只有 OpenAI 兼容的服务才需要：先在「服务预设」里选硅基流动 / Groq，或自己填服务地址。';
+        }
         return;
       }
       fetchModelsBtn.disabled = true;
@@ -9268,21 +9272,28 @@ function bindSettingsEvents(c) {
           body: JSON.stringify({ baseUrl: url, apiKey: submitted === '******' ? '' : submitted })
         });
         const models = res.models || [];
-        if (!models.length) { if (hintEl) hintEl.textContent = '这家没有返回模型列表。'; return; }
+        if (!models.length) {
+          if (hintEl) hintEl.textContent = '这家没有返回任何模型（列表是空的）。';
+          return;
+        }
         if (pick) {
           pick.style.display = '';
           pick.innerHTML = '<option value="">（选择一个模型）</option>'
             + models.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
           pick.onchange = () => { const field = $('#cfg-asr-model'); if (field && pick.value) field.value = pick.value; };
         }
-        const likely = res.asrLikely || [];
         if (hintEl) {
-          hintEl.textContent = likely.length
-            ? `共 ${models.length} 个模型；能转写的排在前面：${likely.slice(0, 6).join('、')}。选一个即填入上面的模型框。`
-            : `共 ${models.length} 个模型（没看出明显的转写模型名，挑一个试试）。`;
+          hintEl.textContent = res.speechOnly
+            ? `这家有 ${res.speechCount} 个语音模型（共 ${res.total} 个模型）：${models.slice(0, 8).join('、')}${models.length > 8 ? ' …' : ''}。选一个即填入上面的模型框。`
+            : `这家没认出语音模型（共 ${res.total} 个），已把全部列出来；挑一个能转写的填进去，或直接手填模型名。`;
         }
       } catch (error) {
-        if (hintEl) hintEl.textContent = `拉取失败：${String(error?.message ?? error)}`;
+        const msg = String(error?.message ?? error);
+        if (hintEl) {
+          hintEl.textContent = /401|403|invalid|Forbidden|Token/i.test(msg)
+            ? `服务商拒绝了这次请求（${msg}）—— 多数家要先有 Key 才给列模型：先把 Key 填进下面的输入框（新 Key 会随这次请求一起发过去），再点一次。`
+            : `拉取失败：${msg}。也可以直接把模型名手填进上面的输入框。`;
+        }
       } finally {
         fetchModelsBtn.disabled = false;
       }
