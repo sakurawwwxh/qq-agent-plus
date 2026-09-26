@@ -250,18 +250,44 @@ export function findWhisperBinSync(cfg = getConfig()) {
  * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索与转写是两套服务/两家供应商都可能，
  * 耦合会让"配没配搜索 Key"决定"能不能转写"（用户明确要求分开）。
  *
- * 另外：配置里的 Key 与"存它时的供应商"绑定（`asr.apiKeyProvider`）。换供应商后不再拿旧 Key 去发请求 ——
- * 否则把火山的 Key 发到 Groq/硅基流动那种事会静默发生（2026-09-26 审查）。环境变量不受此限：
- * 它是部署级的一个值，用户设它就意味着"给我当前配的那个供应商用"。
+ * 另外：配置里的凭据与"存它时的服务"绑定（`asr.apiKeyProvider`，OpenAI 兼容再加 `asr.apiKeyHost`
+ * 这一层主机名）。换服务/换地址后不再拿旧 Key 去发请求 —— 否则把火山的 Key 发到硅基流动、
+ * 把腾讯的 SecretKey 当讯飞 APISecret 这类事都会静默发生（2026-09-26 审查，两处都实测复现）。
+ * 环境变量不受此限：它是部署级的一个值，用户设它就意味着"给我当前配的那个供应商用"。
  */
 export function asrApiKey(cfg = getConfig()) {
   const stored = String(cfg?.asr?.apiKey || '').trim();
-  const storedFor = String(cfg?.asr?.apiKeyProvider || '').trim().toLowerCase();
   if (stored) {
-    if (storedFor && storedFor !== asrProvider(cfg)) return '';
-    return stored;
+    return legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'apiKeyProvider', 'apiKeyHost')
+      ? stored
+      : '';
   }
   return String(process.env.ASR_API_KEY || '').trim();
+}
+
+/** 腾讯云的 SecretId（同 apiKey 的绑定规则）。 */
+export function asrSecretId(cfg = getConfig()) {
+  const stored = String(cfg?.asr?.secretId || '').trim();
+  return legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'secretIdProvider') ? stored : '';
+}
+
+/**
+ * 百度 Secret Key / 腾讯云 SecretKey / 讯飞 APISecret —— 三家共用 `asr.secretKey` 一个字段，
+ * 所以归属必须记清：不记就会把腾讯的 SecretKey 发给百度或讯飞（2026-09-26 审查，实测复现）。
+ */
+export function asrSecretKey(cfg = getConfig()) {
+  const stored = String(cfg?.asr?.secretKey || '').trim();
+  return legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'secretKeyProvider') ? stored : '';
+}
+
+/** 当前配的这家，Key 绑定落在哪个主机上（控制台显示"这把 Key 是哪家的"用；非 OpenAI 兼容为空）。 */
+export function asrKeyHost(cfg = getConfig()) {
+  const stored = String(cfg?.asr?.apiKey || '').trim();
+  if (!stored) return '';
+  const provider = asrProvider(cfg);
+  if (provider !== 'openai') return '';
+  const bound = String(cfg?.asr?.apiKeyHost || '').trim();
+  return bound || legacy.asrEndpointHost(cfg?.asr?.baseUrl);
 }
 
 /** Key 从哪来（控制台显示用）：'config' | 'env' | ''（没配）。 */
@@ -285,11 +311,12 @@ export function asrConfigured(cfg = getConfig()) {
   if (provider === 'aliyun') return asrApiKey(cfg) !== '';                       // 地址/模型有默认值
   if (provider === 'baidu') return asrApiKey(cfg) !== '';                        // Secret Key 可选（老式才要）
   if (provider === 'tencent') {
-    return String(cfg?.asr?.secretId || '').trim() !== '' && String(cfg?.asr?.secretKey || '').trim() !== '';
+    // 只认"为腾讯云存的"那对：同一个 secretKey 字段谁都可能往这填（百度/讯飞也用它）
+    return asrSecretId(cfg) !== '' && asrSecretKey(cfg) !== '';
   }
   if (provider === 'iflytek') {
     return String(cfg?.asr?.appId || '').trim() !== '' && asrApiKey(cfg) !== ''
-      && String(cfg?.asr?.secretKey || '').trim() !== '';
+      && asrSecretKey(cfg) !== '';
   }
   if (provider === 'openai') {
     return asrApiKey(cfg) !== ''

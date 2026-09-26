@@ -123,6 +123,38 @@ test('停服时不留孤儿安装进程（重启后不会出现两个并行的�
   fs.rmSync(slow, { force: true });
 });
 
+test('停服时连"安装脚本拉起的孙进程"一起杀（否则 cmake/make 会继续写构建目录）',
+  { skip: process.platform === 'win32' ? 'Windows 不支持按进程组杀（POSIX 专属行为）' : false },
+  async (t) => {
+    // 上一例只覆盖直接子进程。真实安装脚本是 spawnSync 拉起 git/cmake/make 的：
+    // 只杀包装进程，孙进程会被 init 收养并继续写构建目录，与下一次安装并发（2026-09-26 审查）。
+    const port = await freePort();
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+    cfg.runtime.mode = 'observe';
+    cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+    cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+    updateConfig(cfg);
+    const marker = path.join(root, 'grandchild-done.marker');
+    const installer = path.join(root, 'group-installer.cjs');
+    fs.writeFileSync(installer, `
+      const { spawn } = require('node:child_process');
+      // 孙进程：不该被落下（不 detach，跟安装脚本同一个进程组）
+      spawn(process.execPath, ['-e', "setTimeout(() => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'x'); }, 3000);"], { stdio: 'ignore' });
+      setTimeout(() => {}, 30000);   // 包装进程活着，进程组才有得杀
+    `);
+    const app = createApp({ log: () => {}, asrInstaller: installer });
+    await app.start();
+    const res = await fetch(`http://127.0.0.1:${port}/api/asr/install`, { method: 'POST' });
+    assert.equal(res.status, 202);
+    await new Promise((r) => setTimeout(r, 400));      // 等孙进程真的起来
+    await app.stop();
+    await new Promise((r) => setTimeout(r, 3200));
+    assert.equal(fs.existsSync(marker), false, '孙进程也该被杀掉，不该留下孤儿继续写构建目录');
+    fs.rmSync(installer, { force: true });
+    fs.rmSync(marker, { force: true });
+  });
+
 test('删除本机转写：只删托管目录，配置里指向别处的文件不碰', async (t) => {
   const port = await freePort();
   const cfg = structuredClone(DEFAULT_CONFIG);

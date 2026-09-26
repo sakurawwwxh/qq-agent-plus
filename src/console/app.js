@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { asrApiKey, asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
+import { asrApiKey, asrAvailable, asrConfigured, asrKeyHost, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
 import { customSearch } from '../llm/web-search.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
@@ -191,6 +191,16 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
     try { return fs.existsSync(path.resolve(DATA_DIR, 'asr')); } catch { return false; }
   }
 
+  /**
+   * 杀掉一棵进程树：安装脚本是 detached 起的，进程组里还有它 spawnSync 出来的 git/cmake/make。
+   * 只杀包装进程会留下孤儿继续写构建目录（超时路径与 stop() 都要用它，别再各写一份）。
+   */
+  function killTreeOf(child) {
+    if (!child?.pid) return;
+    try { process.kill(-child.pid, 'SIGKILL'); return; } catch { /* 平台不支持按组杀（如 Windows） */ }
+    try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+  }
+
   /** 目录体积（只用于告诉用户释放了多少，算不出来就算了）。 */
   function dirSizeBytes(dir) {
     let total = 0;
@@ -303,11 +313,7 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
         }
       }
     };
-    const killTree = () => {
-      // detached 起的新进程组：连 cmake/make 一起杀，别留下占着管道与构建目录的孤儿
-      try { process.kill(-child.pid, 'SIGKILL'); return; } catch { /* 平台不支持按组杀（如 Windows） */ }
-      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
-    };
+    const killTree = () => killTreeOf(child);
     const timer = setTimeout(() => {
       killTree();
       pushLine('安装超时（30 分钟），已中止');
@@ -1273,6 +1279,47 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
     if (out.api) out.api.hasKey = out.api.hasApiKey ?? Boolean(String(cfg?.api?.apiKey ?? '').trim());
 
     return out;
+  }
+
+  // ── ASR 的运行时结论 ────────────────────────────────────────────────────
+  /**
+   * /api/config 里 asr 那节附带的"服务端结论"：是否配齐/可用、Key 的来源与归属、
+   * 本机转写实际会用哪个二进制与模型。
+   * GET 与 POST 必须走同一处：只挂给 GET 的话，保存接口回给界面的是"打开设置页那一刻"的
+   * 陈旧副本 —— 刚存好合法配置却显示"没配好"，该报警时（换了服务/地址）又不报警（2026-09-26 审查）。
+   */
+  function asrStatusOf(cfgNow) {
+    return {
+      configured: asrConfigured(cfgNow),
+      available: asrAvailable(cfgNow),
+      keySource: asrKeySource(cfgNow),
+      // 归属：界面据此判断"这把 Key/Secret 是不是当前这家的"，不匹配就不能显示成"已填"
+      keyProvider: String(cfgNow?.asr?.apiKeyProvider || ''),
+      keyHost: asrKeyHost(cfgNow),
+      keyUsable: asrApiKey(cfgNow) !== '',
+      secretIdProvider: String(cfgNow?.asr?.secretIdProvider || ''),
+      secretIdUsable: asrSecretId(cfgNow) !== '',
+      secretKeyProvider: String(cfgNow?.asr?.secretKeyProvider || ''),
+      secretKeyUsable: asrSecretKey(cfgNow) !== '',
+      // 本机转写用哪个二进制/模型（配置>环境变量>自动找到）——让"装没装、会用哪个"看得见
+      localBinResolved: asrLocalBin(cfgNow),
+      localModelResolved: asrLocalModel(cfgNow),
+      // 托管目录里还有东西吗？删除按钮只看这个 —— 避免"本机可用但没有任何托管文件"
+      // （例如 whisper-cli 装在 PATH 里）时按钮点了什么也没删、还退不出去（审查意见）
+      localManagedExists: managedAsrExists(),
+      // "装好了没"要真去验：配置里写得再像也不等于文件在（审查意见）。
+      // 界面拿这个决定按钮文案，跟 asrAvailable() 的口径保持一致。
+      localInstalled: Boolean(findWhisperBinSync(cfgNow))
+        && String(asrLocalModel(cfgNow)) !== ''
+        && (() => { try { return fs.existsSync(asrLocalModel(cfgNow)); } catch { return false; } })()
+    };
+  }
+
+  /** 脱敏后的配置 + asr 的运行时结论（GET 与 POST 共用，界面拿到的永远是最新结论）。 */
+  function safeConfigWithAsrStatus(cfgNow) {
+    const safe = sanitizeConfig(cfgNow);
+    safe.asr = { ...(safe.asr || {}), ...asrStatusOf(cfgNow) };
+    return safe;
   }
 
   // ── 明文密钥端点守卫 ────────────────────────────────────────────────────
@@ -2274,27 +2321,7 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
         // 不把任何真实 Key 暴露给前端：递归清空所有密钥类字段，用 hasKey 表示"有密钥"。
         // 注意：不要用手工逐字段列举——之前漏了 5 个搜索 Key 和 2 个 SnowLuma 令牌，
         // 加新 provider 时还会继续漏。这里按字段名模式统一处理。
-        const safe = sanitizeConfig(cfgNow);
-        // ASR 是否"配齐了"由服务端判定（前端自己拼一套会出现"界面说在生效、后端没注入"的
-        // 矛盾，2026-09-26 审查）：附上权威结论与 Key 来源，界面只负责显示。
-        safe.asr = {
-          ...(safe.asr || {}),
-          configured: asrConfigured(cfgNow),
-          available: asrAvailable(cfgNow),
-          keySource: asrKeySource(cfgNow),
-          keyProvider: String(cfgNow.asr?.apiKeyProvider || ''),
-          // 本机转写用哪个二进制/模型（配置>环境变量>自动找到）——让"装没装、会用哪个"看得见
-          localBinResolved: asrLocalBin(cfgNow),
-          localModelResolved: asrLocalModel(cfgNow),
-          // 托管目录里还有东西吗？删除按钮只看这个 —— 避免"本机可用但没有任何托管文件"
-          // （例如 whisper-cli 装在 PATH 里）时按钮点了什么也没删、还退不出去（审查意见）
-          localManagedExists: managedAsrExists(),
-          // "装好了没"要真去验：配置里写得再像也不等于文件在（审查意见）。
-          // 界面拿这个决定按钮文案，跟 asrAvailable() 的口径保持一致。
-          localInstalled: Boolean(findWhisperBinSync(cfgNow))
-            && String(asrLocalModel(cfgNow)) !== ''
-            && (() => { try { return fs.existsSync(asrLocalModel(cfgNow)); } catch { return false; } })()
-        };
+        const safe = safeConfigWithAsrStatus(cfgNow);
         return json(res, 200, safe);
       }
 
@@ -2351,7 +2378,7 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
             return json(res, 500, {
               ok: false,
               error: `异常处理实验启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-              config: sanitizeConfig(reverted)
+              config: safeConfigWithAsrStatus(reverted)
             });
           }
         }
@@ -2379,7 +2406,7 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
             return json(res, 500, {
               ok: false,
               error: `统一身份库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-              config: sanitizeConfig(reverted)
+              config: safeConfigWithAsrStatus(reverted)
             });
           }
         }
@@ -2393,14 +2420,14 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
             return json(res, 500, {
               ok: false,
               error: `黑话语料库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-              config: sanitizeConfig(reverted)
+              config: safeConfigWithAsrStatus(reverted)
             });
           }
         }
         initPriceFeed(next.api?.priceRemoteUrl || '');   // 远程价格表 URL 可能改了（内部幂等）
         initChannelPrices(next.api?.channelPriceFeeds || []);   // 渠道价目表同理
         emit('status', { configUpdated: true });
-        return json(res, 200, { ok: true, config: sanitizeConfig(next) });
+        return json(res, 200, { ok: true, config: safeConfigWithAsrStatus(next) });
       }
 
       if (pathname === '/api/daily-moments/status' && method === 'GET') {
@@ -3447,9 +3474,16 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
   }
 
   async function stop() {
-    // 安装脚本别被落下：进程重启/停服时它是孤儿进程，会一直占着构建目录
-    try { asrChild?.kill('SIGKILL'); } catch { /* 已退出 */ }
-    asrChild = null;
+    // 安装脚本别被落下：进程重启/停服时它是孤儿进程，会一直占着构建目录。
+    // 只 kill 包装进程不够：它 spawnSync 出来的 cmake/make 会活下来继续写构建目录、与下一次安装并发
+    // （超时那条路径早就按进程组杀了，这里同款处理，2026-09-26 审查）。
+    if (asrChild) {
+      const child = asrChild;
+      asrChild = null;                 // 先摘掉：被杀的 child 的 close 事件不该再改状态
+      asrInstall.running = false;      // 同进程重启时别把"正在安装"的标记带到下一条命
+      asrInstall.phase = '已中止（服务停止）';
+      killTreeOf(child);
+    }
     clearTimeout(timeControlTimer);
     releaseTimeControl();
     dailyMoments.stop();

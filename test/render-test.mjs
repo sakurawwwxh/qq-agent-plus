@@ -980,22 +980,45 @@ try {
   roundTripOk ? pass++ : fail++;
   console.log('  ' + (roundTripOk ? 'OK   ' : 'FAIL ') + '设置页：配置回读时能认出是哪家预设（含阿里/腾讯/讯飞/百度）');
 
-  // 状态以服务端判定为准，且把"换供应商要重填 Key / 缺地址模型 / Key 来自环境变量"讲清
+  // 状态以服务端判定为准，且把"换供应商/换地址要重填凭据 / 缺地址模型 / Key 来自环境变量"讲清
   const needKeyHtml = ctx.renderAsrSection({
-    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'volc', baseUrl: '', model: '' }
+    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'volc', keyUsable: false, baseUrl: '', model: '' }
   });
   const needAddrHtml = ctx.renderAsrSection({
-    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'openai', baseUrl: '', model: '' }
+    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'openai', keyUsable: true, baseUrl: '', model: '' }
   });
   const envHtml = ctx.renderAsrSection({
-    ...cfg, asr: { ...cfg.asr, provider: 'volc', configured: true, hasApiKey: false, keySource: 'env' }
+    ...cfg, asr: { ...cfg.asr, provider: 'volc', configured: true, hasApiKey: false, keyUsable: true, keySource: 'env' }
   });
-  const statusOk = needKeyHtml.includes('换了识别服务，请重新填一次 Key')
+  const statusOk = needKeyHtml.includes('重新填一次凭据')
     && needAddrHtml.includes('还缺服务地址或模型')
     && envHtml.includes('ASR_API_KEY') && envHtml.includes('在生效')
     && !needKeyHtml.includes('已配置好') && !needAddrHtml.includes('已配置好');
   statusOk ? pass++ : fail++;
   console.log('  ' + (statusOk ? 'OK   ' : 'FAIL ') + '设置页：状态按服务端判定，并区分换服务/缺地址/环境变量三种情形');
+
+  // 凭据不属于这一家时：输入框必须显示为空（不能是 ****** 让人以为"这家已经能用了"），
+  // 并给出"请重新填一次"的提示 —— 后端不会把它发到别家（2026-09-26 审查，跨服务串用已实测）
+  const wrongHostHtml = ctx.renderAsrSection({
+    ...cfg, asr: {
+      ...cfg.asr, provider: 'openai', configured: false, available: false,
+      hasApiKey: true, keyProvider: 'openai', keyUsable: false, keyHost: 'api.siliconflow.cn',
+      baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo'
+    }
+  });
+  const wrongSecretHtml = ctx.renderAsrSection({
+    ...cfg, asr: {
+      ...cfg.asr, provider: 'iflytek', configured: false, available: false,
+      appId: 'APP1', hasApiKey: true, keyUsable: true, keyProvider: 'iflytek',
+      hasSecretKey: true, secretKeyProvider: 'tencent', secretKeyUsable: false
+    }
+  });
+  const staleOk = /id="cfg-asr-key"[^>]*value=""/.test(wrongHostHtml)
+    && wrongHostHtml.includes('重新填一次凭据')
+    && /id="cfg-asr-secretkey"[^>]*value=""/.test(wrongSecretHtml)
+    && wrongSecretHtml.includes('重新填一次凭据');
+  staleOk ? pass++ : fail++;
+  console.log('  ' + (staleOk ? 'OK   ' : 'FAIL ') + '设置页：换了服务/地址后凭据不再显示为已填，并提示重填');
 
   // 开关关着时不能说"在生效"
   const disabledHtml = ctx.renderAsrSection({
@@ -1021,8 +1044,8 @@ try {
   console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置指向免费本机（12 次/小时）且写明与搜索解耦');
 
   // 没有 Key 时界面必须说清"这项不会生效"
-  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false } });
-  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
+  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false, keyUsable: false } });
+  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true, keyUsable: true } });
   const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
     && noKeyHtml.includes('也不会产生任何调用与费用')
     && keyedHtml.includes('已配置好，这项在生效')
@@ -1034,15 +1057,15 @@ try {
   // 于是新填的 Key 被记成"上一家的"，轻则该用不用、重则把旧 Key 发给别家）
   const saveCases = [
     { name: 'API Key + Groq', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'groq', '#cfg-asr-baseurl': 'https://api.groq.com/openai/v1', '#cfg-asr-model': 'whisper-large-v3-turbo', '#cfg-asr-key': 'typed-key' },
-      expect: { provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', apiKey: 'typed-key', apiKeyProvider: 'openai' } },
+      expect: { provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', apiKey: 'typed-key', apiKeyProvider: 'openai', apiKeyHost: 'api.groq.com' } },
     { name: 'API Key + 火山', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'volc', '#cfg-asr-baseurl': '', '#cfg-asr-model': '', '#cfg-asr-key': 'volc-key' },
       expect: { provider: 'volc', apiKey: 'volc-key', apiKeyProvider: 'volc' } },
     { name: '免费本机', values: { '#cfg-asr-mode': 'local', '#cfg-asr-service': 'siliconflow', '#cfg-asr-key': '' },
       expect: { provider: 'local' } },
     { name: 'API Key + 腾讯云', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'tencent', '#cfg-asr-secretid': 'AKID-x', '#cfg-asr-secretkey': 'SK-y', '#cfg-asr-key': '', '#cfg-asr-baseurl': '', '#cfg-asr-model': '' },
-      expect: { provider: 'tencent', secretId: 'AKID-x', secretKey: 'SK-y' } },
+      expect: { provider: 'tencent', secretId: 'AKID-x', secretKey: 'SK-y', secretIdProvider: 'tencent', secretKeyProvider: 'tencent' } },
     { name: 'API Key + 讯飞', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'iflytek', '#cfg-asr-appid': 'APP1', '#cfg-asr-key': 'KEY1', '#cfg-asr-secretkey': 'SEC1' },
-      expect: { provider: 'iflytek', appId: 'APP1', secretKey: 'SEC1' } }
+      expect: { provider: 'iflytek', appId: 'APP1', secretKey: 'SEC1', secretKeyProvider: 'iflytek', apiKeyProvider: 'iflytek' } }
   ];
   let mapOk = true;
   const mapNotes = [];
@@ -1071,6 +1094,41 @@ try {
   mapOk ? pass++ : fail++;
   console.log('  ' + (mapOk ? 'OK   ' : 'FAIL ') + '设置页：保存时模式/服务正确映射成 provider/baseUrl/model/Key 归属'
     + (mapOk ? '' : ` -> ${mapNotes.join('；')}`));
+
+  // 服务端说"这把 Key 不是给这家的"（换了地址）时保存：不能把它重新登记成当前这家的 Key。
+  // 桩配置按服务端的真实形状来：/api/config 的脱敏会把 apiKey/apiKeyProvider/apiKeyHost 这些
+  // 字段整个删掉（名字命中 apikey/secret 模式），只留 hasXxx 标记 —— 界面手里并没有这些值。
+  const stubAsr = { ...cfg.asr }; delete stubAsr.apiKey; delete stubAsr.apiKeyProvider; delete stubAsr.apiKeyHost;
+  {
+    vm.runInContext("state.settingsSection = 'asr';", ctx);
+    vm.runInContext(`state.config = ${JSON.stringify({
+      ...cfg,
+      asr: {
+        ...stubAsr, provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo',
+        hasApiKey: true, keyProvider: 'openai', keyUsable: false, keyHost: 'api.siliconflow.cn'
+      }
+    })};`, ctx);
+    document.querySelector('#cfg-asr-mode').value = 'api';
+    document.querySelector('#cfg-asr-service').value = 'groq';
+    document.querySelector('#cfg-asr-key').value = '';       // 输入框是空的（不再显示 ******）
+    document.querySelector('#cfg-asr').checked = true;
+    let posted2 = null;
+    const fetchBefore2 = sandbox.fetch;
+    sandbox.fetch = async (url, options) => {
+      if (String(url).includes('/api/config') && options?.method === 'POST') {
+        posted2 = JSON.parse(options.body);
+        return { ok: true, status: 200, json: async () => ({ config: { ...(cfg), asr: posted2.asr } }), text: async () => '' };
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+    };
+    try { await ctx.saveConfig({ quiet: true }); } catch { /* 断言看 patch */ }
+    sandbox.fetch = fetchBefore2;
+    const noRepin = !posted2?.asr?.apiKey                    // 不能把明文 Key 带上（留空 = 保持不变）
+      && (posted2?.asr?.apiKeyHost === undefined || posted2?.asr?.apiKeyHost === 'api.siliconflow.cn');
+    noRepin ? pass++ : fail++;
+    console.log('  ' + (noRepin ? 'OK   ' : 'FAIL ') + '设置页：换地址后保存不会把旧 Key 重新登记成新地址的'
+      + (noRepin ? '' : ` -> apiKey=${posted2?.asr?.apiKey} host=${posted2?.asr?.apiKeyHost}`));
+  }
 
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');

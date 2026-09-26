@@ -146,10 +146,13 @@ export const DEFAULT_CONFIG = {
     maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
     apiKey: '',               // volc / openai / 百度(API Key) / 讯飞(APIKey) 用；留空回退环境变量 ASR_API_KEY
     apiKeyProvider: '',       // 上面这个 Key 是给哪家存的：换供应商后不再拿它发请求（避免把旧 Key 发给新服务）
+    apiKeyHost: '',           // 再细一层：OpenAI 兼容里"哪家的地址"（主机名）。硅基流动/Groq/OpenAI 都是 openai 一家，只看 provider 分不出来
     // 少数几家要"两个/三个凭据"（都不走 OpenAI 协议，需要各自的签名/换取流程）：
     appId: '',                // 讯飞 AppID
     secretId: '',             // 腾讯云 SecretId
+    secretIdProvider: '',     // 上面这个 SecretId 是给哪家存的（同 apiKeyProvider 的道理）
     secretKey: '',            // 百度 Secret Key / 腾讯云 SecretKey / 讯飞 APISecret
+    secretKeyProvider: '',    // 上面这个 SecretKey 是给哪家存的（三个服务共用这一个字段，不记归属就会串用）
     baseUrl: '',              // openai 兼容服务地址，例：https://api.groq.com/openai/v1
     model: '',                // openai 兼容的模型名，例：whisper-large-v3-turbo
     language: '',             // 可选：提示语言（zh / en…），留空由服务自己判
@@ -441,6 +444,46 @@ export const DEFAULT_CONFIG = {
   }
 };
 
+/** 语音转写凭据的绑定粒度：OpenAI 兼容服务里"换地址 = 换了一家"，取主机名比较。 */
+export function asrEndpointHost(baseUrl) {
+  const raw = String(baseUrl || '').trim();
+  if (!raw) return '';
+  try { return new URL(raw).host.toLowerCase(); } catch { return ''; }
+}
+
+/**
+ * /api/config 在 asr 上附加的"运行时结论"：客户端不该回传、更不该落盘。
+ * 控制台保存时 patch 是 `{...c.asr, 真配置}`，不剔掉就会把陈旧副本写进 config.json，
+ * 保存后的界面还会拿它当结论显示（2026-09-26 审查，实测：刚存好合法配置却显示"没配好"）。
+ *
+ * ⚠️ 这里只放"每次 GET 都会重算"的字段。绑定记录（apiKeyProvider / apiKeyHost /
+ * secretIdProvider / secretKeyProvider）是**配置本身**，不在这个名单里 —— 混进来的话
+ * 每合并一次就会被删掉再按当前服务重绑，"换成别家后旧凭据不算数"的防线就没了。
+ */
+export const ASR_DERIVED_KEYS = [
+  'configured', 'available', 'keySource', 'keyProvider', 'keyUsable', 'keyHost',
+  'secretIdUsable', 'secretKeyUsable',
+  'localBinResolved', 'localModelResolved', 'localManagedExists', 'localInstalled'
+];
+
+/**
+ * 这个凭据能不能用于"当前配的这家"：凭据记着存它时的供应商（OpenAI 兼容的还记地址主机）。
+ * 换了服务/换了地址就不再拿旧凭据去发请求 —— 否则"把腾讯的 SecretKey 当讯飞 APISecret 发出去"
+ * 会静默发生（2026-09-26 审查，两种情形都实测复现过）。
+ * 没记归属的老配置按当前这家算（migrateConfig 会补记），不给升级中的实例制造"突然不生效"。
+ */
+export function asrCredentialApplies(asr, provider, value, providerField, hostField = '') {
+  if (!String(value || '').trim()) return false;
+  const storedFor = String(asr?.[providerField] || '').trim().toLowerCase();
+  if (!storedFor) return true;
+  if (storedFor !== String(provider || '').trim().toLowerCase()) return false;
+  if (provider === 'openai' && hostField) {
+    const bound = String(asr?.[hostField] || '').trim().toLowerCase();
+    if (bound && bound !== asrEndpointHost(asr?.baseUrl)) return false;
+  }
+  return true;
+}
+
 function migrateConfig(parsed) {
   // 顶层必须是对象：手改坏的 config.json 可能是 null / 5 / "x" / true（都是合法 JSON）。
   // 放它过去，下面 out.persona = … 那一步就会抛（Cannot create property 'persona' on number '5'），
@@ -533,7 +576,65 @@ function migrateConfig(parsed) {
     delete out.server.closeToTray;
   }
   if (out.ui?.theme === '?') out.ui.theme = 'dark';
+  // ── 语音转写（asr）──
+  if (isPlainObject(out.asr)) {
+    // 剔掉运行时结论（见 ASR_DERIVED_KEYS 的说明），连 sanitizeConfig 生成的 hasXxx 一起。
+    // ⚠️ 这里**不**补凭据归属：合并路径上补会把"归属未知的老凭据"洗成当前服务名下的，
+    // 恰好是"把 A 家的 Key 当成 B 家的"那条路。归属只在读盘（loadConfig）或用户重填时记。
+    for (const key of ASR_DERIVED_KEYS) delete out.asr[key];
+    for (const key of Object.keys(out.asr)) if (/^has[A-Z]/.test(key)) delete out.asr[key];
+  }
   return out;
+}
+
+/**
+ * 给"有凭据、还没记归属"的老配置补上归属（凭据 → 服务，OpenAI 兼容的再补地址主机）。
+ * 两个调用点，口径不同：
+ *   · migrateConfig（每次合并都会跑）：只补没记过的（onlyUnbound）—— 否则客户端传来的空值
+ *     会把"为别家地址存的"凭据悄悄改绑到当前地址上（2026-09-26 审查踩到过）。
+ *   · loadConfig（只跑一次，读的是本机配置文件）：把所有能补的都补齐，老实例升级后
+ *     "换服务/换地址要重填"的防线立刻生效。
+ */
+/**
+ * 哪个凭据字段"哪家会用到"（与 config.js 的 asrConfigured 同一套口径）。
+ * 补记归属时要看这张表：把一把 secretKey 记到 openai/volc 名下毫无意义，
+ * 反而会挡住它真正的主人（腾讯/讯飞/百度），让用户白重填一次。
+ */
+const ASR_CREDENTIAL_PROVIDERS = {
+  apiKey: ['volc', 'openai', 'aliyun', 'baidu', 'iflytek'],
+  secretId: ['tencent'],
+  secretKey: ['tencent', 'iflytek', 'baidu']
+};
+
+/**
+ * 给"有凭据、还没记归属"的老配置补上归属（凭据 → 服务，OpenAI 兼容的再补地址主机）。
+ * **只在读盘时调用**（loadConfig）：配置合并路径上补会把"归属未知的老凭据"洗成当前服务名下的，
+ * 恰好就是"把 A 家的 Key 当成 B 家的"那条路（2026-09-26 审查踩到过）。之后归属只由用户重填更新。
+ */
+export function pinStoredAsrCredentials(asr, providerValue) {
+  if (!isPlainObject(asr)) return;
+  const provider = String(providerValue || '').trim().toLowerCase();
+  if (!provider) return;                       // provider 未知：宁可留着"未绑定"，也不瞎记归属
+  const host = asrEndpointHost(asr.baseUrl);
+  const pin = (field, providerField, hostField = '') => {
+    if (!String(asr[field] || '').trim()) return;
+    if (!(ASR_CREDENTIAL_PROVIDERS[field] || []).includes(provider)) return;   // 这家不用它 → 不记
+    const bound = String(asr[providerField] || '').trim();
+    if (!bound) {
+      asr[providerField] = provider;           // 第一次记归属
+      // 归属与地址一起记：硅基流动/Groq/OpenAI 这几家 provider 都是 openai，
+      // 不记地址的话换预设就不会要求重填，旧 Key 会被发到新域名
+      if (hostField && provider === 'openai' && host) asr[hostField] = host;
+      return;
+    }
+    // 已有归属：老配置里 provider 记了、但那时还没有 apiKeyHost 字段 —— 补上缺的主机
+    if (hostField && bound === 'openai' && host && !String(asr[hostField] || '').trim()) {
+      asr[hostField] = host;
+    }
+  };
+  pin('apiKey', 'apiKeyProvider', 'apiKeyHost');
+  pin('secretId', 'secretIdProvider');
+  pin('secretKey', 'secretKeyProvider');
 }
 
 /** 真对象判定（排除 null / 数组 / 标量）——人设段这类"必须是对象"的字段用它兜底。 */
@@ -566,6 +667,10 @@ export function loadConfig() {
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
     const parsed = migrateConfig(JSON.parse(text));
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
+    // 读盘这一次把老配置的凭据归属补齐（provider + OpenAI 兼容的地址主机）：
+    // 升级后"换服务/换地址要重填"的防线立刻生效，而不是等用户碰一次设置才生效
+    const asrProviderValue = String(merged.asr?.provider || '').trim().toLowerCase();
+    if (asrProviderValue) pinStoredAsrCredentials(merged.asr, asrProviderValue);
     applyPersonaTemplate(merged);   // 绑了内置卡就按 roles/*.md 刷新正文（卡文件是唯一来源）
     return merged;
   } catch (error) {

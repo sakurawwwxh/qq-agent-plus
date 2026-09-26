@@ -6566,7 +6566,12 @@ function renderAsrSection(c) {
   // 用户要求：只给两个选项 —— 免费的本机 Whisper，或"用 API Key 的托管服务"（具体哪家由下面的服务预设决定）
   const mode = provider === 'local' ? 'local' : 'api';
   const hide = (want) => (mode === want ? '' : 'display:none');
-  const keyReady = c.asr?.hasApiKey === true;
+  // "已填"要用服务端算的可用性：凭据与"存它时的服务（OpenAI 兼容的还看地址主机）"绑定，
+  // 换了家/换了地址就不算数 —— 这时输入框必须显示为空并给出可照做的提示，
+  // 而不是显示 ****** 让人以为"这家已经能用了"（2026-09-26 审查，跨服务串用已实测）。
+  const keyStored = c.asr?.hasApiKey === true;
+  const keyUsable = c.asr?.keyUsable === true;
+  const keyReady = keyStored && keyUsable;
   const openaiReady = String(c.asr?.baseUrl || '').trim() !== '' && String(c.asr?.model || '').trim() !== '';
   const localReady = Boolean(String(c.asr?.localModel || '').trim());
   const ready = typeof c.asr?.available === 'boolean'
@@ -6586,12 +6591,16 @@ function renderAsrSection(c) {
   const serviceNote = service?.note || '';
   const needsBaseUrl = service?.needsBaseUrl === true;
   const wants = (kind) => ((service?.creds || []).includes(kind) ? '' : 'display:none');
-  const hasSecretId = c.asr?.hasSecretId === true;
-  const hasSecretKey = c.asr?.hasSecretKey === true;
+  // 同理：SecretId / SecretKey 也是按服务绑定的（腾讯的 SecretKey 不能当讯飞的 APISecret 用）
+  const hasSecretId = c.asr?.hasSecretId === true && c.asr?.secretIdUsable === true;
+  const hasSecretKey = c.asr?.hasSecretKey === true && c.asr?.secretKeyUsable === true;
+  const secretWrongService = (c.asr?.hasSecretId === true && c.asr?.secretIdUsable !== true)
+    || (c.asr?.hasSecretKey === true && c.asr?.secretKeyUsable !== true);
   const secretKeyLabel = provider === 'baidu' ? 'Secret Key（百度老式鉴权才需要）'
     : (provider === 'iflytek' ? 'APISecret（讯飞）' : 'SecretKey（腾讯云）');
-  const wrongProviderKey = c.asr?.hasApiKey === true && String(c.asr?.keyProvider || '')
-    && String(c.asr.keyProvider).toLowerCase() !== provider;
+  // 凭据不属于这一家：可能是已保存的（服务端判定），也可能是刚在下拉里换了服务（草稿标记）
+  const keyWrongService = keyStored && !keyUsable;
+  const credentialStale = c.asr?.credentialStale === true || keyWrongService || secretWrongService;
   const status = (c.asr?.enabled === false && c.asr?.configured === true)
     ? '<strong>配置是齐的，但上面的开关关着，所以不生效</strong>：勾上即用。'
     : ready
@@ -6600,8 +6609,10 @@ function renderAsrSection(c) {
       : '<strong>已配置好，这项在生效。</strong>')
     : (mode === 'local'
       ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：可以点「安装本机转写」装好它；更快也更省事的做法是改用 API Key 的托管服务（推荐，硅基流动有免费模型）。'
-      : (wrongProviderKey
-        ? '<strong>换了识别服务，请重新填一次 Key，否则这项不会生效</strong>：配置里的 Key 与存它时的服务绑定，后端不会把它发到别家。'
+      : (credentialStale
+        ? '<strong>换了识别服务或服务地址，请重新填一次凭据（Key / Secret），否则这项不会生效</strong>：'
+          + '配置里的凭据与"存它时的服务（OpenAI 兼容的还看地址主机）"绑定，后端不会把它发到别家 —— '
+          + '这是有意的，避免把 A 家的 Key 送到 B 家去。'
         : (provider === 'openai' && keyReady && !openaiReady
           ? '<strong>还缺服务地址或模型，这项不会生效</strong>：地址由服务预设填好，模型点「获取模型列表」从服务商官网拉。'
           : '<strong>还没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。')));
@@ -6704,7 +6715,8 @@ function renderAsrSection(c) {
 
     <div class="field-row">
       <div class="field"><label for="cfg-asr-max">每小时最多转写</label>
-        <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select></div>
+        <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
+        <div class="hint">按"转写一条消息"计（长音频会拆成多段请求，服务商的额度按段扣）。</div></div>
       <div class="field"><label for="cfg-asr-lang">识别语言（可选）</label>
         <input type="text" id="cfg-asr-lang" value="${esc(c.asr?.language || '')}" placeholder="zh / en；留空由服务自己判" /></div>
     </div>
@@ -8534,6 +8546,11 @@ const ASR_SERVICES = [
   { id: 'openai', label: 'OpenAI 官方（按量计费）', provider: 'openai', baseUrl: 'https://api.openai.com/v1', creds: ['key'], needsBaseUrl: true, note: '国内多数网络直连不通，需要中转。' },
   { id: 'custom', label: '自定义 / 自建（OpenAI 兼容）', provider: 'openai', baseUrl: '', creds: ['key'], needsBaseUrl: true, note: '任何 OpenAI 兼容的转写服务：填地址 + 模型名即可。' }
 ];
+/** 服务地址的主机名 —— 凭据的绑定粒度（同一主机换路径不算换家）；填得不合法就返回空串。 */
+function asrHostOf(url) {
+  try { return new URL(String(url || '').trim()).host.toLowerCase(); } catch { return ''; }
+}
+
 /** 按 provider + 地址反查当前是哪家（改过就落到「自定义」）。 */
 function asrServiceOf(provider, baseUrl) {
   const norm = (v) => String(v || '').trim().replace(/[/]+$/, '').toLowerCase();
@@ -9286,6 +9303,19 @@ function bindSettingsEvents(c) {
       // 字段显隐/说明按新服务整体重画：比逐个 toggle 可靠（服务多了以后容易漏）
       // 先把当前草稿落到 state.config 上，重画才不会把它们丢回去
       const draft = state.config || {};
+      // 换了服务或换了地址：原来那把凭据就不属于这家了 —— 输入框清空 + 打标记，
+      // 别让它看起来"已经填好了"（后端本来也不会拿它去请求别家，2026-09-26 审查）
+      const prevAsr = draft.asr || {};
+      const nextProvider = item?.provider || 'openai';
+      const nextHost = item && item.needsBaseUrl !== false ? asrHostOf(item.baseUrl) : '';
+      const serviceChanged = nextProvider !== String(prevAsr.provider || '')
+        || (nextProvider === 'openai' && nextHost !== asrHostOf(prevAsr.baseUrl));
+      if (serviceChanged) {
+        for (const id of ['#cfg-asr-key', '#cfg-asr-secretid', '#cfg-asr-secretkey']) {
+          const el = $(id);
+          if (el && el.value === '******') el.value = '';
+        }
+      }
       draft.asr = {
         ...(draft.asr || {}),
         provider: item?.provider || 'openai',
@@ -9297,7 +9327,12 @@ function bindSettingsEvents(c) {
         secretKey: ($('#cfg-asr-secretkey')?.value || '') === '******' ? draft.asr?.secretKey : ($('#cfg-asr-secretkey')?.value || draft.asr?.secretKey),
         hasApiKey: Boolean(draft.asr?.apiKey || $('#cfg-asr-key')?.value),
         hasSecretId: Boolean(draft.asr?.secretId || $('#cfg-asr-secretid')?.value),
-        hasSecretKey: Boolean(draft.asr?.secretKey || $('#cfg-asr-secretkey')?.value)
+        hasSecretKey: Boolean(draft.asr?.secretKey || $('#cfg-asr-secretkey')?.value),
+        // 草稿层面的"凭据要重填"标记：保存后由服务端的 keyUsable/secretKeyUsable 接管
+        credentialStale: serviceChanged,
+        keyUsable: serviceChanged ? false : draft.asr?.keyUsable,
+        secretIdUsable: serviceChanged ? false : draft.asr?.secretIdUsable,
+        secretKeyUsable: serviceChanged ? false : draft.asr?.secretKeyUsable
       };
       state.settingsSection = 'asr';
       renderSettings();
@@ -11152,13 +11187,23 @@ async function saveConfig({ quiet = false } = {}) {
       language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
       localBin: val('#cfg-asr-bin', c.asr?.localBin || '').trim(),
       localModel: val('#cfg-asr-localmodel', c.asr?.localModel || '').trim(),
-      // 少数几家要两个/三个凭据（百度/腾讯/讯飞）；掩码 ****** 表示保持原值不变
+      // 少数几家要两个/三个凭据（百度/腾讯/讯飞）；掩码 ****** 表示保持原值不变。
+      // 新填/替换凭据时都记下"是给哪家存的"：换了服务/地址后后端不再拿旧凭据去请求别家
+      // （2026-09-26 审查，跨服务串用已实测）
       appId: val('#cfg-asr-appid', c.asr?.appId || '').trim(),
-      ...(enteredAsrSecretId && enteredAsrSecretId !== '******' ? { secretId: enteredAsrSecretId } : {}),
-      ...(enteredAsrSecretKey && enteredAsrSecretKey !== '******' ? { secretKey: enteredAsrSecretKey } : {}),
-      // 新填/替换 Key 时记下它是给哪家存的：换供应商后后端不再拿旧 Key 去请求别家
+      ...(enteredAsrSecretId && enteredAsrSecretId !== '******'
+        ? { secretId: enteredAsrSecretId, secretIdProvider: asrProviderNext } : {}),
+      ...(enteredAsrSecretKey && enteredAsrSecretKey !== '******'
+        ? { secretKey: enteredAsrSecretKey, secretKeyProvider: asrProviderNext } : {}),
       ...(enteredAsrKey && enteredAsrKey !== '******'
-        ? { apiKey: enteredAsrKey, apiKeyProvider: asrProviderNext }
+        ? {
+          apiKey: enteredAsrKey,
+          apiKeyProvider: asrProviderNext,
+          // OpenAI 兼容还要记地址主机（硅基流动/Groq/OpenAI 都是 openai 这一家）
+          ...(asrProviderNext === 'openai'
+            ? { apiKeyHost: asrHostOf(val('#cfg-asr-baseurl', c.asr?.baseUrl || '')) }
+            : {})
+        }
         : {})
     };
   }
