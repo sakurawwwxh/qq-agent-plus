@@ -143,6 +143,7 @@ export const DEFAULT_CONFIG = {
     provider: 'volc',
     maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
     apiKey: '',               // volc / openai 用；留空回退环境变量 ASR_API_KEY
+    apiKeyProvider: '',       // 上面这个 Key 是给哪家存的：换供应商后不再拿它发请求（避免把旧 Key 发给新服务）
     baseUrl: '',              // openai 兼容服务地址，例：https://api.groq.com/openai/v1
     model: '',                // openai 兼容的模型名，例：whisper-large-v3-turbo
     language: '',             // 可选：提示语言（zh / en…），留空由服务自己判

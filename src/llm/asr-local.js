@@ -28,44 +28,46 @@ export async function localWhisperTranscribe(wavPath, {
   const outPrefix = `${wavPath}.asr`;
   const textFile = `${outPrefix}.txt`;
   return await new Promise((resolve, reject) => {
-    let settled = false;
+    let done = false;
     let stderr = '';
     const child = spawn(bin, whisperArgs({ model, wavPath, outPrefix, language, threads }), {
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
     });
-    const cleanup = () => { try { rmSync(textFile, { force: true }); } catch { /* 清不掉无害 */ } };
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
+    // settle 只走这一个口子：早先写成"close 里先置 settled 再调 fail"，
+    // 而 fail 开头 `if (settled) return` —— 非零退出时 Promise 永不 settle，
+    // 整轮运行卡死、中止监听已摘、临时文件泄漏（2026-09-26 审查抓到）。
+    const settle = (fn, value) => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      try { child.kill('SIGKILL'); } catch { /* noop */ }
-      cleanup();
-      reject(error);
+      try { rmSync(textFile, { force: true }); } catch { /* 清不掉无害 */ }
+      fn(value);
     };
-    const timer = setTimeout(() => fail(new Error('本机转写超时')), timeoutMs);
-    const onAbort = () => fail(signal?.reason ?? new Error('已中止'));
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* noop */ }
+      settle(reject, new Error('本机转写超时'));
+    }, timeoutMs);
+    const onAbort = () => {
+      try { child.kill('SIGKILL'); } catch { /* noop */ }
+      settle(reject, signal?.reason ?? new Error('已中止'));
+    };
     signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', () => { /* 文本走 -otxt 落盘，stdout 只是进度 */ });
     child.stderr.on('data', (c) => { stderr = (stderr + c).slice(-500); });
-    child.on('error', (e) => fail(new Error(
+    child.on('error', (e) => settle(reject, new Error(
       `本机转写不可用（找不到 ${bin}）：${e.message}。装好 whisper.cpp 后在控制台填它的可执行文件与模型路径`
     )));
     child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
+      if (done) return;
+      if (code !== 0) {
+        return settle(reject, new Error(`本机转写失败（${bin} 退出码 ${code}）：${stderr.trim().slice(-200) || '无输出'}`));
+      }
       try {
-        if (code !== 0) {
-          fail(new Error(`本机转写失败（${bin} 退出码 ${code}）：${stderr.trim().slice(-200) || '无输出'}`));
-          return;
-        }
         const text = readFileSync(textFile, 'utf8');
-        cleanup();
-        resolve(String(text).trim());
+        settle(resolve, String(text).trim());
       } catch (error) {
-        fail(new Error(`本机转写没有产出文本（${bin} 退出码 ${code}）：${String(error?.message ?? error)}`));
+        settle(reject, new Error(`本机转写没有产出文本（${bin} 退出码 ${code}）：${String(error?.message ?? error)}`));
       }
     });
   });

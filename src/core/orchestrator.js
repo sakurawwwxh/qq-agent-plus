@@ -1352,8 +1352,8 @@ export class Orchestrator {
     const visionEnabled = cfg.api.vision !== false
       && modelImageVerdict(cfg.api.provider, cfg.api.model) !== 'no-vision';
     const searchEnabled = cfg.webSearch?.enabled !== false;
-    // ASR 自己有开关（asr.enabled）+ key 复用豆包 Agent Plan，与"联网搜索"开关解耦：
-    // 关掉搜索的人不该顺带失去语音转写（2026-09-26 审查）。
+    // ASR 有自己的开关与供应商（asr.enabled / asr.provider / asr.apiKey），与"联网搜索"解耦：
+    // 关掉搜索的人不该顺带失去语音转写（2026-09-26 审查）。判定收敛在 config.asrAvailable()。
     const asrEnabled = asrAvailable(cfg);
     const identityPilot = this.getIdentityPilot();
     const identityAvailable = identityPilotEnabled(cfg) && identityPilot?.active === true;

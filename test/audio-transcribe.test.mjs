@@ -203,3 +203,49 @@ it('供应商路由：按 asr.provider 选后端，配置齐才判定可用', as
   assert.equal(asrAvailable({ asr: { enabled: true, provider: 'local', localModel: '/m.bin' } }), true);
   assert.equal(asrAvailable({ asr: { enabled: false, provider: 'local', localModel: '/m.bin' } }), false);
 });
+
+// ── 审查跟进（2026-09-26）：本机转写"失败要 reject，不能挂死" + Key 与供应商绑定 ──
+
+it('本机转写：子进程非零退出要 reject（不能挂死）+ 不泄漏临时文件', async () => {
+  // 审查抓到的 Critical：早先 close 里先置 settled 再调 fail，而 fail 开头 `if (settled) return`
+  // —— 非零退出时 Promise 永不 settle，整轮运行卡死、中止监听已摘、临时文件泄漏。
+  // 这里用 node 自身当"坏二进制"（它不认识 whisper 的参数，必定非零退出），真实走一遍 close 路径。
+  const { localWhisperTranscribe } = await import('../src/llm/asr-local.js');
+  const wavPath = path.join(dir, 'hang-check.wav');
+  fs.writeFileSync(wavPath, Buffer.alloc(64));
+  // 用 Promise.race 兜底：万一"挂死"复现，这里是**测试失败**，而不是把整个套件挂到 CI 超时
+  const started = Date.now();
+  const settled = await Promise.race([
+    localWhisperTranscribe(wavPath, { bin: process.execPath, model: '/tmp/nope.bin', language: 'zh', timeoutMs: 60000 })
+      .then(() => 'resolved', (e) => e),
+    new Promise((r) => setTimeout(() => r('hang'), 15000))
+  ]);
+  assert.notEqual(settled, 'hang', '子进程退出后必须立刻 settle（早先这里会永久挂住）');
+  assert.match(String(settled?.message || ''), /本机转写失败|本机转写没有产出文本/);
+  assert.ok(Date.now() - started < 15000, '必须是子进程退出就立刻 reject，不能等到超时');
+  assert.equal(fs.existsSync(`${wavPath}.asr.txt`), false, '临时 txt 要清掉');
+});
+
+it('本机转写：二进制不存在时报"装好 whisper.cpp"的可自查错误', async () => {
+  const { localWhisperTranscribe } = await import('../src/llm/asr-local.js');
+  const wavPath = path.join(dir, 'missing-bin.wav');
+  fs.writeFileSync(wavPath, Buffer.alloc(64));
+  await assert.rejects(
+    () => localWhisperTranscribe(wavPath, { bin: 'definitely-not-a-real-binary-xyz', model: '/tmp/nope.bin' }),
+    /找不到|不可用/
+  );
+});
+
+it('Key 与供应商绑定：换供应商后不再拿旧 Key 去请求别家', async () => {
+  const { asrApiKey, asrKeySource, asrConfigured } = await import('../src/core/config.js');
+  // 给火山存的 Key，provider 仍是 volc → 正常使用
+  const volc = { asr: { provider: 'volc', apiKey: 'volc-key', apiKeyProvider: 'volc', baseUrl: '', model: '' } };
+  assert.equal(asrApiKey(volc), 'volc-key');
+  assert.equal(asrKeySource(volc), 'config');
+  // 换成 openai 兼容后，同一个 Key 不再被取用（否则会把火山凭据发给别家）
+  const switched = { asr: { provider: 'openai', apiKey: 'volc-key', apiKeyProvider: 'volc', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall' } };
+  assert.equal(asrApiKey(switched), '', '换供应商后旧 Key 不参与请求');
+  assert.equal(asrConfigured(switched), false, '因此被判成没配齐（工具不注入）');
+  // 老配置没记 provider（升级上来的）：按原样使用，不做断供
+  assert.equal(asrApiKey({ asr: { provider: 'openai', apiKey: 'k', apiKeyProvider: '' } }), 'k');
+});

@@ -6564,9 +6564,14 @@ function renderAsrSection(c) {
     ? String(c.asr.provider)
     : 'volc';
   const hide = (id) => (provider === id ? '' : 'display:none');
+  // "配齐了没"以服务端判定为准（/api/config 里带 asr.configured）——前端自己拼一套会出现
+  // "界面说在生效、后端其实没注入"的矛盾（2026-09-26 审查）。没有该字段时按同一口径本地兜底。
   const keyReady = c.asr?.hasApiKey === true;
+  const openaiReady = String(c.asr?.baseUrl || '').trim() !== '' && String(c.asr?.model || '').trim() !== '';
   const localReady = Boolean(String(c.asr?.localModel || '').trim());
-  const ready = provider === 'local' ? localReady : keyReady;
+  const ready = typeof c.asr?.configured === 'boolean'
+    ? c.asr.configured
+    : (provider === 'local' ? localReady : (provider === 'openai' ? (keyReady && openaiReady) : keyReady));
   const providerHint = {
     volc: '火山引擎语音技术的<strong>大模型录音识别（Seed-ASR）</strong>，按量计费；音频会上传到火山做识别。',
     openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行 —— 下面选一个预设就自动填好地址与模型，'
@@ -6579,11 +6584,20 @@ function renderAsrSection(c) {
       + '长音频会慢到不实用 —— 那种情况建议用托管服务。'
   }[provider];
   // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
+  // Key 换供应商后要重填：配置里的 Key 与"存它时的供应商"绑定，后端不会再拿它去请求别家
+  const wrongProviderKey = c.asr?.hasApiKey === true && String(c.asr?.keyProvider || '')
+    && String(c.asr.keyProvider).toLowerCase() !== provider;
   const status = ready
-    ? '<strong>已配置好，这项在生效。</strong>'
+    ? (c.asr?.keySource === 'env'
+      ? '<strong>已配置好，这项在生效</strong>（Key 来自环境变量 <code>ASR_API_KEY</code>，此处留空即可）。'
+      : '<strong>已配置好，这项在生效。</strong>')
     : (provider === 'local'
       ? '<strong>还没填模型文件路径，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用。'
-      : '<strong>还没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。');
+      : (wrongProviderKey
+        ? '<strong>换了识别服务，请重新填一次 Key，否则这项不会生效</strong>：配置里的 Key 与存它时的服务绑定，后端不会把它发到别家。'
+        : (provider === 'openai' && keyReady && !openaiReady
+          ? '<strong>还缺服务地址或模型名，这项不会生效</strong>：OpenAI 兼容服务各有各的模型名，没法替你猜。'
+          : '<strong>还没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。')));
   return `
     <h3 id="settings-asr">语音转文字</h3>
     <div class="hint" style="margin-bottom:10px">
@@ -9710,6 +9724,10 @@ function bindSettingsEvents(c) {
       const r = await api('/api/api-key');
       return String(r.apiKey || '');
     }
+    if (inputId === 'cfg-asr-key') {
+      const r = await api('/api/asr-key');
+      return String(r.apiKey || '');
+    }
     const field = SEARCH_KEY_FIELDS[inputId];
     if (field) {
       const r = await api(`/api/search-key?field=${encodeURIComponent(field)}`);
@@ -10892,7 +10910,10 @@ async function saveConfig({ quiet = false } = {}) {
       language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
       localBin: val('#cfg-asr-bin', c.asr?.localBin || '').trim(),
       localModel: val('#cfg-asr-localmodel', c.asr?.localModel || '').trim(),
-      ...(enteredAsrKey && enteredAsrKey !== '******' ? { apiKey: enteredAsrKey } : {})
+      // 新填/替换 Key 时记下它是给哪家存的：换供应商后后端不再拿旧 Key 去请求别家
+      ...(enteredAsrKey && enteredAsrKey !== '******'
+        ? { apiKey: enteredAsrKey, apiKeyProvider: val('#cfg-asr-provider', c.asr?.provider || 'volc') }
+        : {})
     };
   }
 

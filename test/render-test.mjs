@@ -938,6 +938,26 @@ try {
     }));
   providerOk ? pass++ : fail++;
   console.log('  ' + (providerOk ? 'OK   ' : 'FAIL ') + '设置页：三家识别服务可选（本机不要 Key、OpenAI 兼容填地址+模型）');
+
+  // 状态以服务端判定为准，且把"换供应商要重填 Key / 缺地址模型 / Key 来自环境变量"讲清
+  const needKeyHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'volc', baseUrl: '', model: '' }
+  });
+  const needAddrHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'openai', baseUrl: '', model: '' }
+  });
+  const envHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'volc', configured: true, hasApiKey: false, keySource: 'env' }
+  });
+  const statusOk = needKeyHtml.includes('换了识别服务，请重新填一次 Key')
+    && needAddrHtml.includes('还缺服务地址或模型名')
+    && envHtml.includes('ASR_API_KEY')
+    && envHtml.includes('在生效')
+    // 服务端说 configured=false 时，界面绝不显示"在生效"
+    && !needKeyHtml.includes('已配置好')
+    && !needAddrHtml.includes('已配置好');
+  statusOk ? pass++ : fail++;
+  console.log('  ' + (statusOk ? 'OK   ' : 'FAIL ') + '设置页：状态按服务端判定，并区分换服务/缺地址/环境变量三种情形');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
     && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
     && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');

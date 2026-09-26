@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.js';
-import { asrConfigured, asrMaxPerHour, asrProvider, getConfig } from '../core/config.js';
+import { asrApiKey, asrConfigured, asrMaxPerHour, asrProvider, getConfig } from '../core/config.js';
 import { openAiCompatibleTranscribe, openAiProviderOptions, pcmToWav } from '../llm/asr-openai.js';
 import { localWhisperTranscribe, WHISPER_BIN_CANDIDATES } from '../llm/asr-local.js';
 
@@ -118,7 +118,7 @@ export async function runProvider(cfg, pcm, { signal } = {}) {
   if (provider === 'openai') {
     return await openAiCompatibleTranscribe(pcmToWav(pcm), { ...openAiProviderOptions(cfg), signal });
   }
-  return await seedAsrTranscribe(pcm, { apiKey: openAiProviderOptions(cfg).apiKey, signal });
+  return await seedAsrTranscribe(pcm, { apiKey: asrApiKey(cfg), signal });
 }
 
 /** 本机转写：whisper.cpp 只吃文件，所以把 PCM 套 WAV 头落盘再调用（fs/path/os 都在文件顶层 import）。 */

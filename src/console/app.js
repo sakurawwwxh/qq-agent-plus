@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { conversationConfigForChat, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
+import { asrAvailable, asrConfigured, asrKeySource, conversationConfigForChat, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
 import { customSearch } from '../llm/web-search.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
@@ -1784,6 +1784,14 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
         return json(res, 200, { apiKey: String(getConfig().webSearch?.[field]?.apiKey || '') });
       }
 
+      // 语音转写的 Key 明文回读：与 /api/search-key 同款（只有控制台来源放行）。
+      if (pathname === '/api/asr-key' && method === 'GET') {
+        if (!keyEndpointAllowed(req)) {
+          return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
+        }
+        return json(res, 200, { apiKey: String(getConfig().asr?.apiKey || '') });
+      }
+
       // 用当前 api 配置拉取模型列表（前端“获取列表”）
       if (pathname === '/api/providers/fetch-models' && method === 'POST') {
         try {
@@ -2038,7 +2046,17 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
         // 不把任何真实 Key 暴露给前端：递归清空所有密钥类字段，用 hasKey 表示"有密钥"。
         // 注意：不要用手工逐字段列举——之前漏了 5 个搜索 Key 和 2 个 SnowLuma 令牌，
         // 加新 provider 时还会继续漏。这里按字段名模式统一处理。
-        return json(res, 200, sanitizeConfig(cfgNow));
+        const safe = sanitizeConfig(cfgNow);
+        // ASR 是否"配齐了"由服务端判定（前端自己拼一套会出现"界面说在生效、后端没注入"的
+        // 矛盾，2026-09-26 审查）：附上权威结论与 Key 来源，界面只负责显示。
+        safe.asr = {
+          ...(safe.asr || {}),
+          configured: asrConfigured(cfgNow),
+          available: asrAvailable(cfgNow),
+          keySource: asrKeySource(cfgNow),
+          keyProvider: String(cfgNow.asr?.apiKeyProvider || '')
+        };
+        return json(res, 200, safe);
       }
 
       if (pathname === '/api/config' && method === 'POST') {

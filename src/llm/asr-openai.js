@@ -1,7 +1,7 @@
 // 通用「OpenAI 兼容」语音转写：POST {baseUrl}/audio/transcriptions，multipart 上传音频文件。
 // 覆盖绝大多数托管服务（OpenAI / Groq / SiliconFlow / 自建 faster-whisper 网关…），
 // 所以用户换服务只需要改 baseUrl + model，不用等我们适配。
-import { getConfig } from '../core/config.js';
+import { asrApiKey, getConfig } from '../core/config.js';
 
 /** 16k 单声道 s16 PCM 套一个 WAV 头（托管服务普遍只吃带容器的文件，裸 PCM 不收）。 */
 export function pcmToWav(pcm, { sampleRate = 16000, channels = 1, bitsPerSample = 16 } = {}) {
@@ -70,7 +70,7 @@ export async function openAiCompatibleTranscribe(wavBuffer, {
 export function openAiProviderOptions(cfg = getConfig()) {
   return {
     baseUrl: String(cfg?.asr?.baseUrl || '').trim(),
-    apiKey: String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim(),
+    apiKey: asrApiKey(cfg),   // 只认 asr.apiKey / ASR_API_KEY（读法与工具注入闸门共用一处实现）
     model: String(cfg?.asr?.model || '').trim(),
     language: String(cfg?.asr?.language || '').trim()
   };

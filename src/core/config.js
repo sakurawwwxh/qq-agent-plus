@@ -149,9 +149,25 @@ export function asrProvider(cfg = getConfig()) {
  * 语音转文字用的 API Key：只认自己的（`asr.apiKey`，留空回退环境变量 ASR_API_KEY）。
  * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索与转写是两套服务/两家供应商都可能，
  * 耦合会让"配没配搜索 Key"决定"能不能转写"（用户明确要求分开）。
+ *
+ * 另外：配置里的 Key 与"存它时的供应商"绑定（`asr.apiKeyProvider`）。换供应商后不再拿旧 Key 去发请求 ——
+ * 否则把火山的 Key 发到 Groq/硅基流动那种事会静默发生（2026-09-26 审查）。环境变量不受此限：
+ * 它是部署级的一个值，用户设它就意味着"给我当前配的那个供应商用"。
  */
 export function asrApiKey(cfg = getConfig()) {
-  return String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim();
+  const stored = String(cfg?.asr?.apiKey || '').trim();
+  const storedFor = String(cfg?.asr?.apiKeyProvider || '').trim().toLowerCase();
+  if (stored) {
+    if (storedFor && storedFor !== asrProvider(cfg)) return '';
+    return stored;
+  }
+  return String(process.env.ASR_API_KEY || '').trim();
+}
+
+/** Key 从哪来（控制台显示用）：'config' | 'env' | ''（没配）。 */
+export function asrKeySource(cfg = getConfig()) {
+  if (asrApiKey(cfg)) return String(cfg?.asr?.apiKey || '').trim() ? 'config' : 'env';
+  return '';
 }
 
 /**
