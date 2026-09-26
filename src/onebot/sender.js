@@ -37,6 +37,30 @@ function muteError(untilTs) {
     : '本群全员禁言中，本轮先不发言';
 }
 
+/**
+ * 禁言错误统一带 code：上层（工具收口）据此把它当"预期内失败"，不记进异常面板。
+ * 被禁言期间每轮都会撞上，记成异常只会把控制台刷满。
+ */
+function mutedError(untilTs) {
+  const error = new Error(muteError(untilTs));
+  error.code = 'GROUP_MUTED';
+  return error;
+}
+
+// QQ 的群禁言最长 30 天；这里放宽到 365 天，只拦"明显不是秒级时间戳"的值。
+// 单位一旦被误读（有的实现给毫秒），拿原值比较就等于从此不再发言 —— 宁可漏拦
+// （回到交给 QQ 服务端兜底的老行为），不可误封。超限值按未禁言处理，并留一行日志。
+const MUTE_MAX_AHEAD_SEC = 365 * 24 * 3600;
+function muteUntilMs(raw, nowSec) {
+  const shut = Number(raw || 0);
+  if (!Number.isFinite(shut) || shut <= nowSec) return 0;
+  if (shut > nowSec + MUTE_MAX_AHEAD_SEC) {
+    console.warn('[send] 禁言时间戳超出常识范围（>365 天），按未禁言处理:', raw);
+    return 0;
+  }
+  return shut * 1000;
+}
+
 export class SendQueue {
   constructor({ onebot, store, onSent = null, onIncident = null }) {
     this.onebot = onebot;
@@ -62,27 +86,31 @@ export class SendQueue {
     const cached = this.#muteCache.get(chatKey);
     const now = Date.now();
     if (cached && now - cached.checkedAt < 60_000) {
-      if (cached.muted) throw new Error(muteError(cached.untilTs));
+      if (cached.muted) throw mutedError(cached.untilTs);
       return;
     }
     const entry = { muted: false, untilTs: 0, checkedAt: now };
+    const nowSec = now / 1000;
     try {
       const groupId = chatKey.slice('group:'.length);
       const selfId = this.onebot.selfId;
-      if (selfId) {
-        // 优先查自己的成员信息：shut_up_timestamp = 禁言截止的 epoch 秒（0 = 未禁言）
-        const info = await this.onebot.getGroupMemberInfo(groupId, selfId);
-        const shut = Number(info?.shut_up_timestamp || 0);
-        if (shut > now / 1000) { entry.muted = true; entry.untilTs = shut * 1000; }
-      } else {
-        // 拿不到自身 uin 时退查全员禁言标志：group_all_shut 同样是禁言截止的 epoch 秒（0 = 未禁言）
-        const info = await this.onebot.getGroupInfo(groupId);
-        const shut = Number(info?.group_all_shut || 0);
-        if (shut > now / 1000) { entry.muted = true; entry.untilTs = shut * 1000; }
-      }
+      // 两个来源都要看：单独禁言在成员信息上，全员禁言在群信息上，协议端不一定互相带
+      // （2026-09-26 审查：只查成员信息会漏掉"全员禁言"这种它本来就要拦的情形）。
+      // 两边各自兜错：任一个接口缺失或失败，都不该把另一个的结果一起丢掉。
+      const selfInfo = (selfId && typeof this.onebot.getGroupMemberInfo === 'function')
+        ? await this.onebot.getGroupMemberInfo(groupId, selfId).catch(() => null)
+        : null;
+      const groupInfo = typeof this.onebot.getGroupInfo === 'function'
+        ? await this.onebot.getGroupInfo(groupId).catch(() => null)
+        : null;
+      const shut = Math.max(
+        muteUntilMs(selfInfo?.shut_up_timestamp, nowSec),
+        muteUntilMs(groupInfo?.group_all_shut, nowSec)
+      );
+      if (shut > 0) { entry.muted = true; entry.untilTs = shut; }
     } catch { /* 查询失败不能阻塞正常发送 */ }
     this.#muteCache.set(chatKey, entry);
-    if (entry.muted) throw new Error(muteError(entry.untilTs));
+    if (entry.muted) throw mutedError(entry.untilTs);
   }
 
   #checkRate(chatKey) {
@@ -235,7 +263,16 @@ export class SendQueue {
     // 部分成功也要让调用方知道：原先只在"全败"时抛错，部分成功会静默丢消息
     if (failed.length > 0) {
       const detail = failed.map((f) => `第${f.index + 1}条「${String(f.text).slice(0, 20)}」：${f.error}`).join('；');
-      if (sent.length === 0) throw new Error(detail);
+      if (sent.length === 0) {
+        // 组合出来的新错误必须继承原始错误码：上层（工具收口）靠 code 区分"预期内失败"
+        // （如 GROUP_MUTED 本群禁言）与真事故。失败原因一致时才继承，混着不同原因就不猜。
+        const codes = new Set(settled
+          .filter((r) => r.status === 'rejected' && r.reason?.code)
+          .map((r) => r.reason.code));
+        const error = new Error(detail);
+        if (codes.size === 1) error.code = [...codes][0];
+        throw error;
+      }
       console.warn(`[sender] 部分发送失败（${failed.length}/${parts.length}）：${detail}`);
     }
     return { sent, failed };

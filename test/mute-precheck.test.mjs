@@ -98,3 +98,86 @@ it('私聊会话不做禁言检测', async () => {
   assert.equal(queryCount, 0, '私聊不应触发群成员查询');
   store.close();
 });
+
+// ── 以下为合并后的跟进（2026-09-26 审查）──
+
+it('全员禁言：成员信息没标禁言、群信息标了也要拦', async () => {
+  // 只查成员信息会漏掉"全员禁言"这种它本来就要拦的情形；两个来源取较晚的截止时间。
+  const store = new ChatStore(0, { dataDir: dir });
+  let sendCalled = 0;
+  const sender = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      getGroupMemberInfo: async () => ({ shut_up_timestamp: 0 }),
+      getGroupInfo: async () => ({ group_all_shut: nowSec() + 300 }),
+      sendText: async () => { sendCalled += 1; return { message_id: 1 }; }
+    }
+  });
+  await assert.rejects(() => sender.sendTextBatch('group:1', ['hi']), /禁言中/);
+  assert.equal(sendCalled, 0);
+  store.close();
+});
+
+it('禁言错误带 GROUP_MUTED，发送工具据此不进异常面板', async () => {
+  const store = new ChatStore(0, { dataDir: dir });
+  const sender = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      getGroupMemberInfo: async () => ({ shut_up_timestamp: nowSec() + 600 }),
+      getGroupInfo: async () => ({}),
+      sendText: async () => ({ message_id: 1 })
+    }
+  });
+  const muted = await sender.sendTextBatch('group:1', ['hi']).then(() => null, (e) => e);
+  assert.equal(muted?.code, 'GROUP_MUTED');
+
+  const { buildToolDefs } = await import('../src/tools/tools-core.js');
+  const send = buildToolDefs().find((tool) => tool.name === 'send_message');
+  const ctx = {
+    chatKey: 'group:1', kind: 'group', chatId: '1', selfId: '100',
+    sender, store,
+    session: { leaseId: null, sent: [], id: 's1' },
+    signal: undefined,
+    emit: () => {}
+  };
+  const blocked = await send.execute(ctx, { messages: ['hi'] });
+  assert.equal(blocked.isError, true);
+  assert.match(String(blocked.content), /禁言中/);
+  assert.equal(blocked.reportIncident, false, '禁言不该再记 warning 异常');
+
+  // 对照：普通发送失败仍照旧上报异常（别把口子开太大）
+  const broken = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      getGroupMemberInfo: async () => ({}),
+      getGroupInfo: async () => ({}),
+      sendText: async () => { throw new Error('bridge down'); }
+    }
+  });
+  const failed = await send.execute({ ...ctx, sender: broken }, { messages: ['hi'] });
+  assert.equal(failed.isError, true);
+  assert.notEqual(failed.reportIncident, false);
+  store.close();
+});
+
+it('毫秒级/离谱的禁言时间戳按未禁言处理（宁可漏拦，不可误封）', async () => {
+  const store = new ChatStore(0, { dataDir: dir });
+  let sendCalled = 0;
+  const sender = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      // 误把毫秒当秒用就等于从此不再发言：这种值必须忽略
+      getGroupMemberInfo: async () => ({ shut_up_timestamp: (nowSec() + 600) * 1000 }),
+      getGroupInfo: async () => ({}),
+      sendText: async () => { sendCalled += 1; return { message_id: 1 }; }
+    }
+  });
+  const r = await sender.sendTextBatch('group:1', ['hi']);
+  assert.equal(r.sent.length, 1, '离谱时间戳不拦发送');
+  assert.equal(sendCalled, 1);
+  store.close();
+});

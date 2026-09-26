@@ -135,6 +135,19 @@ function err(message, metadata = {}) {
   return { content: `错误：${message}`, isError: true, ...metadata };
 }
 
+/**
+ * 发送类工具的失败收口。除了沿用"已捕获过就不再记"的约定，还把"预期内失败"排除出异常面板：
+ * 被禁言（GROUP_MUTED）期间每轮都会撞上，记成 warning 只会把控制台刷满 ——
+ * 模型当轮拿到原因、决定先不发言就够了。
+ */
+function sendErr(error, metadata = {}) {
+  return err(error?.message ?? error, {
+    incidentCaptured: error?.incidentCaptured === true,
+    ...(error?.code === 'GROUP_MUTED' ? { reportIncident: false } : {}),
+    ...metadata
+  });
+}
+
 const REPAIRABLE_ARGUMENT_TOOLS = new Set(['finish']);
 
 // 修复逻辑已抽到 core/json-repair.js 与 relationship-pilot（影子评估）共用，
@@ -282,9 +295,7 @@ export function buildToolDefs() {
           if (result.failed.length) note.push(`（另有 ${result.failed.length} 条发送失败：${result.failed.map((f) => f.error).join('；')}——成功的不需要重发，失败的请稍后再试或减少条数）`);
           return ok({ sent: result.sent.length, messageIds: result.sent.map((s) => s.messageId), note: note.join('') });
         } catch (error) {
-          return err(error?.message ?? error, {
-            incidentCaptured: error?.incidentCaptured === true
-          });
+          return sendErr(error);
         }
       }
     },
@@ -327,9 +338,7 @@ export function buildToolDefs() {
           ctx.emit('session-update', ctx.session.id);
           return ok({ sent: true, messageId: result?.message_id ?? null, note: '表情已发送。' });
         } catch (error) {
-          return err(error?.message ?? error, {
-            incidentCaptured: error?.incidentCaptured === true
-          });
+          return sendErr(error);
         }
       }
     },
@@ -452,7 +461,7 @@ export function buildToolDefs() {
           ctx.emit('session-update', ctx.session.id);
           return ok({ sent: true, faceId: hit.face.id, name: hit.face.name, messageId: result?.message_id ?? null, note: '系统表情已发送。' });
         } catch (error) {
-          return err(error?.message ?? error);
+          return sendErr(error);
         }
       }
     },
@@ -514,9 +523,7 @@ export function buildToolDefs() {
           }
           return ok({ poked: true });
         } catch (error) {
-          return err(error?.message ?? error, {
-            incidentCaptured: error?.incidentCaptured === true
-          });
+          return sendErr(error);
         }
       }
     },
