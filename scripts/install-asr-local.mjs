@@ -73,13 +73,27 @@ const has = (cmd) => {
   return !probe.error;
 };
 
-/** 下载（流式写盘 + 背压 + 出错兜底 + 单次超时），失败会清掉半截文件。 */
-async function download(url, dest) {
+/**
+ * 下载（流式写盘 + 背压 + 出错兜底），失败会清掉半截文件。
+ * 超时用"空闲超时"而不是总时长：默认模型 466MB，120 秒总预算要求 ≈3.9MB/s，
+ * 慢线路必然中途失败并白白轮换镜像（2026-09-26 审查）。只要还在出数据就一直等，
+ * 卡住不动超过 idleMs 才换镜像 —— 这才是我们要防的"镜像站挂起"。
+ */
+export async function download(url, dest, { idleMs = 60000, fetchFn = fetch } = {}) {
   const tmp = `${dest}.part`;
   let file = null;
+  const controller = new AbortController();
+  let idleTimer = null;
+  const armIdle = (fail) => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { fail(new Error(`下载卡住超过 ${Math.round(idleMs / 1000)} 秒，换下一个镜像`)); }, idleMs);
+    idleTimer.unref?.();
+  };
   try {
-    // 单次请求超时：镜像站挂起时不能永远等（否则镜像轮换形同虚设）
-    const res = await fetch(url, { signal: AbortSignal.timeout(120000) });
+    let stuck = null;
+    const stalled = new Promise((_, reject) => { stuck = reject; });
+    armIdle(stuck);
+    const res = await fetchFn(url, { signal: controller.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const total = Number(res.headers.get('content-length') || 0);
     file = fs.createWriteStream(tmp);
@@ -87,7 +101,14 @@ async function download(url, dest) {
     const failed = new Promise((_, reject) => file.on('error', reject));
     let written = 0;
     let lastLog = 0;
-    for await (const chunk of res.body) {
+    const body = res.body;
+    const iterator = body[Symbol.asyncIterator]();
+    for (;;) {
+      // 每收一块就重置空闲计时；卡住则由 stalled 先 reject
+      const next = await Promise.race([iterator.next(), stalled]);
+      if (next.done) break;
+      const chunk = next.value;
+      armIdle(stuck);
       if (!file.write(chunk)) await Promise.race([new Promise((r) => file.once('drain', r)), failed]);
       written += chunk.length;
       if (Date.now() - lastLog > 2000) {
@@ -102,9 +123,12 @@ async function download(url, dest) {
     process.stdout.write(CR + '     ');
     return written;
   } catch (error) {
+    try { controller.abort(); } catch { /* 已经结束 */ }
     try { file?.destroy(); } catch { /* 关不掉就随进程退出 */ }
     try { fs.rmSync(tmp, { force: true }); } catch { /* 清不掉无害 */ }
     throw error;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
   }
 }
 
@@ -207,8 +231,16 @@ async function main() {
     console.log('· 装好了。重启服务（或在控制台保存一次设置）后生效。');
   } else if (opts.restart) {
     console.log('· 重启服务让新配置生效…');
-    run('./manage.sh', ['restart'], { cwd: ROOT, allowFail: true });
-    console.log('· 完成。');
+    // 结果要如实报：manage.sh 失败（没装服务/权限不对）还说"完成"，
+    // 用户会以为已经在跑了，实际还是旧配置（2026-09-26 审查）
+    const restarted = run('./manage.sh', ['restart'], { cwd: ROOT, allowFail: true });
+    if (restarted.ok) {
+      console.log('· 完成。');
+    } else {
+      console.log('· 重启没成功，新配置尚未生效。请手动执行：');
+      console.log(`    cd ${ROOT} && ./manage.sh restart`);
+      if (restarted.stderr?.trim()) console.log(`  （manage.sh 输出：${restarted.stderr.trim().slice(-200)}）`);
+    }
   } else {
     console.log('· 装好了。运行中的服务需要重启才会读到新配置：');
     console.log(`    cd ${ROOT} && ./manage.sh restart`);

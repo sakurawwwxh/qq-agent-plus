@@ -51,9 +51,28 @@ function mutedError(untilTs) {
 // 单位一旦被误读（有的实现给毫秒），拿原值比较就等于从此不再发言 —— 宁可漏拦
 // （回到交给 QQ 服务端兜底的老行为），不可误封。超限值按未禁言处理，并留一行日志。
 const MUTE_MAX_AHEAD_SEC = 365 * 24 * 3600;
-function muteUntilMs(raw, nowSec) {
+/**
+ * 1 / true 这种"标志位"形态：OneBot v11 没规定 group_all_shut 的单位，
+ * NapCat 等实现回的是"是否全员禁言"的布尔/标志位。它是"禁言中、解除时间未知"，
+ * 必须与"秒级时间戳"区别对待 —— 直接当秒级时间戳比大小的话 1 <= now → 永远拦不住，
+ * 就退化成原来"发出后吃 result=120"的老行为（2026-09-26 审查）。
+ * 返回 'flag' 表示标志位，0 表示没禁言，正数表示解禁秒级时间戳。
+ */
+export function muteMark(raw, nowSec) {
+  if (raw === true || raw === 1 || raw === '1' || raw === 'true') return 'flag';
   const shut = Number(raw || 0);
   if (!Number.isFinite(shut) || shut <= nowSec) return 0;
+  if (shut > nowSec + MUTE_MAX_AHEAD_SEC) {
+    console.warn('[send] 禁言时间戳超出常识范围（>365 天），按未禁言处理:', raw);
+    return 0;
+  }
+  return shut;
+}
+
+function muteUntilMs(raw, nowSec) {
+  const shut = muteMark(raw, nowSec);
+  if (shut === 'flag') return 0;              // 标志位没有解禁时间，交给下面单独判定
+  if (!shut) return 0;
   if (shut > nowSec + MUTE_MAX_AHEAD_SEC) {
     console.warn('[send] 禁言时间戳超出常识范围（>365 天），按未禁言处理:', raw);
     return 0;
@@ -86,8 +105,11 @@ export class SendQueue {
     const cached = this.#muteCache.get(chatKey);
     const now = Date.now();
     if (cached && now - cached.checkedAt < 60_000) {
-      if (cached.muted) throw mutedError(cached.untilTs);
-      return;
+      // 缓存的是"当时被禁言 + 解禁时间"：解禁时间已过就不能再拦，
+      // 否则短禁言（1 分钟级）解除后这一分钟内仍会被拒，而且报的还是已经过去的时间（2026-09-26 审查）。
+      if (cached.muted && (cached.untilTs > now || cached.untilTs === 0)) throw mutedError(cached.untilTs);
+      if (cached.muted) { /* 已到期：往下重新查一次，别用过期的结论 */ }
+      else return;
     }
     const entry = { muted: false, untilTs: 0, checkedAt: now };
     const nowSec = now / 1000;
@@ -108,6 +130,8 @@ export class SendQueue {
         muteUntilMs(groupInfo?.group_all_shut, nowSec)
       );
       if (shut > 0) { entry.muted = true; entry.untilTs = shut; }
+      // 全员禁言以标志位形态返回时没有解禁时间：同样要拦，但文案说"解除时间未知"
+      else if (muteMark(groupInfo?.group_all_shut, nowSec) === 'flag') { entry.muted = true; entry.untilTs = 0; }
     } catch { /* 查询失败不能阻塞正常发送 */ }
     this.#muteCache.set(chatKey, entry);
     if (entry.muted) throw mutedError(entry.untilTs);

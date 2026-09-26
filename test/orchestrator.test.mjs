@@ -682,6 +682,45 @@ describe('Orchestrator', () => {
     assert.equal([...system.matchAll(/stickerId：/g)].length, 10, '条数按配置取满');
   });
 
+  it('图片输入关掉时，表情清单不能再教模型"先看一眼"（提示词不能自相矛盾）', async (t) => {
+    const { cfg, runner, append } = fixture(t);
+    cfg.sticker.enabled = true;
+    cfg.sticker.promptMaxStickers = 10;
+    cfg.api.vision = false;                       // 关掉图片输入：get_sticker_image 会被摘掉工具
+    setRuntimeConfig(cfg);
+    const entries = [];
+    for (let i = 1; i <= 12; i++) {
+      entries.push({
+        id: `st-${i}`,
+        // 一半有备注、一半没有：关掉图片输入时，没备注的既看不懂也没法看图，不该留在清单里
+        desc: i % 2 ? `备注${i}` : '',
+        url: `https://example.com/${i}.png`,
+        useCount: 0, lastUsedAt: 0, createdAt: new Date(1_700_000_000_000 + i).toISOString()
+      });
+    }
+    runner.stickers = { sync: async () => ({ entries }), list: async () => ({ total: entries.length, stickers: [] }) };
+    let system = '';
+    let tools = [];
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      system = body.messages[0].content;
+      tools = body.tools || [];
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+    append(1, '哈哈', '42');
+    await runner.wake('group:1');
+    assert.equal(tools.some((tool) => tool.function?.name === 'get_sticker_image'), false, '工具已摘掉');
+    // 只看【可用表情包】那一段（角色卡正文是管理员内容，可能仍提到这个工具，不归这里管）：
+    // 清单不能再说"可以先 get_sticker_image 看一眼"——那句话指向一个不存在的工具
+    const listBlock = system.slice(system.indexOf('【可用表情包】'));
+    assert.ok(listBlock.includes('stickerId：'), '清单段要在');
+    assert.equal(listBlock.includes('get_sticker_image'), false, '清单里不该再出现这个工具名');
+    assert.equal(listBlock.includes('st-2（'), false, '没备注的（看不明白也用不了看图工具）不该列出来');
+    assert.ok(listBlock.includes('st-1'), '有备注的照常列');
+    assert.match(system, /看不到图/, '看不到图时的口径要在');
+    cfg.api.vision = true;
+  });
+
   it('get_message_audio 只在 ASR 开关打开且配了 key 时注入（与搜索开关解耦）', async (t) => {
     const { cfg, runner, append } = fixture(t);
     const bodies = [];

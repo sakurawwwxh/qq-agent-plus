@@ -242,7 +242,9 @@ test('阿里百炼：请求形状（chat + input_audio）与文本抽取', async
   assert.equal(seen[0].url, `${dashscopeEndpoint('')}`);
   assert.match(seen[0].url, /compatible-mode\/v1\/chat\/completions$/);
   assert.equal(seen[0].auth, 'Bearer sk-test');
-  assert.equal(seen[0].body.model, DASHSCOPE_DEFAULT_MODEL, '没填模型时用默认 qwen3-asr-flash');
+  // 与字面量比，不要与模块里的常量比：常量被改成任何值这条断言都会过（自证式断言，2026-09-26 审查）
+  assert.equal(seen[0].body.model, 'qwen3-asr-flash', '没填模型时用默认 qwen3-asr-flash');
+  assert.equal(DASHSCOPE_DEFAULT_MODEL, 'qwen3-asr-flash', '常量本身也得是文档里那个名字');
   const part = seen[0].body.messages[0].content[0];
   assert.equal(part.type, 'input_audio');
   assert.match(part.input_audio.data, /^data:audio\/wav;base64,/);
@@ -303,9 +305,9 @@ test('路由与分片：百度/腾讯/阿里超过 55 秒会被切片，逐段�
   assert.equal(calls.baidu, 1);
 });
 
-test('讯飞：单片音频用 status=2（只发 0 会让服务端永远不返回最终结果）', async (t) => {
+test('讯飞：单片音频补空首帧 + 末帧 status=2（帧序与"必须给末帧"两头都要满足）', async (t) => {
   const { iflytekTranscribe } = await import('../src/llm/asr-iflytek.js');
-  const statuses = [];
+  const frames = [];
   const wss = new WebSocketServer({ port: 0 });
   await new Promise((resolve) => wss.on('listening', resolve));
   const port = wss.address().port;
@@ -313,7 +315,7 @@ test('讯飞：单片音频用 status=2（只发 0 会让服务端永远不返�
   wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
       const msg = JSON.parse(String(raw));
-      statuses.push(msg.data.status);
+      frames.push({ status: msg.data.status, bytes: String(msg.data.audio || '').length });
       if (msg.data.status === 2) {
         ws.send(JSON.stringify({ code: 0, data: { status: 2, result: { ws: [{ cw: [{ w: '短' }] }] } } }));
       }
@@ -325,5 +327,39 @@ test('讯飞：单片音频用 status=2（只发 0 会让服务端永远不返�
     url: `ws://127.0.0.1:${port}/v2/iat?authorization=x`, WebSocketImpl: WebSocket
   });
   assert.equal(text, '短');
-  assert.deepEqual(statuses, [2], '单片必须直接发 status=2');
+  // 官方要求"第一帧 status=0、最后一帧必须 status=2"。单片两个身份都占：先发空首帧、再发音频末帧。
+  assert.deepEqual(frames.map((f) => f.status), [0, 2], '单片要空首帧(0) + 音频末帧(2)');
+  assert.equal(frames[0].bytes, 0, '首帧不带音频');
+  assert.ok(frames[1].bytes > 0, '末帧带音频');
+});
+
+test('讯飞：异常断开不能把半截文本当成功（否则报成"可能整段是静音"）', async (t) => {
+  const { iflytekTranscribe } = await import('../src/llm/asr-iflytek.js');
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise((resolve) => wss.on('listening', resolve));
+  const port = wss.address().port;
+  t.after(() => new Promise((r) => wss.close(r)));
+  wss.on('connection', (ws) => {
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(String(raw));
+      // 先给半句结果，再用 1011/1006 这种异常码断开
+      if (msg.data.status === 2 || msg.data.status === 0) {
+        ws.send(JSON.stringify({ code: 0, data: { status: 1, result: { ws: [{ cw: [{ w: '半句' }] }] } } }));
+        setTimeout(() => { try { ws.close(1011); } catch { /* 已关 */ } }, 10);
+      }
+    });
+  });
+  await assert.rejects(
+    () => iflytekTranscribe(Buffer.alloc(600), {
+      appId: 'A', apiKey: 'K', apiSecret: 'S', frameDelayMs: 0,
+      url: `ws://127.0.0.1:${port}/v2/iat?authorization=x`, WebSocketImpl: WebSocket
+    }),
+    /连接被中断（close 1011）/
+  );
+});
+
+test('讯飞：wp 保留字段里出现哨兵值时不能拼进正文', async () => {
+  const { iflytekTextOf } = await import('../src/llm/asr-iflytek.js');
+  assert.equal(iflytekTextOf({ data: { result: { ws: [{ cw: [{ w: '你好' }], wp: '-1' }] } } }), '你好');
+  assert.equal(iflytekTextOf({ data: { result: { ws: [{ cw: [{ w: '你好' }], wp: '，' }] } } }), '你好，');
 });

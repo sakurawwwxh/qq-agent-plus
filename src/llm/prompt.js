@@ -398,7 +398,10 @@ export function buildSystemPrompt({
     const stickerCtx = buildStickerContext(
       stickerEntries,
       cappedByTokenSaver(wantStickers > 0 ? wantStickers : 10, stickerCap),
-      { vision: cfg.api?.vision !== false }
+      // 这里必须读 getConfig()：本函数里的 cfg 是 persona 对象（没有 api 字段），
+      // 写成 cfg.api?.vision 会恒为 undefined → 关掉图片输入后照样教模型"先看一眼"
+      // （2026-09-26 审查：提示词自相矛盾，还指向一个已被摘掉的工具）
+      { vision: getConfig().api?.vision !== false }
     );
     if (stickerCtx) parts.push('', stickerCtx);
   }

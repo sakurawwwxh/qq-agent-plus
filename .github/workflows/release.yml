@@ -37,6 +37,10 @@ jobs:
           # 而 ops scan 只扫 src 下的 .js，scripts/test/ui 的语法门禁全在这一步。
           # mapfile + 非空断言：`for f in $(find ...)` 吃掉 find 的退出码，find 失败时
           # 会打印"通过（0 个文件）"并成功退出，等于门禁空转。
+          # 四个目录也要先确认存在：find 对"目录不存在"只报错，少检一个目录同样是静默通过。
+          for d in src scripts test ui; do
+            [ -d "$d" ] || { echo "缺少目录：$d"; exit 1; }
+          done
           mapfile -t files < <(find src scripts test ui -type f \( -name '*.js' -o -name '*.mjs' \) | sort)
           [[ ${#files[@]} -gt 0 ]] || { echo "没有找到任何待检查文件"; exit 1; }
           for f in "${files[@]}"; do node --check "$f"; done

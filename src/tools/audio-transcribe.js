@@ -123,6 +123,14 @@ export async function currentMessageAudioUrl(ctx, entry) {
  * 55 秒一段（留余量），片与片之间不做重叠 —— 切在词中间时那一处可能略糙，这是短接口的固有代价。
  */
 export const SHORT_API_CHUNK_SECONDS = 55;
+/** OpenAI 兼容服务多为 25MB 上传上限：留出余量，超过就分片（15 分钟音频约 28.8MB）。 */
+export const OPENAI_WAV_MAX_BYTES = 20 * 1024 * 1024;
+/**
+ * 按音频实际时长推流的供应商（本机 whisper 约 1.5~2 倍实时、讯飞按 40ms/帧真实节奏）。
+ * 它们转不了长音频：一次运行有总时限（默认 180 秒、上限 240 秒），超了必然中途被掐断。
+ * 与其让用户等两分钟拿一句 "Run deadline exceeded"，不如提前说清并给替代方案（2026-09-26 审查）。
+ */
+export const PACED_ASR_PROVIDERS = ['local', 'iflytek'];
 
 /** 把 PCM 切成若干段（导出便于测试）。 */
 export function chunkPcm(pcm, seconds = SHORT_API_CHUNK_SECONDS, bytesPerSecond = 32000) {
@@ -132,23 +140,53 @@ export function chunkPcm(pcm, seconds = SHORT_API_CHUNK_SECONDS, bytesPerSecond 
   return out.length ? out : [pcm];
 }
 
-/** 逐片转写后拼接（片内文本依次相连；国内这几家自带标点，拼起来通常可读）。 */
+/**
+ * 逐片转写后拼接：中文/标点直接相连（这几家自带标点），但只要两侧都是西文单词字符
+ * 就补一个空格 —— 55 秒切在词中间时，否则会拼出 helloworld（2026-09-26 审查）。
+ */
+export function joinChunkTexts(texts) {
+  let out = '';
+  for (const raw of texts) {
+    const text = String(raw || '').trim();
+    if (!text) continue;
+    if (out && /[A-Za-z0-9]$/.test(out) && /^[A-Za-z0-9]/.test(text)) out += ' ';
+    out += text;
+  }
+  return out;
+}
+
 async function transcribeInChunks(pcm, perChunk, { signal } = {}) {
   const pieces = chunkPcm(pcm);
   const texts = [];
-  for (const piece of pieces) {
+  for (let i = 0; i < pieces.length; i += 1) {
     signal?.throwIfAborted();
-    const text = await perChunk(piece, { signal });
-    if (text) texts.push(String(text));
+    try {
+      const text = await perChunk(pieces[i], { signal });
+      if (text) texts.push(String(text));
+    } catch (error) {
+      // 已经转写（也已经计费）的前几片别白丢：把进度写进错误里，用户至少知道钱花在哪、要不要重试
+      const detail = String(error?.message ?? error);
+      throw new Error(pieces.length > 1
+        ? `第 ${i + 1}/${pieces.length} 片转写失败（前 ${texts.length} 片已出结果）：${detail}`
+        : detail);
+    }
   }
-  return texts.join('');
+  return joinChunkTexts(texts);
 }
 
 export async function runProvider(cfg, pcm, { signal } = {}) {
   const provider = asrProvider(cfg);
   if (provider === 'local') return await localTranscribe(cfg, pcm, signal);
   if (provider === 'openai') {
-    return await openAiCompatibleTranscribe(pcmToWav(pcm), { ...openAiProviderOptions(cfg), signal });
+    const wav = pcmToWav(pcm);
+    // 多数 OpenAI 兼容服务对上传体积有 25MB 上限，而 15 分钟 = 28.8MB 必被拒。
+    // 正常长度的语音仍然整段发（保留上下文与标点），只有超限的才切片（2026-09-26 审查）。
+    if (wav.length <= OPENAI_WAV_MAX_BYTES) {
+      return await openAiCompatibleTranscribe(wav, { ...openAiProviderOptions(cfg), signal });
+    }
+    return await transcribeInChunks(pcm, (piece) => openAiCompatibleTranscribe(
+      pcmToWav(piece), { ...openAiProviderOptions(cfg), signal }
+    ), { signal });
   }
   if (provider === 'aliyun') {
     // 百炼走的是 chat 接口：单请求能吃多长没有公开上限（未实测），所以与短接口一样分片，
@@ -176,12 +214,30 @@ export function localTimeoutMs(pcmBytes) {
   return Math.min(30 * 60 * 1000, 60 * 1000 + seconds * 8 * 1000);
 }
 
+/**
+ * 按真实时长推流的供应商，单次运行最多能转多少秒音频：
+ * 预算 = 运行总时限（默认 180 秒，上限 240 秒）减去握手/下载/转码/模型轮次的余量；
+ * 本机 whisper 约 2 倍实时，能转的时长再砍半。返回 0 表示"不做这道闸门"（一次上传的服务不受限）。
+ */
+export function pacedAudioLimitSeconds(cfg, provider) {
+  if (!PACED_ASR_PROVIDERS.includes(provider)) return 0;
+  const runMs = Math.min(240000, Number(cfg?.api?.runTimeoutMs) || 180000);
+  const budget = Math.max(30, Math.round(runMs / 1000) - 30);
+  return provider === 'local' ? Math.floor(budget / 2) : budget;
+}
+
 /** 本机转写：whisper.cpp 只吃文件，所以把 PCM 套 WAV 头落盘再调用（fs/path/os 都在文件顶层 import）。 */
 async function localTranscribe(cfg, pcm, signal) {
-  const bin = await resolveWhisperBin(asrLocalBin(cfg));
+  const configured = asrLocalBin(cfg);
+  const bin = await resolveWhisperBin(configured);
   if (!bin) {
-    throw new Error('本机转写没装好（找不到 whisper.cpp 可执行文件）：在服务器上跑一次 '
-      + '`node scripts/install-asr-local.mjs` 即可；也可以把「识别服务」换成火山或 OpenAI 兼容服务');
+    const named = String(cfg?.asr?.localBin || '').trim();
+    throw new Error(named
+      // 配置里填了路径却跑不起来：必须把那条路径说出来，否则用户只能猜（2026-09-26 审查）
+      ? `本机转写不可用：配置里的可执行文件跑不起来（${named}）。核对路径，或清空后让服务自动找 `
+        + 'whisper-cli；也可以把「识别服务」换成火山或 OpenAI 兼容服务'
+      : '本机转写没装好（找不到 whisper.cpp 可执行文件）：在服务器上跑一次 '
+        + '`node scripts/install-asr-local.mjs` 即可；也可以把「识别服务」换成火山或 OpenAI 兼容服务');
   }
   const wavPath = join(tmpdir(), `qa-asr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
   writeFileSync(wavPath, pcmToWav(pcm));
@@ -206,6 +262,11 @@ export async function transcribeMessageAudio(ctx, entry) {
   try {
     if (!target.url) {
       return { ok: false, error: `文件「${target.name || '未知'}」拿不到下载地址（协议端未提供 URL），暂无法转写` };
+    }
+    // "压根没配好"要在扣配额/下载之前就判掉：否则用户白扣一次额度、白下载转码一遍，
+    // 最后才看到"还没配好"（2026-09-26 审查）。
+    if (!asrConfigured(getConfig())) {
+      return { ok: false, error: '语音识别还没配好，无法转写音频。请管理员在控制台「设置 → 语音转文字」里把当前供应商填齐（或设环境变量 ASR_API_KEY）' };
     }
     // 配额在"确定要下载+转码"这一步才扣：调错消息（没有音频/拿不到地址）不该消耗额度，
     // 但下载与转码本身就占资源，所以在下载前扣。按量计费的服务，这道闸门是真金白银。
@@ -234,6 +295,14 @@ export async function transcribeMessageAudio(ctx, entry) {
     const cfg = getConfig();
     if (!asrConfigured(cfg)) {
       return { ok: false, error: '语音识别还没配好，无法转写音频。请管理员在控制台「设置 → 语音转文字」里把当前供应商填齐（或设环境变量 ASR_API_KEY）' };
+    }
+    // 按真实时长推流的供应商转不完长音频：提前说清，别让用户等两分钟才拿到一句超时
+    const pacedLimit = pacedAudioLimitSeconds(cfg, asrProvider(cfg));
+    if (pacedLimit > 0 && pcm.length > pacedLimit * 32000) {
+      const seconds = Math.round(pcm.length / 32000);
+      return { ok: false, error: `音频太长（${seconds} 秒）：当前这家的转写要按音频实际时长逐帧推流，`
+        + `一次运行时限里大约只能转 ${pacedLimit} 秒，再长会中途超时。`
+        + '可以换「火山 / 硅基流动」这类一次上传的服务，或把音频截短后再发' };
     }
     try {
       const text = await runProvider(cfg, pcm, { signal: ctx.signal });

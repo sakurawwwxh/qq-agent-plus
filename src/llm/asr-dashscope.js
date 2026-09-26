@@ -2,7 +2,7 @@
 // 为什么不用 /audio/transcriptions：实测（2026-09-26，国内 VPS 无 Key）该路由 404，而同一主机上
 // 故意问一个不存在的路由也 404（先路由后鉴权）→ 那个路由确实不存在；DashScope 的 ASR 是
 // chat/completions + input_audio 这种形态。paraformer-v2 / sensevoice-v1 只有异步文件识别，暂不适配。
-import { getConfig } from '../core/config.js';
+import { asrApiKey, getConfig } from '../core/config.js';
 
 /** 默认地址与模型（控制台预设用；也允许用户改成别的兼容网关）。 */
 export const DASHSCOPE_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -23,6 +23,8 @@ export async function dashscopeTranscribe(wavBuffer, {
   const useModel = String(model || '').trim() || DASHSCOPE_DEFAULT_MODEL;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('语音识别请求超时')), timeoutMs);
+  // 已经中止的 signal 要在发请求之前就退出：只挂监听的话，请求会照发（取消后仍计费）
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
   const onAbort = () => controller.abort(signal?.reason ?? new Error('已中止'));
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
@@ -61,7 +63,7 @@ export async function dashscopeTranscribe(wavBuffer, {
 export function dashscopeOptions(cfg = getConfig()) {
   return {
     baseUrl: String(cfg?.asr?.baseUrl || '').trim() || DASHSCOPE_BASE_URL,
-    apiKey: String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim(),
+    apiKey: asrApiKey(cfg),
     model: String(cfg?.asr?.model || '').trim() || DASHSCOPE_DEFAULT_MODEL
   };
 }

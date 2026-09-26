@@ -183,6 +183,17 @@ export function formatStickerList(entries, query = '', limit = 48) {
 }
 
 /** 提示词里的【可用表情包】摘要（不暴露完整 URL，控制上下文体积）。 */
+// 单行长度上限：条数上限 60 × 每行 300 字 = 最坏 1.8 万字符常驻系统提示（2026-09-26 审查）。
+// 60 字足够让模型认出是哪一张，超出的截断加省略号；标签单独再短一些（它只是辅助）。
+const LABEL_CHARS = 60;
+const TAG_CHARS = 30;
+
+/** 截断到 max 字（含省略号），别让一条超长备注吃满整段提示词。 */
+function clipLine(text, max = LABEL_CHARS) {
+  const value = String(text || '');
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
 export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
   const all = (Array.isArray(entries) ? entries : [])
     .map(normalizeStickerEntry)
@@ -223,13 +234,18 @@ export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
   const lines = top.map((e) => {
     // 备注/标签由模型按群友暗示写入（sticker_note 工具可写），最终拼进**系统提示**的
     // 【可用表情包】段 —— 不过清洗就是一个可持久化的注入位（写了每轮都在）。
-    const label = sanitizeUserText(e.desc || e.localNote || '') || '（无备注，可先看图）';
-    const extra = e.tags?.length ? ` [${e.tags.map((t) => sanitizeUserText(t)).join('/')}]` : '';
+    const label = clipLine(sanitizeUserText(e.desc || e.localNote || '')) || '（无备注，可先看图）';
+    const extra = e.tags?.length ? ` [${clipLine(e.tags.map((t) => sanitizeUserText(t)).join('/'), TAG_CHARS)}]` : '';
     const used = e.useCount ? `（用过${e.useCount}次）` : '（没用过）';
     return `- ${label}${extra}${used}（stickerId：${e.id}）`;
   });
+  // 库刚建起来时"常用的一半"也全是没用过的：那时别写"前几个是常用的"，
+  // 否则和逐行的（没用过）标记自相矛盾（2026-09-26 审查）。
+  const familiarUsed = familiar.filter((e) => (e.useCount || 0) > 0).length;
   const scope = rotation.length
-    ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的（换着发，别老是同一张）`
+    ? (familiarUsed > 0
+      ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的（换着发，别老是同一张）`
+      : `这 ${top.length} 个都还没用过（换着发，别老是同一张）`)
     : `以下是常用的 ${top.length} 个`;
   // 关闭图片输入时不能提 get_sticker_image（那个工具已经不在工具表里了）
   const tail = vision

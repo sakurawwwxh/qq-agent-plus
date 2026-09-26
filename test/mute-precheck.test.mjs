@@ -181,3 +181,49 @@ it('毫秒级/离谱的禁言时间戳按未禁言处理（宁可漏拦，不可
   assert.equal(sendCalled, 1);
   store.close();
 });
+
+// ── 2026-09-26 独立审查跟进：标志位形态 + 缓存到期 ──
+
+it('全员禁言以标志位（1/true）返回时同样要拦：不能当秒级时间戳比大小', async () => {
+  // 生产实测（2026-09-26）：协议端 get_group_info 的 group_all_shut 是 0/1 标志位，
+  // 不是秒级时间戳。当时间戳比大小的话 1 <= now → 永远拦不住，退化成"发出后吃 result=120"。
+  for (const flag of [1, true, '1']) {
+    const store = new ChatStore(0, { dataDir: dir });
+    let sendCalled = 0;
+    const sender = new SendQueue({
+      store,
+      onebot: {
+        selfId: '100',
+        getGroupMemberInfo: async () => ({ shut_up_timestamp: 0 }),
+        getGroupInfo: async () => ({ group_all_shut: flag }),
+        sendText: async () => { sendCalled += 1; return { message_id: 1 }; }
+      }
+    });
+    await assert.rejects(() => sender.sendTextBatch('group:1', ['hi']), /全员禁言/);
+    assert.equal(sendCalled, 0, `标志位 ${flag} 时不该发出去`);
+    store.close();
+  }
+});
+
+it('短禁言到期后不再拦（缓存里存的是"解禁时间"，过期就得重查）', async () => {
+  // 旧行为：缓存命中只看"60 秒内查过"，不看解禁时间是否已过 ——
+  // 1 分钟级的禁言解除后，仍会被拒最多 60 秒，报的还是已经过去的时间（2026-09-26 审查）。
+  const store = new ChatStore(0, { dataDir: dir });
+  let sendCalled = 0;
+  let memberShut = nowSec() + 1;                 // 1 秒后自动解除
+  const sender = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      getGroupMemberInfo: async () => ({ shut_up_timestamp: memberShut }),
+      getGroupInfo: async () => ({ group_all_shut: 0 }),
+      sendText: async () => { sendCalled += 1; return { message_id: 1 }; }
+    }
+  });
+  await assert.rejects(() => sender.sendTextBatch('group:1', ['hi']), /禁言中/);
+  memberShut = 0;                                 // 服务端侧已解除
+  await new Promise((r) => setTimeout(r, 1200));
+  await sender.sendTextBatch('group:1', ['hi again']);   // 缓存里 untilTs 已过 → 应重新查询并放行
+  assert.equal(sendCalled, 1, '到期后应能发出');
+  store.close();
+});

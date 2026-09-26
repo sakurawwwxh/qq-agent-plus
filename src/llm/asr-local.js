@@ -59,6 +59,7 @@ export async function localWhisperTranscribe(wavPath, {
   timeoutMs = 10 * 60 * 1000, signal
 } = {}) {
   if (!model) throw new Error('未配置本机转写的模型文件路径（asr.localModel）');
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
   const outPrefix = `${wavPath}.asr`;
   const textFile = `${outPrefix}.txt`;
   return await new Promise((resolve, reject) => {

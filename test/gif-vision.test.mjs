@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { after, before, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-gif-vision-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
@@ -99,13 +100,23 @@ test('base64:// 路径的 GIF 同样转 JPEG', async () => {
   assert.match(dataUrl, /^data:image\/jpeg;base64,/);
 });
 
-test('ffmpeg 缺失时回退原始 GIF data URL（行为不劣化）', async () => {
-  if (hasFfmpeg) return; // 仅在无 ffmpeg 环境验证回退（CI 的 ubuntu runner 无 ffmpeg，正好覆盖）
-  servedGif = TINY_GIF;
-  try {
-    const dataUrl = await downloadImageAsDataUrl(`http://127.0.0.1:${port}/img`);
-    assert.match(dataUrl, /^data:image\/gif;base64,/);
-  } finally {
-    servedGif = null;
-  }
+test('ffmpeg 缺失时回退原始 GIF data URL（在"没有 ffmpeg"的子进程里验证）', () => {
+  // 2026-09-26 审查：CI 装上 ffmpeg 之后，`if (hasFfmpeg) return` 让这条回退路径在 runner 上
+  // 永远不会执行（而且 return 计入"通过"）。改成起一个 PATH 里没有 ffmpeg 的子进程来覆盖：
+  // 无论跑测试的机器装没装 ffmpeg，这条生产回退路径都真的被测到。
+  const mod = pathToFileURL(path.resolve('src/tools/tools-core.js')).href;
+  const gif = TINY_GIF.toString('base64');
+  const script = `
+    const { downloadImageAsDataUrl } = await import(${JSON.stringify(mod)});
+    const out = await downloadImageAsDataUrl('base64://' + ${JSON.stringify(gif)});
+    if (!out.startsWith('data:image/gif;base64,')) { console.error('NOT_FALLBACK:' + out.slice(0, 32)); process.exit(3); }
+    console.log('FALLBACK_OK');
+  `;
+  const empty = path.join(os.tmpdir(), 'qq-no-ffmpeg-path');
+  const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    env: { ...process.env, PATH: empty, Path: empty, QQ_AGENT_DATA_DIR: dataDir },
+    encoding: 'utf8'
+  });
+  assert.equal(res.status, 0, `子进程应成功回退：${res.stderr || res.stdout}`);
+  assert.match(res.stdout, /FALLBACK_OK/);
 });

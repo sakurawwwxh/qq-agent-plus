@@ -7,7 +7,7 @@
 // 真机上若 app_id/Key 不对或签名过期，讯飞会回明确错误码（10105/10106/11200 等），会原文透出。
 import crypto from 'node:crypto';
 import WebSocket from 'ws';
-import { getConfig } from '../core/config.js';
+import { asrApiKey, asrSecretKey, getConfig } from '../core/config.js';
 
 export const IFLYTEK_HOST = 'iat-api.xfyun.cn';
 export const IFLYTEK_PATH = '/v2/iat';
@@ -52,8 +52,9 @@ export function iflytekTextOf(message) {
   for (const piece of ws) {
     const cw = Array.isArray(piece?.cw) ? piece.cw : [];
     for (const item of cw) if (item?.w) parts.push(String(item.w));
-    // 标点用 wp 字段（开了标点才有）
-    if (typeof piece?.wp === 'string') parts.push(piece.wp);
+    // 标点用 wp 字段（开了标点才有）。官方把 sc/wb/wc/we/wp 列为保留字段，
+    // 少数实现会给哨兵值（例如 "-1"）—— 那种不是标点，拼进正文会污染转写结果（2026-09-26 审查）。
+    if (typeof piece?.wp === 'string' && /^[\p{P}\p{S}]{1,2}$/u.test(piece.wp)) parts.push(piece.wp);
   }
   return parts.join('');
 }
@@ -68,6 +69,7 @@ export async function iflytekTranscribe(pcmBuffer, {
 } = {}) {
   if (!appId) throw new Error('未配置讯飞 AppID');
   if (!apiKey || !apiSecret) throw new Error('未配置讯飞 APIKey / APISecret');
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
   const url = urlOverride || iflytekSignedUrl({ apiKey, apiSecret });
   const ws = new WebSocketImpl(url, { maxPayload: 8 * 1024 * 1024 });
   return await new Promise((resolve, reject) => {
@@ -96,11 +98,14 @@ export async function iflytekTranscribe(pcmBuffer, {
           chunks.push(pcmBuffer.subarray(i, Math.min(i + IFLYTEK_FRAME_BYTES, pcmBuffer.length)));
         }
         if (!chunks.length) chunks.push(Buffer.alloc(0));
+        // 官方要求"第一帧必须 status=0、最后一帧必须 status=2"。单片音频两个身份都占：
+        // 先发一个空的首帧（status=0）把帧序补齐，再把音频作为末帧（status=2）发出去 ——
+        // 只发一个 2 是否被受理无法静态确认，空首帧则两种要求都满足（2026-09-26 审查）。
+        const single = chunks.length === 1;
+        if (single) ws.send(iflytekFrame({ appId, audio: null, status: 0, business }));
         for (let i = 0; i < chunks.length; i += 1) {
           if (done) return;
-          // 单片（只有一个帧块，含极短的尾块）要用 status=2：讯飞把"只有末帧"当一次性输入收下；
-          // 只发 0 不给 2 的话服务端永远不返回最终结果，只能等超时（审查抓到）。
-          const status = chunks.length === 1 ? 2 : (i === 0 ? 0 : (i === chunks.length - 1 ? 2 : 1));
+          const status = single ? 2 : (i === 0 ? 0 : (i === chunks.length - 1 ? 2 : 1));
           ws.send(iflytekFrame({ appId, audio: chunks[i], status, business }));
           if (frameDelayMs > 0 && i < chunks.length - 1) {
             await new Promise((r) => setTimeout(r, frameDelayMs));
@@ -117,8 +122,8 @@ export async function iflytekTranscribe(pcmBuffer, {
       if (code !== 0) {
         const hint = {
           10105: '（鉴权失败：核对 APIKey/APISecret）', 10106: '（参数不对：核对 AppID 与语言参数）',
-          10163: '（AppID 与 Key 不匹配）', 11200: '（当日免费额度用完了？）',
-          10165: '（超过 60 秒：需要分片）'
+          10163: '（缺少必传参数或参数不合法：核对 AppID 与语言参数）', 11200: '（当日免费额度用完了？）',
+          10165: '（帧序/status 不合法：首帧要 status=0、末帧要 status=2；也可能是音频超过服务端时长限制）'
         }[code];
         settle(reject, new Error(`讯飞语音听写失败：${message?.message || '未知错误'}（code=${code}${hint ? '，' + hint : ''}）`));
         return;
@@ -128,9 +133,12 @@ export async function iflytekTranscribe(pcmBuffer, {
     });
     ws.on('error', (error) => settle(reject, new Error(`讯飞连接失败：${String(error?.message ?? error)}`)));
     ws.on('close', (code) => {
-      // 正常收尾讯飞也会关连接；已经拿到最终结果时上面已经 settle 了
-      if (!done) settle(resolve, text.trim());
-      void code;
+      // 正常收尾讯飞也会关连接（1000）；已经拿到最终结果时上面已经 settle 了。
+      // 异常断开（1006 被代理/负载均衡掐断、1008 服务端拒绝）不能把半截文本当成功返回 ——
+      // 那会让上层报成"可能整段是静音"，归因完全错（2026-09-26 审查）。
+      if (done) return;
+      if (code === 1000) settle(resolve, text.trim());
+      else settle(reject, new Error(`讯飞连接被中断（close ${code}）：只收到部分结果，请重试`));
     });
   });
 }
@@ -139,7 +147,8 @@ export async function iflytekTranscribe(pcmBuffer, {
 export function iflytekOptions(cfg = getConfig()) {
   return {
     appId: String(cfg?.asr?.appId || '').trim(),
-    apiKey: String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim(),
-    apiSecret: String(cfg?.asr?.secretKey || '').trim()
+    apiKey: asrApiKey(cfg),
+    // APISecret 与腾讯云/百度共用 asr.secretKey：必须取"为讯飞存的"那把
+    apiSecret: asrSecretKey(cfg)
   };
 }

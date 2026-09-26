@@ -7,6 +7,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-image-downsample-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
@@ -85,6 +87,33 @@ test('image/* 超限：交给 ffmpeg 链路，错误形态按环境二选一（�
   } else {
     assert.equal(requestCount, 0, '未装 ffmpeg 时不应发起任何请求');
   }
+});
+
+test('未装 ffmpeg 的分支：在"没有 ffmpeg"的子进程里验证（CI 装了 ffmpeg 也测得到）', async () => {
+  // 上面那条用例按环境二选一断言，CI（装了 ffmpeg）永远只走"有 ffmpeg"那一支；
+  // 这里用 PATH 里没有 ffmpeg 的子进程把"未安装"那一支钉死（2026-09-26 审查）。
+  mode = 'png-huge';
+  requestCount = 0;
+  const mod = pathToFileURL(path.resolve('src/tools/image-downsample.js')).href;
+  const script = `
+    const { fetchOversizedImageAsJpeg } = await import(${JSON.stringify(mod)});
+    try {
+      await fetchOversizedImageAsJpeg(process.argv[1], new Error('响应体超过 13631488 字节限制'));
+      console.error('SHOULD_HAVE_REJECTED');
+      process.exit(4);
+    } catch (error) {
+      if (!/未安装 ffmpeg/.test(String(error?.message || ''))) { console.error('UNEXPECTED:' + error?.message); process.exit(5); }
+      console.log('NO_FFMPEG_OK');
+    }
+  `;
+  const empty = path.join(os.tmpdir(), 'qq-no-ffmpeg-path2');
+  const res = spawnSync(process.execPath, ['--input-type=module', '-e', script, url()], {
+    env: { ...process.env, PATH: empty, Path: empty, QQ_AGENT_DATA_DIR: dataDir },
+    encoding: 'utf8'
+  });
+  assert.equal(res.status, 0, `子进程应以"未安装 ffmpeg"拒绝：${res.stderr || res.stdout}`);
+  assert.match(res.stdout, /NO_FFMPEG_OK/);
+  assert.equal(requestCount, 0, '未装 ffmpeg 时不该发起任何重拉请求');
 });
 
 test('非超限错误原样抛回，不做任何重拉', async () => {

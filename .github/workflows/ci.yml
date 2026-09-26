@@ -35,6 +35,11 @@ jobs:
       - name: 语法检查（src / scripts / test / ui，递归）
         run: |
           set -e
+          # 先确认四个目录都在：find 对"某个目录不存在"只报错不改变退出码传递，
+          # 少检一个目录会静默通过（2026-09-26 审查）。
+          for d in src scripts test ui; do
+            [ -d "$d" ] || { echo "缺少目录：$d"; exit 1; }
+          done
           # 递归：src/ 按领域分了子目录，用 src/*.js 这种 glob 会静默漏掉子目录。
           # 用 mapfile 并断言非空：`for f in $(find ...)` 会吃掉 find 的退出码，find 失败时
           # 循环体一次都不跑，却照样打印"通过（0 个文件）"并成功退出。

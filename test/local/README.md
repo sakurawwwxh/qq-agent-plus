@@ -29,6 +29,9 @@ QQ_AGENT_DATA_DIR=$T node test/local/test-sender-retry.mjs
 | `test-send-tools.mjs` | 工具层发送不再抛 "is not defined"，`replyToMessageId` 的 `#` 被归一化后透传给 sender | 是（写临时目录） | < 2 秒 |
 | `test-inline-fallback.mjs` | 内联工具调用兜底：4 种文本格式能解析、普通文本不误判；关系/身份/每日说说/空间互动都认内联提交 | 建议设（被 import 的模块会读 config.json；用例本身不写数据目录，只写 `/tmp/qz-behavior/`） | < 2 秒 |
 | `test-sticker-lookup.mjs` | `findSticker` 的模糊兜底：id、备注原文、备注半句、模糊词都能命中，空串/不存在不误命中 | 否 | < 1 秒 |
+| `test-qzone-reply-fallback.mjs` | 动态互动的"回复"半边：自己的动态列表被限流（retcode=100）时不整轮抛错，改走"已关注动态 + Cookie 详情"兜底 | 是（写 config.json） | < 2 秒 |
+| `test-thinking-toolchoice.mjs` | 思考模式下强制 `tool_choice` 会 400：要自动降级成"允许模型自选"而不是整次失败 | 是（写 config.json） | < 2 秒 |
+| `test-card-segments.mjs` | 分享卡片（json / xml 段）解析成可读文本，并标注"自己的动态" | 否 | < 1 秒 |
 
 ## 可选用例依赖
 

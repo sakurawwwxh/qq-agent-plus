@@ -194,6 +194,24 @@ test('sticker list keeps familiar ones and rotates unused ones in', () => {
   assert.equal(ids(buildStickerContext(entries, 500)).length, 40);
 });
 
+test('全新表情库：不说"前几个是常用的"，也不让超长备注吃满提示词', () => {
+  // 库刚建起来时前一半也没有用过的 —— 文案写"前 N 个是常用的"会与逐行的（没用过）打架（2026-09-26 审查）
+  const fresh = [];
+  for (let i = 1; i <= 12; i++) {
+    fresh.push({ id: `n-${i}`, desc: `备注${i}`, url: `https://example.com/${i}.png`, useCount: 0, lastUsedAt: 0 });
+  }
+  const prompt = buildStickerContext(fresh, 10);
+  assert.equal(prompt.includes('是常用的'), false, '一句"常用的"都不能有');
+  assert.match(prompt, /都还没用过/);
+
+  // 单行上限：备注 300 字（入库上限）也不该原样进提示词，否则 60 条 × 300 字 ≈ 1.8 万字符
+  const long = [{ id: 'long-1', desc: '长'.repeat(300), url: 'https://example.com/l.png', useCount: 1, lastUsedAt: 1 }];
+  const line = buildStickerContext(long, 1);
+  assert.ok(line.includes('长'.repeat(60)), '前 60 字保留');
+  assert.equal(line.includes('长'.repeat(61)), false, '第 61 字起截断');
+  assert.match(line, /…/);
+});
+
 test('prompt never teaches get_sticker_image when image input is off', () => {
   // 关闭图片输入时 get_sticker_image 会被从工具表里摘掉（orchestrator 的工具过滤）：
   // 提示词再提它就是"教模型调一个不存在的工具"，而没备注的图那种配置下本来也看不懂。

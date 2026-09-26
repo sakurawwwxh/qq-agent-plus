@@ -3,7 +3,7 @@
 //   1. 老式：API Key + Secret Key → 换 access_token（有效期 30 天，这里缓存到进程里）
 //   2. 新式：直接 `Authorization: Bearer bce-v3/ALTAK-...`（把 API Key 原样当 Bearer 用）
 // 限制：单次 ≤60 秒、≤约 3MB（由上层分片）；pcm/wav/amr/m4a 都收，16k/8k 16 位单声道。
-import { getConfig } from '../core/config.js';
+import { asrApiKey, asrSecretKey, getConfig } from '../core/config.js';
 
 export const BAIDU_SPEECH_URL = 'https://vop.baidu.com/server_api';
 export const BAIDU_TOKEN_URL = 'https://aip.baidubce.com/oauth/2.0/token';
@@ -16,7 +16,7 @@ let tokenCache = { value: '', at: 0, fingerprint: '' };
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
 /** 老式鉴权：用 API Key + Secret Key 换 access_token（带缓存；失败时抛百度给的错误文案）。 */
-export async function baiduAccessToken({ apiKey, secretKey, fetchFn = fetch, timeoutMs = 20000, now = Date.now() } = {}) {
+export async function baiduAccessToken({ apiKey, secretKey, fetchFn = fetch, timeoutMs = 20000, now = Date.now(), signal } = {}) {
   const fingerprint = `${String(apiKey || '')}
 ${String(secretKey || '')}`;
   if (tokenCache.value && tokenCache.fingerprint === fingerprint && now - tokenCache.at < TOKEN_TTL_MS) {
@@ -24,7 +24,9 @@ ${String(secretKey || '')}`;
   }
   const url = `${BAIDU_TOKEN_URL}?grant_type=client_credentials`
     + `&client_id=${encodeURIComponent(apiKey || '')}&client_secret=${encodeURIComponent(secretKey || '')}`;
-  const res = await fetchFn(url, { method: 'POST', signal: AbortSignal.timeout(timeoutMs) });
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const res = await fetchFn(url, { method: 'POST', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   const body = await res.text();
   let data = null;
   try { data = JSON.parse(body); } catch { /* 下面按无 token 处理 */ }
@@ -47,10 +49,11 @@ export async function baiduTranscribe(pcmBuffer, {
   apiKey, secretKey, devPid = BAIDU_DEV_PID, cuid = 'qq-agent', timeoutMs = 60000, signal, fetchFn = fetch
 } = {}) {
   if (!apiKey) throw new Error('未配置百度语音的 API Key');
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
   const headers = { 'content-type': 'application/json' };
   let token = '';
   if (String(secretKey || '').trim()) {
-    token = await baiduAccessToken({ apiKey, secretKey, fetchFn });
+    token = await baiduAccessToken({ apiKey, secretKey, fetchFn, signal });
     headers['content-type'] = 'application/json';
   } else {
     // 新式 API Key 直接当 Bearer 用（百度控制台现在默认发 bce-v3/ALTAK-... 这种）
@@ -77,8 +80,12 @@ export async function baiduTranscribe(pcmBuffer, {
     const body = await res.text();
     let data = null;
     try { data = JSON.parse(body); } catch { /* 下面统一报错 */ }
+    // 顺序要紧：HTTP 失败时 body 可能是网关的 JSON（没有 err_no），先看 status 才能带上真实原因；
+    // 2xx 但 body 不是 JSON 也要明说，别当成"没有内容"（2026-09-26 审查）。
+    if (!res.ok) throw new Error(`百度语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`);
+    if (!data) throw new Error(`百度语音识别返回的不是 JSON：${String(body).slice(0, 200)}`);
     // 百度：err_no=0 才是成功；结果在 result[0]
-    if (data && data.err_no !== 0) {
+    if (data.err_no !== 0) {
       const hint = {
         3300: '输入参数不正确', 3301: '音频质量过差', 3302: '鉴权失败（Key/Secret 不对，或没开语音识别服务）',
         3303: '服务端问题', 3304: '用户请求超限（当日免费额度用完？）', 3305: '服务未开通',
@@ -86,7 +93,6 @@ export async function baiduTranscribe(pcmBuffer, {
       }[Number(data.err_no)];
       throw new Error(`百度语音识别失败：${data.err_msg || '未知错误'}（err_no=${data.err_no}${hint ? '，' + hint : ''}）`);
     }
-    if (!res.ok) throw new Error(`百度语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`);
     const list = Array.isArray(data?.result) ? data.result : [];
     return list.map((line) => String(line || '')).join('').trim();
   } finally {
@@ -98,8 +104,9 @@ export async function baiduTranscribe(pcmBuffer, {
 /** 从配置取这套参数。 */
 export function baiduOptions(cfg = getConfig()) {
   return {
-    apiKey: String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim(),
-    secretKey: String(cfg?.asr?.secretKey || '').trim(),
+    apiKey: asrApiKey(cfg),
+    // 老式鉴权才用：同样走绑定后的取值，别把"为腾讯云存的"那把拿给百度
+    secretKey: asrSecretKey(cfg),
     devPid: Number(cfg?.asr?.devPid) || BAIDU_DEV_PID
   };
 }

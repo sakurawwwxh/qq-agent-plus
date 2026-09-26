@@ -8,7 +8,7 @@
 // 但这套适配器**没有用真实腾讯云凭据端到端跑过** —— 真机上若签名或参数不对，腾讯会回
 // AuthFailure.SignatureFailure / InvalidParameter 之类的明确错误，会原文透给用户，便于一轮定位。
 import crypto from 'node:crypto';
-import { getConfig } from '../core/config.js';
+import { asrSecretId, asrSecretKey, getConfig } from '../core/config.js';
 
 export const TENCENT_ASR_HOST = 'asr.tencentcloudapi.com';
 export const TENCENT_ASR_SERVICE = 'asr';
@@ -75,6 +75,8 @@ export async function tencentTranscribe(wavBuffer, {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error('语音识别请求超时')), timeoutMs);
+  // 已经中止的 signal 要在发请求之前就退出：只挂监听的话，请求会照发（取消后仍计费）
+  if (signal?.aborted) throw signal.reason ?? new Error('已中止');
   const onAbort = () => controller.abort(signal?.reason ?? new Error('已中止'));
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
@@ -110,11 +112,11 @@ export async function tencentTranscribe(wavBuffer, {
   }
 }
 
-/** 从配置取这套参数。 */
+/** 从配置取这套参数（凭据走绑定后的取值：换成别的服务后不会拿腾讯这对去请求）。 */
 export function tencentOptions(cfg = getConfig()) {
   return {
-    secretId: String(cfg?.asr?.secretId || '').trim(),
-    secretKey: String(cfg?.asr?.secretKey || '').trim(),
+    secretId: asrSecretId(cfg),
+    secretKey: asrSecretKey(cfg),
     region: String(cfg?.asr?.region || '').trim() || 'ap-guangzhou',
     engine: String(cfg?.asr?.model || '').trim() || TENCENT_DEFAULT_ENGINE
   };
