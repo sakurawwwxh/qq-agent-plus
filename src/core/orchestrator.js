@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   DATA_DIR,
+  asrAvailable,
   conversationConfigForChat,
   friendProposalEnabled,
   getConfig,
@@ -1351,6 +1352,9 @@ export class Orchestrator {
     const visionEnabled = cfg.api.vision !== false
       && modelImageVerdict(cfg.api.provider, cfg.api.model) !== 'no-vision';
     const searchEnabled = cfg.webSearch?.enabled !== false;
+    // ASR 自己有开关（asr.enabled）+ key 复用豆包 Agent Plan，与"联网搜索"开关解耦：
+    // 关掉搜索的人不该顺带失去语音转写（2026-09-26 审查）。
+    const asrEnabled = asrAvailable(cfg);
     const identityPilot = this.getIdentityPilot();
     const identityAvailable = identityPilotEnabled(cfg) && identityPilot?.active === true;
     const friendProposalAvailable = identityAvailable && friendProposalEnabled() && promptFriendProposalEnabled(cfg);
@@ -1361,6 +1365,8 @@ export class Orchestrator {
       if (!visionEnabled && (d.name === 'get_message_images' || d.name === 'get_sticker_image')) return false;
       if (!searchEnabled && (d.name === 'web_search' || d.name === 'web_fetch')) return false;
       if (!selfWakeEnabled && d.name === 'schedule_wake') return false;
+      // ASR 按量计费：开关关掉或没配 key 就不注入，避免模型调用必失败；也防误配置导致意外计费
+      if (!asrEnabled && d.name === 'get_message_audio') return false;
       if (d.feature === 'identityPilot' && !identityAvailable) return false;
       if (d.feature === 'friendProposal' && !friendProposalAvailable) return false;
       return true;

@@ -75,6 +75,7 @@ import { webSearch, webFetch } from '../llm/web-search.js';
 import { expandForwardNodes, extractMediaFromSegments } from '../onebot/onebot.js';
 import { readForwardMessages } from '../onebot/forward-reader.js';
 import { convertGifToStillStrip, fetchOversizedImageAsJpeg } from './image-downsample.js';
+import { transcribeMessageAudio } from './audio-transcribe.js';
 
 
 /**
@@ -662,6 +663,26 @@ export function buildToolDefs() {
             ? `（这张你之前看过并记过：「${known.join('」「')}」——按这个理解回，别再描述画面）`
             : '';
           return { content: imageParts(`消息 ${args.messageId} 的图片内容${note}${knownHint}（若是 2×2 四宫格：那是动图 GIF 按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容。先判断它想表达的情绪/态度：无语呆滞、嘲讽、卖萌、赞同、挑衅、摆烂、委屈…再针对态度回话，不要复述画面）：`, dataUrls) };
+        } catch (error) {
+          return err(error?.message ?? error);
+        }
+      }
+    },
+    {
+      name: 'get_message_audio',
+      description: '把某条消息里的语音/音频/视频转成文字（语音识别，支持 QQ 语音、音频文件、视频里的音轨）。消息文本出现 [语音] / [视频] / [文件…m4a|mp3|wav|mp4] 时可用。id 用聊天记录里每条消息前的 #数字。转写完直接基于文字回应即可。',
+      parameters: {
+        type: 'object',
+        properties: { messageId: { type: ['integer', 'string'], description: 'QQ 消息 id（聊天记录里的 #数字，可能为负数）' } },
+        required: ['messageId']
+      },
+      async execute(ctx, args) {
+        try {
+          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
+          if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const result = await transcribeMessageAudio(ctx, entry);
+          if (!result.ok) return err(result.error);
+          return ok({ transcript: result.text, note: '以上是这段音频的完整转写。直接基于内容回应，不要复述"我转写了"。' });
         } catch (error) {
           return err(error?.message ?? error);
         }

@@ -25,7 +25,8 @@ export const EXPERIMENTAL_ORDERED_READ_TOOLS = new Set([
   'list_stickers',
   'get_sticker_image',
   'read_forward',
-  'get_message_images'
+  'get_message_images',
+  'get_message_audio'
 ]);
 
 export const EXPERIMENTAL_TERMINAL_TOOL = 'finish';

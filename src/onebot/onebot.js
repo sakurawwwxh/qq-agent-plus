@@ -489,6 +489,12 @@ export function extractMediaFromSegments(segments) {
       media.push({ kind: 'image', file: String(d.file ?? ''), url: String(d.url ?? ''), summary: String(d.summary ?? '') });
     } else if (seg.type === 'face') {
       media.push({ kind: 'face', faceId: String(d.id ?? '') });
+    } else if (seg.type === 'record' || seg.type === 'voice') {
+      media.push({ kind: 'audio', file: String(d.file ?? ''), url: String(d.url ?? '') });
+    } else if (seg.type === 'video') {
+      media.push({ kind: 'audio', file: String(d.file ?? ''), url: String(d.url ?? '') });
+    } else if (seg.type === 'file' && /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm)$/i.test(String(d.name ?? d.file ?? ''))) {
+      media.push({ kind: 'audio', file: String(d.name ?? d.file ?? ''), url: String(d.url ?? '') });
     }
   }
   return media;
