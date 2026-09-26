@@ -12,18 +12,18 @@
 // 一个 `git pull` 后忘记 `npm ci` 的部署会直接起不来（2026-09-26 审查：静态 import 会把
 // node_modules 没更新升级成整服务不可用）。这里改成用的时候再加载，缺了只影响 SILK 这一条路。
 let silkLib = null;
-let silkLibError = null;
 async function loadSilk() {
   if (silkLib) return silkLib;
-  if (silkLibError) throw silkLibError;
   try {
     silkLib = await import('silk-wasm');
     return silkLib;
   } catch (error) {
-    silkLibError = new Error('这条语音是 QQ 的 SILK 格式，但服务器上没装解码依赖（silk-wasm）：'
+    // **不缓存失败**：报错文案让人"跑一次 npm ci 再重试"，那就得真的能重试 ——
+    // 缓存住的话同一个进程永远修不好（2026-09-26 审查 P2）
+    const failure = new Error('这条语音是 QQ 的 SILK 格式，但服务器上没装解码依赖（silk-wasm）：'
       + '在安装目录跑一次 `npm ci`（或 npm install）再重试');
-    silkLibError.cause = error;
-    throw silkLibError;
+    failure.cause = error;
+    throw failure;
   }
 }
 
@@ -33,19 +33,23 @@ export const SILK_SAMPLE_RATE = 16000;
 export const SILK_MAGIC = '#!SILK_V3';
 
 /**
- * 是不是 QQ 语音的 SILK。
- * 以 silk-wasm 的判定为准，另留一条"文件头里出现 #!SILK_V3"的兜底
- * （库的判定更严格；兜底只为了让头部被少量脏字节污染的样本也能走对分支）。
+ * 只看文件头认 SILK（同步、不依赖 silk-wasm）。
+ * 路由必须用它：deploy 漏装依赖时也能认出"这是 SILK"，于是走到 silkToPcm 拿到那句
+ * "跑一次 npm ci"的可照做报错，而不是被当成普通音频、最后报一句 ffmpeg 转换失败（2026-09-26 审查 P2）。
  */
-export async function looksLikeSilk(buffer) {
+export function hasSilkMagic(buffer) {
   if (!buffer || buffer.length < 10) return false;
-  // 先看文件头再问库：文件头这一条不依赖依赖包，deploy 漏装时也能立刻认出 SILK 并给出可照做的报错
-  if (buffer.subarray(0, 16).toString('latin1').includes(SILK_MAGIC)) return true;
+  return buffer.subarray(0, 16).toString('latin1').includes(SILK_MAGIC);
+}
+
+/** 是不是 QQ 语音的 SILK：文件头优先，其次交给库判定（库更严格，能认头部被脏字节污染的样本）。 */
+export async function looksLikeSilk(buffer) {
+  if (hasSilkMagic(buffer)) return true;
   try {
     const lib = await loadSilk();
     return Boolean(lib.isSilk(buffer));
   } catch {
-    return false;   // 认不出来就当不是（上层会走 ffmpeg 并如实报错）
+    return false;   // 依赖缺失时认不出来就当不是（无法解 SILK 的事实会在 silkToPcm 里报清楚）
   }
 }
 

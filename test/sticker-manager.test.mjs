@@ -263,3 +263,22 @@ test('表情策略里明确写了"优先用没用过的"（不靠模型自觉）
   assert.match(hint, /换新的/);
   assert.match(hint, /没用过」的优先用/);
 });
+
+
+test('抬头在"只有一个/全都没用过"与"全都用过"两个边界不再自相矛盾', () => {
+  // 只有一个（limit=1 或库里就一张）且没用过：不能说"以下是常用的"
+  const single = [{ id: 'only-1', desc: '唯一一张', url: 'u', useCount: 0, createdAt: '2026-01-01' }];
+  const p1 = buildStickerContext(single, 1);
+  assert.equal(p1.includes('是常用的'), false, '一张没用过的不能说"常用的"');
+  assert.match(p1, /都还没用过/);
+
+  // 全部用过（没有未用过的）：不能再劝"优先挑没见过的"，也不能写"库里还有 0 张没发过"
+  const allUsed = [];
+  for (let i = 1; i <= 12; i += 1) {
+    allUsed.push({ id: `u-${i}`, desc: `备注${i}`, url: 'u', useCount: 3, lastUsedAt: 1_700_000_000_000 + i, createdAt: '2026-01-01' });
+  }
+  const p2 = buildStickerContext(allUsed, 4);
+  assert.equal(p2.includes('没见过的'), false, '库里没有没用过的，就别劝它挑新的');
+  assert.equal(p2.includes('还有 0 张没发过'), false);
+  assert.match(p2, /最近没用过的/);
+});

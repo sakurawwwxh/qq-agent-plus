@@ -9,7 +9,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as legacy from './config-legacy.js';
-import { ASR_DEFAULT_PROVIDER, ASR_PROVIDERS } from './config-legacy.js';
+import {
+  ASR_DEFAULT_PROVIDER, ASR_PROVIDERS,
+  asrLocalBin, asrLocalModel, findWhisperBinSync
+} from './config-legacy.js';
 import {
   applyStableFeaturePolicy,
   globalAdminUin,
@@ -148,93 +151,6 @@ export function asrProvider(cfg = getConfig()) {
   return ASR_PROVIDERS.includes(raw) ? raw : ASR_DEFAULT_PROVIDER;
 }
 
-/** PATH 里按顺序尝试的候选名（安装脚本构建出来的名字是 whisper-cli）。 */
-export const WHISPER_BIN_CANDIDATES = ['whisper-cli', 'whisper-cpp', 'main'];
-
-/**
- * 本机转写的模型文件：配置 > 环境变量 WHISPER_MODEL > 标准位置里第一个 ggml-*.bin。
- * 标准位置按"越可能被安装到"的顺序找：<数据目录>/asr/（安装脚本的默认落点）、仓库 models/、
- * ~/.cache/whisper.cpp/。同名偏好 small → base → tiny → 其它，保证同一台机器上结果确定。
- */
-export function asrLocalModel(cfg = getConfig()) {
-  const configured = String(cfg?.asr?.localModel || '').trim();
-  if (configured) return configured;
-  const fromEnv = String(process.env.WHISPER_MODEL || '').trim();
-  if (fromEnv) return fromEnv;
-  const dirs = [
-    path.join(legacy.DATA_DIR, 'asr'),
-    path.join(legacy.ROOT, 'models'),
-    path.join(os.homedir(), '.cache', 'whisper.cpp')
-  ];
-  const prefer = ['ggml-small.bin', 'ggml-base.bin', 'ggml-tiny.bin'];
-  const found = [];
-  for (const dir of dirs) {
-    let names = [];
-    try { names = fs.readdirSync(dir); } catch { continue; }
-    for (const name of names) {
-      if (!/^ggml-.+\.bin$/i.test(name)) continue;
-      found.push(path.join(dir, name));
-    }
-  }
-  if (!found.length) return '';
-  const rank = (file) => {
-    const base = path.basename(file).toLowerCase();
-    const hit = prefer.indexOf(base);
-    return hit === -1 ? prefer.length : hit;
-  };
-  return found.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0];
-}
-
-/**
- * 本机转写的可执行文件：配置 > 环境变量 WHISPER_BIN > 安装脚本的构建产物 > PATH 候选名。
- * 返回"打算用的那个"，真能不能跑由探测决定（见 asr-local.js 的 resolveWhisperBin）。
- */
-export function asrLocalBin(cfg = getConfig()) {
-  // "会用哪个"：配置/环境变量给了就用它（哪怕文件不在——这样用户能看见自己填错的那条路径）；
-  // 否则找构建产物 / PATH 候选名。真要判定"能不能跑"用 findWhisperBinSync()（它做存在性检查）。
-  const configured = String(cfg?.asr?.localBin || '').trim();
-  if (configured) return configured;
-  const fromEnv = String(process.env.WHISPER_BIN || '').trim();
-  if (fromEnv) return fromEnv;
-  return findWhisperBinSync(cfg) || '';
-}
-
-/** Windows 上要试 .exe 后缀；其它平台直接按名字找。 */
-function binNamesOnPlatform() {
-  const names = [...WHISPER_BIN_CANDIDATES];
-  if (process.platform === 'win32') return [...names.map((n) => `${n}.exe`), ...names];
-  return names;
-}
-
-/**
- * 同步找一遍可用的 whisper 二进制（配置里的路径 → 安装脚本的构建产物 → PATH 候选名）。
- * 只做存在性检查，够"要不要把工具注入给模型"用；真能不能跑由 asr-local.js 的异步探测定案。
- * 为什么要有这个：可用性判定若只认模型文件，会出现"工具注入了、提示词也说能转，
- * 但真调起来必失败"的矛盾（2026-09-26 审查）。
- */
-export function findWhisperBinSync(cfg = getConfig()) {
-  const configured = String(cfg?.asr?.localBin || '').trim() || String(process.env.WHISPER_BIN || '').trim();
-  const built = path.join(legacy.DATA_DIR, 'asr', 'whisper.cpp', 'build', 'bin', 'whisper-cli');
-  const seen = new Set();
-  for (const candidate of [configured, built, ...binNamesOnPlatform()]) {
-    if (!candidate) continue;
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    try {
-      if (candidate.includes(path.sep) || candidate.includes('/')) {
-        if (fs.existsSync(candidate)) return candidate;
-        continue;
-      }
-      const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
-      for (const dir of dirs) {
-        const full = path.join(dir, candidate);
-        if (fs.existsSync(full)) return candidate;   // 交给子进程按 PATH 解析，避免拼出别的平台路径
-      }
-    } catch { /* 单个目录出问题就当没找到 */ }
-  }
-  return null;
-}
-
 /**
  * 语音转文字用的 API Key：只认自己的（`asr.apiKey`，留空回退环境变量 ASR_API_KEY）。
  * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索与转写是两套服务/两家供应商都可能，
@@ -250,6 +166,9 @@ export function asrApiKey(cfg = getConfig()) {
   if (stored && legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'apiKeyProvider', 'apiKeyHost')) {
     return stored;
   }
+  // provider 只是"升级默认值"（用户没选过）时，不拿部署级的环境变量 Key 去请求一个他没选过的服务：
+  // 从控制台保存一次即固化 provider（并清掉这个标记），那时 env Key 照常生效（2026-09-26 审查 P2）
+  if (cfg?.asr?.providerDefaulted === true) return '';
   // 存的那把"不属于这家"时**回落到环境变量**：ASR_API_KEY 是部署级的单一值，文档承诺它不受归属限制
   // （2026-09-26 审查：原来"存了但不适用"会把 env 彻底挡住，用户按文档设了也不生效）
   return String(process.env.ASR_API_KEY || '').trim();
@@ -282,8 +201,13 @@ export function asrKeyHost(cfg = getConfig()) {
 
 /** Key 从哪来（控制台显示用）：'config' | 'env' | ''（没配）。 */
 export function asrKeySource(cfg = getConfig()) {
-  if (asrApiKey(cfg)) return String(cfg?.asr?.apiKey || '').trim() ? 'config' : 'env';
-  return '';
+  if (!asrApiKey(cfg)) return '';
+  // 必须报"真正生效的那把从哪来"：存的那把不适用时会回落到 env，原来无条件按"存过就算 config"报，
+  // 界面就不会提示"Key 来自环境变量"，用户撤掉 env 后会突然失效且找不到原因（2026-09-26 审查 P2）
+  const stored = String(cfg?.asr?.apiKey || '').trim();
+  const storedApplies = Boolean(stored)
+    && legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'apiKeyProvider', 'apiKeyHost');
+  return storedApplies ? 'config' : 'env';
 }
 
 /**

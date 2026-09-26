@@ -75,3 +75,14 @@ test('SILK 一致性自检：解码出来的 PCM 与它自报的时长要对得�
   assert.ok(Math.abs(pcm.length - expected) <= Math.max(3200, expected * 0.05),
     `PCM ${pcm.length} 字节 vs 时长 ${durationMs}ms 推出的约 ${expected} 字节，差得太多说明解码有问题`);
 });
+
+
+test('只看文件头也能认 SILK（缺依赖时靠它走到可照做的报错）', async () => {
+  const { hasSilkMagic } = await import('../src/llm/silk.js');
+  const silk = await silkSample();
+  assert.equal(hasSilkMagic(silk), true);
+  assert.equal(hasSilkMagic(silk.subarray(1)), true, '裸头也要认');
+  assert.equal(hasSilkMagic(Buffer.from('RIFF....WAVEfmt ')), false);
+  assert.equal(hasSilkMagic(Buffer.alloc(3)), false);
+  assert.equal(hasSilkMagic(null), false);
+});

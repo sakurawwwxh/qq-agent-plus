@@ -102,7 +102,7 @@ import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, sleep, createEventBus, toda
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from '../llm/prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
-import { modelImageVerdict } from '../llm/vision-scan.js';
+import { visionEnabled } from '../llm/vision-scan.js';
 import { currentProviders } from './providers.js';
 import { buildSlangContextForChat } from '../console/asset-observer.js';
 import { parseInlineToolCalls } from '../tools/inline-tools.js';
@@ -1349,8 +1349,8 @@ export class Orchestrator {
       : '';
 
     // 工具集按配置过滤：工具列表属于缓存前缀，必须先固定后再决定是否复用生命周期 transcript。
-    const visionEnabled = cfg.api.vision !== false
-      && modelImageVerdict(cfg.api.provider, cfg.api.model) !== 'no-vision';
+    // 口径收敛在 vision-scan.visionEnabled：只读 api.vision 会漏掉"模型不支持图片"那一半
+    const canSeeImages = visionEnabled(cfg);
     const searchEnabled = cfg.webSearch?.enabled !== false;
     // ASR 有自己的开关与供应商（asr.enabled / asr.provider / asr.apiKey），与"联网搜索"解耦：
     // 关掉搜索的人不该顺带失去语音转写（2026-09-26 审查）。判定收敛在 config.asrAvailable()。
@@ -1362,7 +1362,7 @@ export class Orchestrator {
     // 否则模型还会去调一个"安排了也不会开口"的工具（生成一串假的"我到点再说"）。
     const selfWakeEnabled = cfg.proactive?.selfWakeEnabled !== false;
     const toolDefs = this.toolDefs.filter((d) => {
-      if (!visionEnabled && (d.name === 'get_message_images' || d.name === 'get_sticker_image')) return false;
+      if (!canSeeImages && (d.name === 'get_message_images' || d.name === 'get_sticker_image')) return false;
       if (!searchEnabled && (d.name === 'web_search' || d.name === 'web_fetch')) return false;
       if (!selfWakeEnabled && d.name === 'schedule_wake') return false;
       // ASR 按量计费：开关关掉或没配 key 就不注入，避免模型调用必失败；也防误配置导致意外计费

@@ -11179,10 +11179,11 @@ async function saveConfig({ quiet = false } = {}) {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
       provider: asrProviderNext,
-      // 自己填 1-200；**清空 = 保持原值**（不是变成 1），空串/坏值都退回存量的值；
-      // clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
-      maxPerHour: clampInt(
-        val('#cfg-asr-max', '').trim() || String(c.asr?.maxPerHour ?? 12), 1, 200, 12
+      // 自己填 1-200；**清空 = 保持原值**（不是变成 1），其余一律走 normalizeAsrMax ——
+      // 与显示口径、后端 config.asrMaxPerHour 完全一致（非正数/坏值按 12，不是夹到 1；
+      // 2026-09-26 审查：原来用 clampInt 会把 -5 存成 1，和"非正数按 12"的文档口径打架）
+      maxPerHour: normalizeAsrMax(
+        val('#cfg-asr-max', '').trim() || c.asr?.maxPerHour
       ),
       baseUrl: val('#cfg-asr-baseurl', c.asr?.baseUrl || '').trim(),
       model: val('#cfg-asr-model', c.asr?.model || '').trim(),

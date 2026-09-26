@@ -1,5 +1,6 @@
 // 配置管理：data/config.json，UI 可写。所有字段都有默认值。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PERSONAS, normalizeBehaviorProfile, applyPersonaTemplate } from '../personas.js';
@@ -463,6 +464,94 @@ export const ASR_PROVIDERS = ['volc', 'openai', 'aliyun', 'baidu', 'tencent', 'i
  */
 export const ASR_DEFAULT_PROVIDER = 'openai';
 
+/** PATH 里按顺序尝试的候选名（安装脚本构建出来的名字是 whisper-cli）。 */
+export const WHISPER_BIN_CANDIDATES = ['whisper-cli', 'whisper-cpp', 'main'];
+
+/**
+ * 本机转写的模型文件：配置 > 环境变量 WHISPER_MODEL > 标准位置里第一个 ggml-*.bin。
+ * 标准位置按"越可能被安装到"的顺序找：<数据目录>/asr/（安装脚本的默认落点）、仓库 models/、
+ * ~/.cache/whisper.cpp/。同名偏好 small → base → tiny → 其它，保证同一台机器上结果确定。
+ *
+ * 放在 config-legacy 是因为读盘迁移（判"这台机器装过本机转写吗"）也要用它 —— 判据必须与运行期
+ * 完全一致，否则会出现"运行期能用、迁移却判成没装"（2026-09-26 审查 P1）。
+ */
+export function asrLocalModel(cfg = getConfig()) {
+  const configured = String(cfg?.asr?.localModel || '').trim();
+  if (configured) return configured;
+  const fromEnv = String(process.env.WHISPER_MODEL || '').trim();
+  if (fromEnv) return fromEnv;
+  const dirs = [
+    path.join(DATA_DIR, 'asr'),
+    path.join(ROOT, 'models'),
+    path.join(os.homedir(), '.cache', 'whisper.cpp')
+  ];
+  const prefer = ['ggml-small.bin', 'ggml-base.bin', 'ggml-tiny.bin'];
+  const found = [];
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!/^ggml-.+\.bin$/i.test(name)) continue;
+      found.push(path.join(dir, name));
+    }
+  }
+  if (!found.length) return '';
+  const rank = (file) => {
+    const base = path.basename(file).toLowerCase();
+    const hit = prefer.indexOf(base);
+    return hit === -1 ? prefer.length : hit;
+  };
+  return found.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0];
+}
+
+/**
+ * 本机转写的可执行文件：配置 > 环境变量 WHISPER_BIN > 安装脚本的构建产物 > PATH 候选名。
+ * 返回"打算用的那个"，真能不能跑由探测决定（见 asr-local.js 的 resolveWhisperBin）。
+ */
+export function asrLocalBin(cfg = getConfig()) {
+  // "会用哪个"：配置/环境变量给了就用它（哪怕文件不在——这样用户能看见自己填错的那条路径）；
+  // 否则找构建产物 / PATH 候选名。真要判定"能不能跑"用 findWhisperBinSync()（它做存在性检查）。
+  const configured = String(cfg?.asr?.localBin || '').trim();
+  if (configured) return configured;
+  const fromEnv = String(process.env.WHISPER_BIN || '').trim();
+  if (fromEnv) return fromEnv;
+  return findWhisperBinSync(cfg) || '';
+}
+
+/** Windows 上要试 .exe 后缀；其它平台直接按名字找。 */
+function binNamesOnPlatform() {
+  const names = [...WHISPER_BIN_CANDIDATES];
+  if (process.platform === 'win32') return [...names.map((n) => `${n}.exe`), ...names];
+  return names;
+}
+
+/**
+ * 同步找一遍可用的 whisper 二进制（配置里的路径 → 安装脚本的构建产物 → PATH 候选名）。
+ * 只做存在性检查，够"要不要把工具注入给模型"用；真能不能跑由 asr-local.js 的异步探测定案。
+ */
+export function findWhisperBinSync(cfg = getConfig()) {
+  const configured = String(cfg?.asr?.localBin || '').trim() || String(process.env.WHISPER_BIN || '').trim();
+  const built = path.join(DATA_DIR, 'asr', 'whisper.cpp', 'build', 'bin', 'whisper-cli');
+  const seen = new Set();
+  for (const candidate of [configured, built, ...binNamesOnPlatform()]) {
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      if (candidate.includes(path.sep) || candidate.includes('/')) {
+        if (fs.existsSync(candidate)) return candidate;
+        continue;
+      }
+      const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+      for (const dir of dirs) {
+        const full = path.join(dir, candidate);
+        if (fs.existsSync(full)) return candidate;
+      }
+    } catch { /* 单个目录坏掉就当没找到 */ }
+  }
+  return null;
+}
+
 /** 语音转写凭据的绑定粒度：OpenAI 兼容服务里"换地址 = 换了一家"，取主机名比较。 */
 export function asrEndpointHost(baseUrl) {
   const raw = String(baseUrl || '').trim();
@@ -643,6 +732,10 @@ const ASR_CREDENTIAL_PROVIDERS = {
 export function applyAsrProviderFallback(asr, { localInstalled = false } = {}) {
   if (!isPlainObject(asr)) return '';
   asr.provider = localInstalled ? 'local' : ASR_DEFAULT_PROVIDER;
+  // 这次 provider 是"升级默认值"而不是用户选的：记一个标记，让 asrApiKey 不要拿
+  // 部署级的环境变量 Key 去请求一个用户从没选过的服务（2026-09-26 审查 P2）。
+  // 用户从控制台保存一次（界面总会带上显式的 provider）就会清掉它。
+  asr.providerDefaulted = true;
   if (!localInstalled) {
     for (const [field, providerField] of [
       ['apiKey', 'apiKeyProvider'], ['secretId', 'secretIdProvider'], ['secretKey', 'secretKeyProvider']
@@ -717,10 +810,14 @@ export function loadConfig() {
     // 按"能不能看出装过本机转写"回填：装了 → local；没装 → 保持新默认（openai）。
     const declaredProvider = String(parsed?.asr?.provider || '').trim().toLowerCase();
     if (!ASR_PROVIDERS.includes(declaredProvider)) {
-      const localLooksInstalled = fs.existsSync(path.join(DATA_DIR, 'asr'))
-        || String(parsed?.asr?.localBin || '').trim() !== ''
-        || String(parsed?.asr?.localModel || '').trim() !== '';
-      applyAsrProviderFallback(merged.asr, { localInstalled: localLooksInstalled });
+      // 判"这台机器装过本机转写吗"**必须用运行期同一套解析**（配置 > 环境变量 > <数据目录>/asr、
+      // 仓库 models/、~/.cache/whisper.cpp、PATH 里的 whisper-cli）——只认安装脚本落点会漏掉
+      // PATH/标准目录装的用户，把他们静默切成 openai（2026-09-26 审查 P1）。
+      const localCfg = { asr: (parsed && parsed.asr) || {} };
+      const localLooksInstalled = asrLocalModel(localCfg) !== '' && Boolean(findWhisperBinSync(localCfg));
+      const next = applyAsrProviderFallback(merged.asr, { localInstalled: localLooksInstalled });
+      console.warn(`[config] 语音转写没记过 provider：按本机 ${localLooksInstalled ? '装过 whisper.cpp → local' : '没装 whisper.cpp → 新默认 ' + next}`
+        + '（用户从控制台保存一次即固化）');
     }
     // 读盘这一次把老配置的凭据归属补齐（provider + OpenAI 兼容的地址主机）：
     // 升级后"换服务/换地址要重填"的防线立刻生效，而不是等用户碰一次设置才生效

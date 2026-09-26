@@ -245,14 +245,16 @@ export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
   });
   // 库刚建起来时"常用的一半"也全是没用过的：那时别写"前几个是常用的"，
   // 否则和逐行的（没用过）标记自相矛盾（2026-09-26 审查）。
-  const familiarUsed = familiar.filter((e) => (e.useCount || 0) > 0).length;
   const unusedTotal = list.filter((e) => !(e.useCount || 0)).length;
-  const scope = rotation.length
-    ? (familiarUsed > 0
-      ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的 —— 优先挑后面这批没见过的用`
-        + `（库里还有 ${unusedTotal} 张没发过；一张用过了就像老图一样可以一直用，别老是那两三张）`
-      : `这 ${top.length} 个都还没用过（用掉一张，下一张会自动顶上来）`)
-    : `以下是常用的 ${top.length} 个`;
+  const topUsed = top.filter((e) => (e.useCount || 0) > 0).length;
+  // 抬头只看"清单里到底有什么"，别按 rotation 是否为空下结论 —— 那两个边界（清单只有一个、
+  // 或全库都用过）原来会和逐行的（没用过）标记打架（2026-09-26 审查 P2）
+  const scope = topUsed === 0
+    ? `这 ${top.length} 个都还没用过（用掉一张，下一张会自动顶上来）`
+    : (unusedTotal > 0
+      ? `前 ${familiar.filter((e) => (e.useCount || 0) > 0).length} 个是常用的，后 ${top.length - familiar.filter((e) => (e.useCount || 0) > 0).length} 个是没用过/很久没用的`
+        + ` —— 优先挑后面这批没见过的用（库里还有 ${unusedTotal} 张没发过；一张用过了就像老图一样可以一直用，别老是那两三张）`
+      : `前 ${topUsed} 个是常用的，后 ${top.length - topUsed} 个是最近没用过的（换着用，别老是那两三张；库里暂时没有没用过的了）`);
   // 关闭图片输入时不能提 get_sticker_image（那个工具已经不在工具表里了）
   const tail = vision
     ? '，完整列表可用 list_stickers 查询；没用过的可以先 get_sticker_image 看一眼再用'

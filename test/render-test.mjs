@@ -1138,6 +1138,41 @@ try {
       + (emptyOk ? '' : ` -> ${posted?.asr?.maxPerHour}`));
   }
 
+  // 每小时上限的收口口径要与显示/后端一致：非正数按 12、超上限夹到 200（不是夹到 1）
+  {
+    const cases = [
+      { input: '-5', want: 12, label: '负数按 12（不是 1）' },
+      { input: '0', want: 12, label: '0 按 12' },
+      { input: '999', want: 200, label: '超上限夹到 200' },
+      { input: '3.7', want: 4, label: '小数四舍五入' }
+    ];
+    let clampOk = true;
+    const notes = [];
+    for (const item of cases) {
+      vm.runInContext("state.settingsSection = 'asr';", ctx);
+      vm.runInContext(`state.config = ${JSON.stringify({ ...cfg, asr: { ...cfg.asr, provider: 'volc', maxPerHour: 12 } })};`, ctx);
+      document.querySelector('#cfg-asr-mode').value = 'api';
+      document.querySelector('#cfg-asr-service').value = 'volc';
+      document.querySelector('#cfg-asr-max').value = item.input;
+      document.querySelector('#cfg-asr').checked = true;
+      let posted = null;
+      const before = sandbox.fetch;
+      sandbox.fetch = async (url, options) => {
+        if (String(url).includes('/api/config') && options?.method === 'POST') {
+          posted = JSON.parse(options.body);
+          return { ok: true, status: 200, json: async () => ({ config: { ...cfg, asr: posted.asr } }), text: async () => '' };
+        }
+        return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+      };
+      try { await ctx.saveConfig({ quiet: true }); } catch { /* 看 patch */ }
+      sandbox.fetch = before;
+      if (posted?.asr?.maxPerHour !== item.want) { clampOk = false; notes.push(`${item.label}: 存成 ${posted?.asr?.maxPerHour}（期望 ${item.want}）`); }
+    }
+    clampOk ? pass++ : fail++;
+    console.log('  ' + (clampOk ? 'OK   ' : 'FAIL ') + '设置页：每小时上限的收口与后端口径一致（非正数按 12）'
+      + (clampOk ? '' : ` -> ${notes.join('；')}`));
+  }
+
   // 服务端说"这把 Key 不是给这家的"（换了地址）时保存：不能把它重新登记成当前这家的 Key。
   // 桩配置按服务端的真实形状来：/api/config 的脱敏会把 apiKey/apiKeyProvider/apiKeyHost 这些
   // 字段整个删掉（名字命中 apikey/secret 模式），只留 hasXxx 标记 —— 界面手里并没有这些值。

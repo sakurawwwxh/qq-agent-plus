@@ -47,6 +47,16 @@ export function modelImageVerdict(providerId, modelId) {
 }
 
 /**
+ * 运行时"能不能看图"的**唯一口径**：开关打开 **且** 模型不是明确不支持图片。
+ * 工具摘除（orchestrator）与提示词口径（prompt/stickers）都必须用它 —— 只读 api.vision 会漏掉
+ * "模型自身不支持图片"那一半：工具已经摘了，提示词还在教模型调它（2026-09-26 审查 P1）。
+ */
+export function visionEnabled(cfg = getConfig()) {
+  if (cfg?.api?.vision === false) return false;
+  return modelImageVerdict(cfg?.api?.provider, cfg?.api?.model) !== 'no-vision';
+}
+
+/**
  * 探测单个模型。返回 { verdict, note, httpStatus, latencyMs }。
  * verdict: 'vision' 接受图片内容；'no-vision' 明确拒绝图片内容；'unknown' 无法判定。
  */

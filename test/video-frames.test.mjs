@@ -95,3 +95,15 @@ test('get_message_images 在视频消息上返回帧条 JPEG（不是"没有可�
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+
+test('抽帧被中止时原样抛出（不误报"需要 ffmpeg/ffprobe"）', { skip: hasFfmpeg ? false : '本环境没有 ffmpeg' }, async () => {
+  const video = makeTestVideo();
+  assert.ok(video?.length, '测试视频要造出来');
+  const controller = new AbortController();
+  controller.abort(new Error('已中止'));
+  await assert.rejects(
+    () => convertVideoToFrameStrip(video, controller.signal),
+    /已中止|abort/i
+  );
+});

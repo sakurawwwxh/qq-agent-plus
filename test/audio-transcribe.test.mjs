@@ -497,3 +497,9 @@ it('推流型供应商的长度闸门留了 60 秒余量（原来 30 秒会贴�
   // 配置把运行时限调小时，闸门跟着收紧
   assert.equal(pacedAudioLimitSeconds({ api: { runTimeoutMs: 60000 } }, 'iflytek'), 30, '最少留 30 秒');
 });
+
+
+it('空音频给"内容为空"的准确报错（不是一句 ffmpeg 转换失败）', async () => {
+  const { audioBufferToPcm } = await import('../src/tools/audio-transcribe.js');
+  await assert.rejects(() => audioBufferToPcm(Buffer.alloc(0), { name: 'x.amr' }), /音频内容为空/);
+});

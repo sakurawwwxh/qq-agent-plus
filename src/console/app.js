@@ -2334,6 +2334,9 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
 
       if (pathname === '/api/config' && method === 'POST') {
         const patch = await readBody(req);
+        // 控制台保存总会带上显式的 provider（来自服务预设）：等于用户确认过这一家，
+        // 清掉"升级默认值"的标记，让环境变量 Key 恢复生效（2026-09-26 审查 P2）
+        if (patch?.asr && typeof patch.asr === 'object') delete patch.asr.providerDefaulted;
         const previousProactive = JSON.stringify(cfgNow.proactive || {});
         const previousDailyMoments = JSON.stringify(cfgNow.dailyMoments || {});
         const previousQzoneInteractions = JSON.stringify(cfgNow.qzoneInteractions || {});

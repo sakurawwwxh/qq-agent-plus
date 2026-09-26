@@ -428,7 +428,7 @@ export function buildToolDefs() {
     },
     {
       name: 'collect_sticker',
-      description: '收藏别人刚发的表情/图片到你的表情库（偶尔用，收藏前先 get_message_images 看图确认）。需要备注一句简短说明。',
+      description: '收藏别人刚发的表情/图片到你的表情库（偶尔用；看图工具不可用时凭群友的用法与你的判断，别瞎收）。需要备注一句简短说明。',
       parameters: {
         type: 'object',
         properties: {

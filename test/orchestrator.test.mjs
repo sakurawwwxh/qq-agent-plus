@@ -742,6 +742,34 @@ describe('Orchestrator', () => {
     assert.match(asrNoVision, /画面看不到/, 'ASR 开着但看不了图 → 要说清只能听声音');
     assert.equal(asrNoVision.includes('先看画面再听声音'), false);
 
+    // 模型自身不支持图片（api.vision 仍是 true）时，口径也必须跟着工具摘除走
+    const novision = fixture(t);
+    novision.cfg.api.vision = true;
+    novision.cfg.api.model = 'deepseek-v4-pro';       // 内置资料表里明确 no-vision
+    novision.cfg.sticker.enabled = true;
+    novision.cfg.proactive = { ...novision.cfg.proactive, selfWakeEnabled: true };
+    setRuntimeConfig(novision.cfg);
+    let nvSystem = '';
+    let nvTools = [];
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      nvSystem = body.messages[0].content;
+      nvTools = (body.tools || []).map((x) => x.function?.name);
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+    novision.append(1, '发张图', '42');
+    await novision.runner.wake('group:1');
+    nvSystem = nvSystem || '';
+    assert.equal(nvTools.includes('get_message_images'), false, 'no-vision 模型要摘掉看图工具');
+    assert.equal(nvTools.includes('get_sticker_image'), false);
+    const nvScene = nvSystem.slice(nvSystem.indexOf('【QQ 场景规则】'));
+    assert.equal(nvScene.includes('用 get_message_images 看'), false, '工具摘了就不能再教它用（只读 api.vision 会漏掉这一半）');
+    assert.equal(nvScene.includes('先看画面再听声音'), false);
+    // 自安排唤醒的引导只跟 selfWakeEnabled 走：vision 关掉不该把它一起吞了
+    assert.equal(nvSystem.includes('schedule_wake 给自己安排一次唤醒'), true, '工具在，用法引导也要在');
+    // collect_sticker 的描述也不能点名已被摘掉的工具
+    assert.equal(nvSystem.includes('先 get_message_images 看图确认'), false);
+
     // 反过来：vision 开着且 ASR 配好时，视频两侧都要明说（画面 + 声音）
     cfg.api.vision = true;
     setRuntimeConfig(cfg);

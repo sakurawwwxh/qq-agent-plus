@@ -19,7 +19,7 @@ import { dashscopeOptions, dashscopeTranscribe } from '../llm/asr-dashscope.js';
 import { baiduOptions, baiduTranscribe } from '../llm/asr-baidu.js';
 import { tencentOptions, tencentTranscribe } from '../llm/asr-tencent.js';
 import { iflytekOptions, iflytekTranscribe } from '../llm/asr-iflytek.js';
-import { looksLikeSilk, silkToPcm } from '../llm/silk.js';
+import { hasSilkMagic, looksLikeSilk, silkToPcm } from '../llm/silk.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -368,7 +368,9 @@ async function localTranscribe(cfg, pcm, signal) {
  * m4a/mp4 的 moov atom 常在尾部，ffmpeg 管道输入无法 seek —— 所以必须落盘成临时文件。
  */
 export async function audioBufferToPcm(buffer, { name = '', signal } = {}) {
-  if (await looksLikeSilk(buffer)) {
+  if (!buffer?.length) throw new Error('音频内容为空（下载到 0 字节）：这条语音/音频可能已过期，让对方重发一次');
+  // 文件头优先：缺依赖时也能认出 SILK，进而拿到"跑一次 npm ci"的可照做报错
+  if (hasSilkMagic(buffer) || await looksLikeSilk(buffer)) {
     const { pcm, durationMs } = await silkToPcm(buffer);
     if (durationMs > 0) {
       // 一致性自检：SILK 头里的时长与解出来的字节数应当对得上（差太多说明解码中途出错了）

@@ -11,6 +11,7 @@
 // 沉睡/唤醒/等待机制（由编排器的"已读/未读驱动"取代）。
 
 import { asrAvailable, getConfig } from '../core/config.js';
+import { visionEnabled } from './vision-scan.js';
 import { cappedByTokenSaver, tokenSaverCapsOf } from '../core/token-saver.js';
 // 滑条换算放在独立模块（零依赖），避免 config.js ↔ prompt.js 循环依赖。
 // 这里 re-export 是为了让已经从 prompt.js 引用的代码不受影响。
@@ -178,8 +179,8 @@ function stickerRules(grounded = false) {
   // 活跃度档位直接改写策略段的频率行（引导统一在系统提示，不在"本次输入"重复）
   const cfg = getConfig();
   const lvl = Math.min(3, Math.max(0, Number(cfg.sticker?.encourage) || 0));
-  // 图片输入关掉时 get_sticker_image 会被摘掉工具，策略里的看图引导同步换口径
-  const vision = cfg.api?.vision !== false;
+  // 图片输入关掉、"或模型不支持图片"时 get_sticker_image 都会被摘掉工具：口径与编排器共用 visionEnabled
+  const vision = visionEnabled(cfg);
   return [
     grounded
       ? `${buildStickerStrategyHint(0, { vision })}\n- 表情偏好：${['少用', '适中', '较多', '喜欢用'][lvl]}；只是倾向，不按轮数凑配额，场景、关系与认真交流优先。`
@@ -217,7 +218,7 @@ function runGuidance() {
 
 function qqSceneRules(grounded = false) {
   const cfg = getConfig();
-  const vision = cfg.api?.vision !== false;
+  const vision = visionEnabled(cfg);
   const search = cfg.webSearch?.enabled !== false;
   const lines = [
     '【QQ 场景规则】',
@@ -237,14 +238,15 @@ function qqSceneRules(grounded = false) {
       '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪），也可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id）；都是一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。',
       '- 图库可以自己攒：别人发的表情包会自动进库（不用你操心）；你也可以主动存——看到有意思、能当表情用的图，先 get_message_images 看一眼，确认好玩就用 collect_sticker 存进去（顺手写一句备注）；库里没备注的图，用 list_stickers 找、get_sticker_image 看，再用 sticker_note 补一句备注，以后用 send_sticker 发更准。挑真的会用的存，别什么都收。'
     );
-    // 自安排唤醒关掉后，工具也摘了，这条引导（和它占的 token）一起去掉
-    if (getConfig().proactive?.selfWakeEnabled !== false) {
-      lines.push('- 想晚一点再开口时，用 schedule_wake 给自己安排一次唤醒（比如这波聊完再接话、过会儿想追问）。别频繁安排，一次只留一个。');
-    }
   } else {
     lines.push(
       '- 你无法查看图片内容：消息里的 [图片] [表情包] 只是占位提示，如实表示"看不到图"即可，绝对不要编造图片内容。'
     );
+  }
+  // 自安排唤醒只看 proactive.selfWakeEnabled（工具摘除也用它）——不能裹在 vision 分支里，
+  // 否则"文本模型 + 开着自安排唤醒"会变成"工具在、用法没了"（2026-09-26 审查 P2）
+  if (getConfig().proactive?.selfWakeEnabled !== false) {
+    lines.push('- 想晚一点再开口时，用 schedule_wake 给自己安排一次唤醒（比如这波聊完再接话、过会儿想追问）。别频繁安排，一次只留一个。');
   }
   if (search) {
     lines.push(
@@ -410,7 +412,7 @@ export function buildSystemPrompt({
       // 这里必须读 getConfig()：本函数里的 cfg 是 persona 对象（没有 api 字段），
       // 写成 cfg.api?.vision 会恒为 undefined → 关掉图片输入后照样教模型"先看一眼"
       // （2026-09-26 审查：提示词自相矛盾，还指向一个已被摘掉的工具）
-      { vision: getConfig().api?.vision !== false }
+      { vision: visionEnabled() }
     );
     if (stickerCtx) parts.push('', stickerCtx);
   }

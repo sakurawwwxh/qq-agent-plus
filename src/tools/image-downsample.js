@@ -294,7 +294,10 @@ export async function convertVideoToFrameStrip(buffer, signal) {
     const vf = `fps=${rate.toFixed(6)},scale=320:-2,tile=2x2`;
     const jpeg = await runFfmpeg(ffmpegPath, buffer, vf, signal);
     return jpeg?.length ? jpeg : null;
-  } catch {
+  } catch (error) {
+    // 中止（用户取消/运行超时）要原样抛出去：吞成 null 会让上层报"需要可用的 ffmpeg/ffprobe"，
+    // 把排查方向指错（服务器上明明装了）（2026-09-26 审查 P2）
+    if (signal?.aborted) throw error;
     return null;
   }
 }
