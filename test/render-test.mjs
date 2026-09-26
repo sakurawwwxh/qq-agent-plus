@@ -894,9 +894,25 @@ try {
   console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
   const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(defaultHtml)
     && /<option value="12" selected>/.test(defaultHtml)
-    && defaultHtml.includes('按量计费') && defaultHtml.includes('与「联网搜索」开关相互独立');
+    && defaultHtml.includes('与「联网搜索」开关相互独立');
   asrDefaultOk ? pass++ : fail++;
-  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明计费与解耦');
+  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
+
+  // 没有 Key 时界面必须说清"这项不会生效"，别让人以为默认勾上就在跑
+  const noKeyHtml = ctx.renderChatSection({
+    ...cfg,
+    webSearch: { ...cfg.webSearch, doubao: { ...cfg.webSearch.doubao, hasApiKey: false } }
+  });
+  const keyedHtml = ctx.renderChatSection({
+    ...cfg,
+    webSearch: { ...cfg.webSearch, doubao: { ...cfg.webSearch.doubao, hasApiKey: true } }
+  });
+  const asrKeyStateOk = noKeyHtml.includes('当前没有可用的 Key，这项不会生效')
+    && noKeyHtml.includes('也不会产生任何调用与费用')
+    && keyedHtml.includes('Key 已配置')
+    && !keyedHtml.includes('这项不会生效');
+  asrKeyStateOk ? pass++ : fail++;
+  console.log('  ' + (asrKeyStateOk ? 'OK   ' : 'FAIL ') + '设置页：没配 Key 时明说"不生效、不产生费用"，配了则显示已配置');
 
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');

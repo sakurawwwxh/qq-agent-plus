@@ -8709,9 +8709,11 @@ return `
       <label for="cfg-asr-max">每小时最多转写</label>
       <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
       <div class="hint">
-        复用「搜索服务 → 豆包」的 API Key（火山方舟 Agent Plan，<strong>按量计费</strong>）；
+        ${c.webSearch?.doubao?.hasApiKey
+          ? 'Key 已配置（复用「搜索服务 → 豆包」的，火山方舟 Agent Plan，<strong>按量计费</strong>）。'
+          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。Key 复用「搜索服务 → 豆包」那个，填在那里即可；现在也不必特意把上面的勾去掉。'}
         音频会上传到火山做识别，群友发来的语音因此会离开本机。这一项与「联网搜索」开关相互独立：
-        关掉搜索不影响语音转写，反之亦然；不要它就把上面的勾去掉。
+        关掉搜索不影响语音转写，反之亦然。
       </div>
     </div>
 
