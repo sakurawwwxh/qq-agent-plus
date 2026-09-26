@@ -904,6 +904,12 @@ try {
   const twoModesOk = (localHtml.match(/<option value="(local|api)"/g) || []).length === 2         // 下拉只有两个选项
     && /<option value="local" selected>/.test(localHtml)
     && /<option value="api" selected>/.test(apiModeHtml)
+    // 文案推荐走 API Key 的托管服务（用户要求），本机那支标注"较慢"
+    && localHtml.includes('推荐用 API Key 的托管服务')
+    && /<option value="api"[^>]*>API Key · 托管服务（推荐/.test(localHtml)
+    && /<option value="local"[^>]*>免费 · 本机安装的 Whisper（不联网、不要 Key，较慢）/.test(localHtml)
+    && localHtml.includes('推荐优先考虑上面的 API Key 托管服务')
+    && apiModeHtml.includes('推荐用这一支')
     && /id="asr-local-mode" style=""/.test(localHtml) && /id="asr-api-mode" style="display:none"/.test(localHtml)
     && /id="asr-local-mode" style="display:none"/.test(apiModeHtml) && /id="asr-api-mode" style="/.test(apiModeHtml);
   twoModesOk ? pass++ : fail++;

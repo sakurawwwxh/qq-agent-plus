@@ -6591,7 +6591,7 @@ function renderAsrSection(c) {
       ? '<strong>已配置好，这项在生效</strong>（Key 来自环境变量 <code>ASR_API_KEY</code>，此处留空即可）。'
       : '<strong>已配置好，这项在生效。</strong>')
     : (mode === 'local'
-      ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：在上面点「安装本机转写」即可；也可以改用 API Key 的托管服务。'
+      ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：可以点「安装本机转写」装好它；更快也更省事的做法是改用 API Key 的托管服务（推荐，硅基流动有免费模型）。'
       : (wrongProviderKey
         ? '<strong>换了识别服务，请重新填一次 Key，否则这项不会生效</strong>：配置里的 Key 与存它时的服务绑定，后端不会把它发到别家。'
         : (provider === 'openai' && keyReady && !openaiReady
@@ -6601,6 +6601,8 @@ function renderAsrSection(c) {
     <h3 id="settings-asr">语音转文字</h3>
     <div class="hint" style="margin-bottom:10px">
       把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
+      <strong>推荐用 API Key 的托管服务</strong>：更快、不用在本机下模型，免费的也有（硅基流动、Groq）；
+      只想完全不注册账号再用免费的本机 Whisper（要下载模型，转写慢一些）。
       识别服务与「搜索服务」各自独立，不必是同一家、也不必是同一个账号。
     </div>
 
@@ -6610,15 +6612,17 @@ function renderAsrSection(c) {
     <div class="field">
       <label for="cfg-asr-mode">用哪种方式</label>
       <select id="cfg-asr-mode">
-        <option value="local" ${mode === 'local' ? 'selected' : ''}>免费 · 本机安装的 Whisper（不联网、不要 Key）</option>
-        <option value="api" ${mode === 'api' ? 'selected' : ''}>API Key · 托管服务（更快，按量计费）</option>
+        <option value="api" ${mode === 'api' ? 'selected' : ''}>API Key · 托管服务（推荐：更快，有免费额度）</option>
+        <option value="local" ${mode === 'local' ? 'selected' : ''}>免费 · 本机安装的 Whisper（不联网、不要 Key，较慢）</option>
       </select>
     </div>
 
     <div id="asr-local-mode" style="${hide('local')}">
       <div class="hint">
-        装一次就好：点下面的按钮在这台机器上装（自动构建 + 从国内镜像下模型，默认 small 约 466MB）。
-        装完自动生效；不想要了可以完整卸载，把那 500MB 收回来。
+        <strong>推荐优先考虑上面的 API Key 托管服务</strong>：不用下载 466MB、转写速度也快得多
+        （硅基流动有免费模型，注册一下就能用）。下面是"零 Key、离线"的本地方案：
+        点按钮在这台机器上装（自动构建 + 从国内镜像下模型，默认 small 约 466MB），装完自动生效；
+        不想要了可以完整卸载，把那 500MB 收回来。
       </div>
       <div class="field-row">
         <div class="field"><label for="cfg-asr-bin">whisper.cpp 可执行文件</label>
@@ -6645,7 +6649,7 @@ function renderAsrSection(c) {
         <label for="cfg-asr-service">服务预设</label>
         <select id="cfg-asr-service">${asrServiceOptions(provider, c.asr?.baseUrl)}</select>
         <div class="hint">
-          选一家会自动填好接口地址；<strong>模型一律点「获取模型列表」从服务商官网拉</strong>
+          <strong>推荐用这一支</strong>。选一家会自动填好接口地址；<strong>模型一律点「获取模型列表」从服务商官网拉</strong>
           —— 预设里写死模型名会过时（比如硅基流动新上的免费模型，列表跟着官网走才看得到）。
           免费的推荐硅基流动（国内可直连）或 Groq（有免费额度）；火山走它自己的协议。
         </div>
