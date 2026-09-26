@@ -718,6 +718,42 @@ describe('Orchestrator', () => {
     assert.equal(listBlock.includes('st-2（'), false, '没备注的（看不明白也用不了看图工具）不该列出来');
     assert.ok(listBlock.includes('st-1'), '有备注的照常列');
     assert.match(system, /看不到图/, '看不到图时的口径要在');
+    // 视频那条引导也要跟着 vision 走：关掉图片输入时 get_message_images 不在工具表里，
+    // 不能教模型"用 get_message_images 看画面"（2026-09-26 审查：同类问题在贴纸清单上修过一次）
+    // 断言只看平台自己那几段（角色卡正文是管理员内容，里面本来就写着"用 get_message_images 看图"）
+    const sceneBlock = system.slice(system.indexOf('【QQ 场景规则】'));
+    assert.ok(sceneBlock.length > 100, '要能定位到场景规则段');
+    assert.equal(sceneBlock.includes('先看画面再听声音'), false, 'vision 关了不能再说"用 get_message_images 看画面"');
+    // 这一轮 ASR 没配（fixture 默认），走的是"听不了语音"那条分支：
+    // 不能出现"用 get_message_images 看画面"这类指向已被摘掉工具的引导
+    assert.equal(sceneBlock.includes('用 get_message_images 看'), false, 'vision 关了不能教它看画面');
+
+    // ASR 配好 + vision 关着：只能说"只能听声音"，不能说看画面
+    cfg.asr.provider = 'volc';
+    cfg.asr.apiKey = 'k';
+    setRuntimeConfig(cfg);
+    let asrNoVision = '';
+    globalThis.fetch = async (_url, options) => {
+      asrNoVision = JSON.parse(options.body).messages[0].content;
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+    append(2, '哈哈', '42');
+    await runner.wake('group:1');
+    assert.match(asrNoVision, /画面看不到/, 'ASR 开着但看不了图 → 要说清只能听声音');
+    assert.equal(asrNoVision.includes('先看画面再听声音'), false);
+
+    // 反过来：vision 开着且 ASR 配好时，视频两侧都要明说（画面 + 声音）
+    cfg.api.vision = true;
+    setRuntimeConfig(cfg);
+    let withVision = '';
+    globalThis.fetch = async (_url, options) => {
+      withVision = JSON.parse(options.body).messages[0].content;
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+    append(3, '哈哈', '42');
+    await runner.wake('group:1');
+    assert.match(withVision, /别人发视频时两样都能拿到/);
+    assert.match(withVision, /get_message_audio/);
     cfg.api.vision = true;
   });
 

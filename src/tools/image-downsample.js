@@ -240,6 +240,7 @@ function gifStripVf(frameCount) {
  * ffprobe 与 ffmpeg 同目录（resolveFfmpeg 返回的路径直接换名字）。
  */
 async function probeVideoSeconds(ffmpegPath, buffer, signal) {
+  signal?.throwIfAborted();
   // ffprobe 与 ffmpeg 同目录；resolveFfmpeg 可能给裸名字（靠 PATH 找），dirname 之后仍是裸名字 ✓
   const probePath = path.join(path.dirname(String(ffmpegPath) || ''), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-ffprobe-'));
@@ -251,11 +252,22 @@ async function probeVideoSeconds(ffmpegPath, buffer, signal) {
         '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', inputPath
       ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
       let text = '';
-      const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } resolve(''); }, 8000);
-      signal?.addEventListener('abort', () => { try { child.kill(); } catch { /* 已退出 */ } resolve(''); }, { once: true });
+      // 三条出口都走 settle：timer/abort/close 只生效一次，并且一定摘掉 abort 监听
+      // （ctx.signal 是整轮共享的，漏摘会在一轮里对多个视频抽帧时累积，2026-09-26 审查）
+      let done = false;
+      const settle = (value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+        resolve(value);
+      };
+      const onAbort = () => { try { child.kill(); } catch { /* 已退出 */ } settle(''); };
+      const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } settle(''); }, 8000);
+      signal?.addEventListener('abort', onAbort, { once: true });
       child.stdout.on('data', (c) => { text = (text + c).slice(-200); });
-      child.on('error', () => { clearTimeout(timer); resolve(''); });
-      child.on('close', () => { clearTimeout(timer); resolve(text); });
+      child.on('error', () => settle(''));
+      child.on('close', () => settle(text));
     });
     const seconds = Number(String(out).trim());
     return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;

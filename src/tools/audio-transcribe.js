@@ -56,7 +56,16 @@ export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = 
     let size = 0;
     let stderr = '';
     let settled = false;
-    const fail = (e) => { if (!settled) { settled = true; clearTimeout(timer); try { child.kill('SIGKILL'); } catch { /* noop */ } reject(e); } };
+    const fail = (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // 摘监听：ctx.signal 是整轮运行共享的，失败路径不摘的话，一轮里多次调用会累积到
+      // MaxListenersExceededWarning（2026-09-26 审查）
+      signal?.removeEventListener('abort', onAbort);
+      try { child.kill('SIGKILL'); } catch { /* noop */ }
+      reject(e);
+    };
     const timer = setTimeout(() => fail(new Error('音频转换超时')), timeoutMs);
     const onAbort = () => fail(signal?.reason ?? new Error('已中止'));
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -135,6 +144,23 @@ export async function currentMessageAudioUrl(ctx, entry) {
  * file 段没带 url 时，用 OneBot 的取地址接口换一个（群文件 / 私聊文件两套参数）。
  * 这是"别人发视频文件"那条路的关键一步：段里只有 file_id，没有可下载地址。
  */
+/**
+ * 记录段（QQ 语音）只带文件名、没带 URL 时，用 get_record 换一个地址。
+ * 实测（2026-09-26，用户服务器上的 NapCat）：`get_record?file=<文件名>` 会返回同一个 CDN URL
+ * （它不做转码，但换地址这一步是有效的）—— 所以这条不写死成"拿不到地址"。
+ */
+export async function resolveRecordUrl(ctx, { name }, { signal } = {}) {
+  const file = String(name || '').trim();
+  if (!file || typeof ctx?.onebot?.call !== 'function') return '';
+  try {
+    const data = await ctx.onebot.call('get_record', { file }, 15000, signal);
+    const url = String(data?.file || data?.url || '');
+    return isFetchableUrl(url) ? url : '';
+  } catch {
+    return '';
+  }
+}
+
 export async function resolveFileSegmentUrl(ctx, { fileSegId }, { signal } = {}) {
   const id = String(fileSegId || '').trim();
   if (!id) return '';
@@ -302,7 +328,9 @@ export function localTimeoutMs(pcmBytes) {
 export function pacedAudioLimitSeconds(cfg, provider) {
   if (!PACED_ASR_PROVIDERS.includes(provider)) return 0;
   const runMs = Math.min(240000, Number(cfg?.api?.runTimeoutMs) || 180000);
-  const budget = Math.max(30, Math.round(runMs / 1000) - 30);
+  // 余量 60 秒：推流本身是实时的（1 秒音频推 1 秒），再加上同一轮里的下载/转码与模型往返，
+  // 只留 30 秒会贴着运行死线（2026-09-26 审查：149 秒音频判"可转"，却常在推流尾部被 abort）
+  const budget = Math.max(30, Math.round(runMs / 1000) - 60);
   return provider === 'local' ? Math.floor(budget / 2) : budget;
 }
 
@@ -340,7 +368,7 @@ async function localTranscribe(cfg, pcm, signal) {
  * m4a/mp4 的 moov atom 常在尾部，ffmpeg 管道输入无法 seek —— 所以必须落盘成临时文件。
  */
 export async function audioBufferToPcm(buffer, { name = '', signal } = {}) {
-  if (looksLikeSilk(buffer)) {
+  if (await looksLikeSilk(buffer)) {
     const { pcm, durationMs } = await silkToPcm(buffer);
     if (durationMs > 0) {
       // 一致性自检：SILK 头里的时长与解出来的字节数应当对得上（差太多说明解码中途出错了）
@@ -366,6 +394,12 @@ export async function transcribeMessageAudio(ctx, entry) {
   const target = await currentMessageAudioUrl(ctx, entry);
   if (!target) return { ok: false, error: '这条消息里没有可识别的音频/视频内容' };
   {
+    if (!target.url && !target.fileSegId && target.name
+      && (target.segment === 'record' || target.segment === 'voice')) {
+      // 语音只存在协议端本地缓存时（段里只有文件名）：试着用 get_record 换地址
+      const resolved = await resolveRecordUrl(ctx, target, { signal: ctx.signal });
+      if (resolved) target.url = resolved;
+    }
     if (!target.url && target.fileSegId) {
       // 群文件/私聊文件的段里常常只有 file_id：用 OneBot 的取地址接口换一个
       // （这是"别人发视频文件/音频文件"那条路的关键一步）

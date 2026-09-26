@@ -32,9 +32,15 @@ export function classifyTransportFailure(error) {
 
 /** 被禁言时报给模型的错误文案（模型当轮可见，可直接决定"先不发言"）。 */
 function muteError(untilTs) {
-  return untilTs
-    ? `本群禁言中（预计 ${formatClockTime(untilTs)} 解除），本轮先不发言`
-    : '本群全员禁言中，本轮先不发言';
+  if (!untilTs) return '本群全员禁言中，本轮先不发言';
+  // 只写 HH:MM:SS 会让模型以为"今天就能发"：QQ 禁言最长 30 天，跨天时必须带上日期
+  // （2026-09-26 审查：25 小时后的解禁时间被写成"预计 09:12:33 解除"）
+  const until = new Date(untilTs);
+  const now = new Date();
+  const sameDay = until.getFullYear() === now.getFullYear()
+    && until.getMonth() === now.getMonth() && until.getDate() === now.getDate();
+  const when = sameDay ? formatClockTime(untilTs) : `${until.getMonth() + 1}月${until.getDate()}日 ${formatClockTime(untilTs)}`;
+  return `本群禁言中（预计 ${when} 解除），本轮先不发言`;
 }
 
 /**

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as legacy from './config-legacy.js';
+import { ASR_DEFAULT_PROVIDER, ASR_PROVIDERS } from './config-legacy.js';
 import {
   applyStableFeaturePolicy,
   globalAdminUin,
@@ -141,23 +142,7 @@ export function incidentPilotEnabled() {
   return true;
 }
 
-/** 语音转写的供应商。四家国内云的转写接口都不是 OpenAI 协议，各有各的签名/换取流程，所以各是一个 provider：
- *  local   本机 whisper.cpp（零 Key）
- *  volc    火山 Seed-ASR（WebSocket，一个 Key）
- *  openai  任意 OpenAI 兼容服务（Key + 地址 + 模型）
- *  aliyun  阿里云百炼（chat + input_audio，一个 Key，地址/模型有默认值）
- *  baidu   百度短语音识别（API Key，可选 Secret Key 换 token）
- *  tencent 腾讯云一句话识别（SecretId + SecretKey，TC3 签名）
- *  iflytek 讯飞语音听写（AppID + APIKey + APISecret，签名 URL + WebSocket）
- */
-export const ASR_PROVIDERS = ['volc', 'openai', 'aliyun', 'baidu', 'tencent', 'iflytek', 'local'];
-/**
- * 没配 provider（或值非法）时用哪个：OpenAI 兼容的托管服务。
- * 用户 2026-09-26 要求把"用 API Key 的方式"设为默认 —— 默认配置预置硅基流动的地址，
- * 粘一个 Key + 拉一次模型列表就能用；本机 whisper.cpp（零 Key 但要装 466MB）仍是一等选项，
- * 只是不再占默认位。
- */
-export const ASR_DEFAULT_PROVIDER = 'openai';
+/** provider 列表与默认值定义在 config-legacy（读盘迁移要用），这里继续用并 re-export（见文件末尾）。 */
 export function asrProvider(cfg = getConfig()) {
   const raw = String(cfg?.asr?.provider || '').trim().toLowerCase();
   return ASR_PROVIDERS.includes(raw) ? raw : ASR_DEFAULT_PROVIDER;
@@ -262,11 +247,11 @@ export function findWhisperBinSync(cfg = getConfig()) {
  */
 export function asrApiKey(cfg = getConfig()) {
   const stored = String(cfg?.asr?.apiKey || '').trim();
-  if (stored) {
-    return legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'apiKeyProvider', 'apiKeyHost')
-      ? stored
-      : '';
+  if (stored && legacy.asrCredentialApplies(cfg?.asr, asrProvider(cfg), stored, 'apiKeyProvider', 'apiKeyHost')) {
+    return stored;
   }
+  // 存的那把"不属于这家"时**回落到环境变量**：ASR_API_KEY 是部署级的单一值，文档承诺它不受归属限制
+  // （2026-09-26 审查：原来"存了但不适用"会把 env 彻底挡住，用户按文档设了也不生效）
   return String(process.env.ASR_API_KEY || '').trim();
 }
 

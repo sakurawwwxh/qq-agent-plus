@@ -227,3 +227,23 @@ it('短禁言到期后不再拦（缓存里存的是"解禁时间"，过期就�
   assert.equal(sendCalled, 1, '到期后应能发出');
   store.close();
 });
+
+
+it('禁言解禁时间跨天时要带日期（只写 HH:MM:SS 会让模型以为今天就能发）', async () => {
+  const store = new ChatStore(0, { dataDir: dir });
+  const sender = new SendQueue({
+    store,
+    onebot: {
+      selfId: '100',
+      getGroupMemberInfo: async () => ({ shut_up_timestamp: nowSec() + 25 * 3600 }),   // 25 小时后
+      getGroupInfo: async () => ({ group_all_shut: 0 }),
+      sendText: async () => ({ message_id: 1 })
+    }
+  });
+  await assert.rejects(() => sender.sendTextBatch('group:1', ['hi']), (error) => {
+    const text = String(error?.message || '');
+    assert.match(text, /\d+月\d+日/, `跨天禁言要带日期，实际：${text}`);
+    return true;
+  });
+  store.close();
+});

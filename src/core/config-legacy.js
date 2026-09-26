@@ -445,6 +445,24 @@ export const DEFAULT_CONFIG = {
   }
 };
 
+/** 语音转写的供应商。四家国内云的转写接口都不是 OpenAI 协议，各有各的签名/换取流程，所以各是一个 provider：
+ *  local   本机 whisper.cpp（零 Key）
+ *  volc    火山 Seed-ASR（WebSocket，一个 Key）
+ *  openai  任意 OpenAI 兼容服务（Key + 地址 + 模型）
+ *  aliyun  阿里云百炼（chat + input_audio，一个 Key，地址/模型有默认值）
+ *  baidu   百度短语音识别（API Key，可选 Secret Key 换 token）
+ *  tencent 腾讯云一句话识别（SecretId + SecretKey，TC3 签名）
+ *  iflytek 讯飞语音听写（AppID + APIKey + APISecret，签名 URL + WebSocket）
+ */
+export const ASR_PROVIDERS = ['volc', 'openai', 'aliyun', 'baidu', 'tencent', 'iflytek', 'local'];
+/**
+ * 没配 provider（或值非法）时用哪个：OpenAI 兼容的托管服务。
+ * 用户 2026-09-26 要求把"用 API Key 的方式"设为默认 —— 默认配置预置硅基流动的地址，
+ * 粘一个 Key + 拉一次模型列表就能用；本机 whisper.cpp（零 Key 但要装 466MB）仍是一等选项，
+ * 只是不再占默认位。
+ */
+export const ASR_DEFAULT_PROVIDER = 'openai';
+
 /** 语音转写凭据的绑定粒度：OpenAI 兼容服务里"换地址 = 换了一家"，取主机名比较。 */
 export function asrEndpointHost(baseUrl) {
   const raw = String(baseUrl || '').trim();
@@ -463,6 +481,7 @@ export function asrEndpointHost(baseUrl) {
  */
 export const ASR_DERIVED_KEYS = [
   'configured', 'available', 'keySource', 'keyProvider', 'keyUsable', 'keyHost',
+  'credentialStale',                       // 界面用来表达"刚换了服务、凭据要重填"的草稿标记，不该落盘
   'secretIdUsable', 'secretKeyUsable',
   'localBinResolved', 'localModelResolved', 'localManagedExists', 'localInstalled'
 ];
@@ -612,6 +631,30 @@ const ASR_CREDENTIAL_PROVIDERS = {
  * **只在读盘时调用**（loadConfig）：配置合并路径上补会把"归属未知的老凭据"洗成当前服务名下的，
  * 恰好就是"把 A 家的 Key 当成 B 家的"那条路（2026-09-26 审查踩到过）。之后归属只由用户重填更新。
  */
+/**
+ * "默认 provider 从 local 改成 openai"之后的一次性迁移（只在读盘时调用）。
+ *
+ * 为什么需要它：没显式存过 `asr.provider` 的老配置，语义会从"本机转写"变成"API Key 托管服务" ——
+ * 本机装了 whisper 的实例会静默失效（2026-09-26 审查 P1）。
+ * 规则：看得出装过本机转写（<数据目录>/asr 或配置里写了 localBin/localModel）→ local；
+ * 否则用新默认，并把**归属未知**的凭据记到 `local` 名下 —— local 用不到凭据，
+ * 于是它不会被发到用户从没选过的预置服务去（同一次审查 P1 的另一半）。
+ */
+export function applyAsrProviderFallback(asr, { localInstalled = false } = {}) {
+  if (!isPlainObject(asr)) return '';
+  asr.provider = localInstalled ? 'local' : ASR_DEFAULT_PROVIDER;
+  if (!localInstalled) {
+    for (const [field, providerField] of [
+      ['apiKey', 'apiKeyProvider'], ['secretId', 'secretIdProvider'], ['secretKey', 'secretKeyProvider']
+    ]) {
+      if (String(asr[field] || '').trim() && !String(asr[providerField] || '').trim()) {
+        asr[providerField] = 'local';
+      }
+    }
+  }
+  return asr.provider;
+}
+
 export function pinStoredAsrCredentials(asr, providerValue) {
   if (!isPlainObject(asr)) return;
   const provider = String(providerValue || '').trim().toLowerCase();
@@ -668,6 +711,17 @@ export function loadConfig() {
     if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
     const parsed = migrateConfig(JSON.parse(text));
     const merged = deepMerge(DEFAULT_CONFIG, parsed);
+    // ── provider 迁移（2026-09-26）──
+    // 默认 provider 从 local 改成 openai 之后，**没显式存过 provider** 的老配置语义会变：
+    // 本机装了 whisper 的实例会从"能用"变成"没配齐"（静默失效，2026-09-26 审查 P1）。
+    // 按"能不能看出装过本机转写"回填：装了 → local；没装 → 保持新默认（openai）。
+    const declaredProvider = String(parsed?.asr?.provider || '').trim().toLowerCase();
+    if (!ASR_PROVIDERS.includes(declaredProvider)) {
+      const localLooksInstalled = fs.existsSync(path.join(DATA_DIR, 'asr'))
+        || String(parsed?.asr?.localBin || '').trim() !== ''
+        || String(parsed?.asr?.localModel || '').trim() !== '';
+      applyAsrProviderFallback(merged.asr, { localInstalled: localLooksInstalled });
+    }
     // 读盘这一次把老配置的凭据归属补齐（provider + OpenAI 兼容的地址主机）：
     // 升级后"换服务/换地址要重填"的防线立刻生效，而不是等用户碰一次设置才生效
     const asrProviderValue = String(merged.asr?.provider || '').trim().toLowerCase();

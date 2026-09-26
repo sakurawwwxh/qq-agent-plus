@@ -31,12 +31,12 @@ async function silkSample() {
 test('认出 QQ 语音的 SILK（含带 0x02 前缀的写法），不误判别的字节', async () => {
   const silk = await silkSample();
   assert.equal(silk.subarray(0, 10).toString('latin1'), '\u0002#!SILK_V3');
-  assert.equal(looksLikeSilk(silk), true);
+  assert.equal(await looksLikeSilk(silk), true);
   // 裸头（去掉 0x02）也要认：QQ 有的实现存的是不带前缀的写法
-  assert.equal(looksLikeSilk(silk.subarray(1)), true);
-  assert.equal(looksLikeSilk(Buffer.from('RIFF....WAVEfmt ')), false, 'WAV 不能被当成 SILK');
-  assert.equal(looksLikeSilk(Buffer.alloc(4)), false, '太短的不算');
-  assert.equal(looksLikeSilk(null), false);
+  assert.equal(await looksLikeSilk(silk.subarray(1)), true);
+  assert.equal(await looksLikeSilk(Buffer.from('RIFF....WAVEfmt ')), false, 'WAV 不能被当成 SILK');
+  assert.equal(await looksLikeSilk(Buffer.alloc(4)), false, '太短的不算');
+  assert.equal(await looksLikeSilk(null), false);
 });
 
 test('SILK → 16k 单声道 PCM：字节数与时长对得上', async () => {
@@ -58,7 +58,7 @@ test('audioBufferToPcm：SILK 走本地解码（结果与 silkToPcm 一致），
 
 test('不是 SILK 的字节不会被误判成 SILK（会走 ffmpeg 那条路，并如实报错）', async () => {
   const junk = Buffer.concat([Buffer.from('not-a-media-file-at-all'.repeat(4)), Buffer.alloc(8)]);
-  assert.equal(looksLikeSilk(junk), false);
+  assert.equal(await looksLikeSilk(junk), false);
   await assert.rejects(
     () => audioBufferToPcm(junk, { name: 'x.amr' }),
     /音频转换失败|ffmpeg 不可用|Invalid data/i,

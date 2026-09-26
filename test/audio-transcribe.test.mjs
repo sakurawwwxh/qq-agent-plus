@@ -474,3 +474,26 @@ it('转写结果带上"可能是音乐/音效"的提示（工具层原样带给�
   assert.equal(speechCaveat({ maybeNonSpeech: false }), '');
   assert.match(speechCaveat({ maybeNonSpeech: true }), /别把上面的文字当作事实/);
 });
+
+
+it('语音段只给文件名时用 get_record 换地址（实测 NapCat 会返回 CDN URL）', async () => {
+  const { resolveRecordUrl } = await import('../src/tools/audio-transcribe.js');
+  const calls = [];
+  const ctx = { chatKey: 'group:1', onebot: { call: async (action, params) => { calls.push({ action, params }); return { file: 'https://cdn.example.com/a.amr' }; } } };
+  assert.equal(await resolveRecordUrl(ctx, { name: 'abc.amr' }), 'https://cdn.example.com/a.amr');
+  assert.deepEqual(calls[0], { action: 'get_record', params: { file: 'abc.amr' } });
+  // 没有文件名 / 协议端报错 / 回的不是 http 地址 → 空串（上层给准确说明）
+  assert.equal(await resolveRecordUrl(ctx, { name: '' }), '');
+  assert.equal(await resolveRecordUrl({ onebot: { call: async () => { throw new Error('x'); } } }, { name: 'a.amr' }), '');
+  assert.equal(await resolveRecordUrl({ onebot: { call: async () => ({ file: 'file:///tmp/a.amr' }) } }, { name: 'a.amr' }), '');
+});
+
+it('推流型供应商的长度闸门留了 60 秒余量（原来 30 秒会贴着运行死线）', async () => {
+  const { pacedAudioLimitSeconds } = await import('../src/tools/audio-transcribe.js');
+  const cfg = { api: { runTimeoutMs: 180000 } };
+  assert.equal(pacedAudioLimitSeconds(cfg, 'iflytek'), 120, '180-60');
+  assert.equal(pacedAudioLimitSeconds(cfg, 'local'), 60, '再砍半（本机约 2 倍实时）');
+  assert.equal(pacedAudioLimitSeconds(cfg, 'openai'), 0, '一次上传的服务不受限');
+  // 配置把运行时限调小时，闸门跟着收紧
+  assert.equal(pacedAudioLimitSeconds({ api: { runTimeoutMs: 60000 } }, 'iflytek'), 30, '最少留 30 秒');
+});

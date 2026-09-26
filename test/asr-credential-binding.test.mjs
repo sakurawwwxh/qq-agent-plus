@@ -114,14 +114,14 @@ test('控制台保存回传的运行时字段不落盘、也不改凭据归属',
     asr: {
       ...before.asr,
       configured: true, available: true, keySource: 'config', keyProvider: 'iflytek',
-      secretIdUsable: false, secretKeyUsable: true,
+      credentialStale: true, secretIdUsable: false, secretKeyUsable: true,
       localBinResolved: '/nope/whisper-cli', localModelResolved: '/nope/ggml.bin',
       localManagedExists: false, localInstalled: false,
       hasApiKey: true, hasSecretKey: true
     }
   });
   const derived = ['configured', 'available', 'keySource', 'keyProvider', 'keyUsable', 'keyHost',
-    'secretIdUsable', 'secretKeyUsable', 'localBinResolved', 'localModelResolved',
+    'credentialStale', 'secretIdUsable', 'secretKeyUsable', 'localBinResolved', 'localModelResolved',
     'localManagedExists', 'localInstalled', 'hasApiKey', 'hasSecretKey'];
   for (const key of derived) {
     assert.equal(Object.prototype.hasOwnProperty.call(cfg.asr, key), false, `${key} 不该留在配置里`);
