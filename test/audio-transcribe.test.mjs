@@ -2,6 +2,7 @@
 // 真实 ASR 不在此测（需要 key + 网络），只测编排逻辑：URL 解析、无音频报错、key 缺失报错。
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -56,23 +57,26 @@ it('无音频内容返回 null', async () => {
 });
 
 // 真 ffmpeg 链路：生成 2 秒 440Hz wav → 转 16k PCM，断言有产出且采样率正确。
-// 这是评审指出的「测试全绿但 ffmpeg 链路是死的」的覆盖补丁。
-it('ffmpegToPcm 真实转换：wav 输入产出 16k mono PCM', async () => {
-  const { execFileSync } = await import('node:child_process');
+// 环境探测一次：CI 的 ubuntu runner 上没有 ffmpeg（2026-09-26 实测 spawn ffmpeg ENOENT，
+// 并把"无效输入报错"那条断言炸红过一次）；本机与生产服务器有。
+// 缺 ffmpeg 时这两条**显式跳过**（skipped 计数可见），不再让断言悄悄失败或静默通过。
+const ffmpegMissing = (() => {
+  try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); return false; }
+  catch { return true; }
+})();
+const FFMPEG_SKIP = ffmpegMissing ? '本环境没有 ffmpeg' : false;
+
+it('ffmpegToPcm 真实转换：wav 输入产出 16k mono PCM', { skip: FFMPEG_SKIP }, async () => {
   const wavPath = path.join(dir, 'tone.wav');
-  try {
-    execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-      '-ar', '44100', '-ac', '2', wavPath]);
-  } catch {
-    return; // CI 环境没有 ffmpeg：跳过（上游 CI 有 Windows/Ubuntu 两种，无 ffmpeg 环境不挂测试）
-  }
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-ar', '44100', '-ac', '2', wavPath]);
   const pcm = await ffmpegToPcm(wavPath);
   // raw s16le 无文件头：2 秒 × 16000 采样 × 1 声道 × 2 字节 = 64000 字节。
   // 字节数精确匹配即证明采样率/声道/位深全部正确（ffprobe 探不了无头 PCM）。
   assert.equal(pcm.length, 64000);
 });
 
-it('ffmpegToPcm 无效输入报错而不是挂起', async () => {
+it('ffmpegToPcm 无效输入报错而不是挂起', { skip: FFMPEG_SKIP }, async () => {
   const bad = path.join(dir, 'not-audio.bin');
   fs.writeFileSync(bad, Buffer.from('this is not audio content at all'));
   await assert.rejects(() => ffmpegToPcm(bad, { timeoutMs: 15000 }), /音频转换失败/);
