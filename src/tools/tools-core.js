@@ -712,7 +712,12 @@ export function buildToolDefs() {
           if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const result = await transcribeMessageAudio(ctx, entry);
           if (!result.ok) return err(result.error);
-          return ok({ transcript: result.text, note: '以上是这段音频的完整转写。直接基于内容回应，不要复述"我转写了"。' });
+          return ok({
+            transcript: result.text,
+            note: result.caveat
+              ? `以上是自动识别的结果${result.caveat}`
+              : '以上是这段音频的完整转写。直接基于内容回应，不要复述"我转写了"。'
+          });
         } catch (error) {
           return err(error?.message ?? error);
         }

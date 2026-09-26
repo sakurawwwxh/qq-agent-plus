@@ -172,6 +172,46 @@ export const OPENAI_WAV_MAX_BYTES = 20 * 1024 * 1024;
  */
 export const PACED_ASR_PROVIDERS = ['local', 'iflytek'];
 
+/**
+ * 这段音频"像不像有人在说话"：只看一个判据 —— **停顿比例**。
+ * 说话总有换气/断句（20ms 帧级看，能量会在近静音与有声之间反复横跳）；纯音乐/音效/环境声
+ * 往往是持续有能量（打击乐、爆炸声之间也没有真正的静音段）。
+ *
+ * 背景（用户 2026-09-26）：发了一段"打花火"的视频，音频只有音乐与动作音效、没有语音，
+ * 而 ASR 对非语音会**编**出一段像模像样的中文（两个模型各编各的）。与其让模型把编的内容
+ * 当事实讲，不如把这个信号如实给它："这段几乎没有停顿，可能主要是音乐/音效"。
+ *
+ * 保守起见只做"提示"不做"判定"：只有 3 秒以上 + 近静音帧占比 < 5% + 能量全程不低 才标记，
+ * 宁可漏报（模型自己也能从内容判断），不要误报把真人语音说成噪音。
+ */
+export function analyzeSpeechiness(pcm, { frameMs = 20, bytesPerSecond = 32000 } = {}) {
+  const bytesPerFrame = Math.max(2, Math.round(bytesPerSecond * frameMs / 1000 / 2) * 2);
+  const frames = [];
+  for (let i = 0; i + 2 <= pcm.length; i += bytesPerFrame) {
+    let sum = 0;
+    const end = Math.min(i + bytesPerFrame, pcm.length);
+    for (let j = i; j + 1 < end; j += 2) {
+      const v = pcm.readInt16LE(j) / 32768;
+      sum += v * v;
+    }
+    frames.push(Math.sqrt(sum / Math.max(1, (end - i) / 2)));
+  }
+  if (!frames.length) return { seconds: 0, quietRatio: 1, maybeNonSpeech: false };
+  const peak = Math.max(...frames);
+  if (peak <= 0) return { seconds: frames.length * frameMs / 1000, quietRatio: 1, maybeNonSpeech: false };
+  const quiet = frames.filter((rms) => rms < peak * 0.06).length;
+  const quietRatio = quiet / frames.length;
+  const seconds = frames.length * frameMs / 1000;
+  return { seconds, quietRatio, maybeNonSpeech: seconds >= 3 && quietRatio < 0.05 };
+}
+
+/** 把"像不像有人说话"翻译成给模型的一句话（不确定时什么都不说）。 */
+export function speechCaveat(info) {
+  if (!info?.maybeNonSpeech) return '';
+  return '（这段音频几乎没有停顿，可能主要是音乐/音效而不是人声 —— 自动识别在这种情况下会编内容，'
+    + '别把上面的文字当作事实讲；如果它和画面也对不上，就照实说"没听到有人说话"。）';
+}
+
 /** 把 PCM 切成若干段（导出便于测试）。 */
 export function chunkPcm(pcm, seconds = SHORT_API_CHUNK_SECONDS, bytesPerSecond = 32000) {
   const size = Math.max(1, Math.round(seconds * bytesPerSecond));
@@ -377,8 +417,13 @@ export async function transcribeMessageAudio(ctx, entry) {
     }
     try {
       const text = await runProvider(cfg, pcm, { signal: ctx.signal });
-      if (!text?.trim()) return { ok: false, error: '语音识别没有返回内容（可能整段是静音/无语音）' };
-      return { ok: true, text: text.trim() };
+      // 非语音（音乐/音效）时 ASR 会编内容：把"这段几乎没有停顿"的信号一并交给模型，
+      // 由它决定是否照实说"没听到有人说话"（2026-09-26 用户反馈"打花火视频"）
+      const caveat = speechCaveat(analyzeSpeechiness(pcm));
+      if (!text?.trim()) {
+        return { ok: false, error: caveat ? '这段音频里没有识别到人声（可能只有音乐/音效）' : '语音识别没有返回内容（可能整段是静音/无语音）' };
+      }
+      return { ok: true, text: text.trim(), caveat };
     } catch (e) {
       return { ok: false, error: `语音识别失败：${String(e?.message ?? e)}` };
     }

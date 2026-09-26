@@ -436,3 +436,41 @@ it('协议端只给文件名（没有 URL）时说清楚，不再去请求一个
   assert.match(out.error, /拿不到下载地址/);
   assert.match(out.error, /发送文件/, '要给出可照做的替代做法');
 });
+
+
+// ── 非语音判定：音乐/音效不该被当成"人声转写"讲给群友（2026-09-26 打花火视频反馈）──
+
+it('停顿比例：连续有声（音乐/音效）标记为非语音，有停顿的说话不标记', async () => {
+  const { analyzeSpeechiness, speechCaveat } = await import('../src/tools/audio-transcribe.js');
+  const tone = (seconds, { gaps = [] } = {}) => {
+    const n = Math.round(seconds * 16000);
+    const pcm = Buffer.alloc(n * 2);
+    for (let i = 0; i < n; i += 1) {
+      const t = i / 16000;
+      const inGap = gaps.some(([a, b]) => t >= a && t < b);
+      const v = inGap ? 0 : Math.round(9000 * Math.sin(2 * Math.PI * 220 * t));
+      pcm.writeInt16LE(v, i * 2);
+    }
+    return pcm;
+  };
+  // 连续 10 秒（音乐/音效那种持续能量）→ 标记
+  const continuous = analyzeSpeechiness(tone(10));
+  assert.equal(continuous.maybeNonSpeech, true, `近静音占比 ${continuous.quietRatio.toFixed(3)} 应判为非语音`);
+  assert.match(speechCaveat(continuous), /音乐\/音效|没听到/);
+  // 说话那种节奏（每句之间留 0.5 秒停顿）→ 不标记
+  const spoken = analyzeSpeechiness(tone(10, { gaps: [[2, 2.5], [4.5, 5], [7, 7.5]] }));
+  assert.equal(spoken.maybeNonSpeech, false, `近静音占比 ${spoken.quietRatio.toFixed(3)} 不该判为非语音`);
+  assert.equal(speechCaveat(spoken), '');
+  // 太短（3 秒以内）不下结论：短语音很难从停顿上判断
+  assert.equal(analyzeSpeechiness(tone(2)).maybeNonSpeech, false);
+  // 全静音：不是"非语音"（走"没有内容"那条分支）
+  assert.equal(analyzeSpeechiness(Buffer.alloc(16000 * 2 * 5)).maybeNonSpeech, false);
+});
+
+it('转写结果带上"可能是音乐/音效"的提示（工具层原样带给模型）', async () => {
+  const { speechCaveat, analyzeSpeechiness } = await import('../src/tools/audio-transcribe.js');
+  const info = analyzeSpeechiness(Buffer.alloc(0));
+  assert.equal(speechCaveat(info), '', '空音频不给提示');
+  assert.equal(speechCaveat({ maybeNonSpeech: false }), '');
+  assert.match(speechCaveat({ maybeNonSpeech: true }), /别把上面的文字当作事实/);
+});
