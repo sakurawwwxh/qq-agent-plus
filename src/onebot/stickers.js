@@ -218,7 +218,11 @@ export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
     || (hasNote(b) ? 1 : 0) - (hasNote(a) ? 1 : 0)
     || (b.lastUsedAt || 0) - (a.lastUsedAt || 0)
     || String(a.id).localeCompare(String(b.id)));
-  const familiarCount = Math.max(1, Math.ceil(limit / 2));
+  // 常用位 = min(名额的一半, 真的用过的张数)：老图不够填时，名额让给"没用过的"。
+  // 用户 2026-09-26 反馈"它还是用旧表情包"：库里 39 张只有 11 张用过，而常用位固定占一半名额，
+  // 每次都是同一批老图排在最前面；把用过的张数当上限，轮换位就能多带几张新的进来。
+  const usedCount = list.filter((e) => (e.useCount || 0) > 0).length;
+  const familiarCount = Math.max(1, Math.min(Math.ceil(limit / 2), Math.max(1, usedCount)));
   const familiar = byUsage.slice(0, familiarCount);
   const picked = new Set(familiar.map((e) => e.id));
   const rotation = list
@@ -242,10 +246,12 @@ export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
   // 库刚建起来时"常用的一半"也全是没用过的：那时别写"前几个是常用的"，
   // 否则和逐行的（没用过）标记自相矛盾（2026-09-26 审查）。
   const familiarUsed = familiar.filter((e) => (e.useCount || 0) > 0).length;
+  const unusedTotal = list.filter((e) => !(e.useCount || 0)).length;
   const scope = rotation.length
     ? (familiarUsed > 0
-      ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的（换着发，别老是同一张）`
-      : `这 ${top.length} 个都还没用过（换着发，别老是同一张）`)
+      ? `前 ${familiar.length} 个是常用的，后 ${rotation.length} 个是没用过/很久没用的 —— 优先挑后面这批没见过的用`
+        + `（库里还有 ${unusedTotal} 张没发过；一张用过了就像老图一样可以一直用，别老是那两三张）`
+      : `这 ${top.length} 个都还没用过（用掉一张，下一张会自动顶上来）`)
     : `以下是常用的 ${top.length} 个`;
   // 关闭图片输入时不能提 get_sticker_image（那个工具已经不在工具表里了）
   const tail = vision
@@ -271,6 +277,7 @@ export function buildStickerStrategyHint(level = 1, { vision = true } = {}) {
     '- 合适时机：被戳中笑点/槽点、接梗、赞同、自嘲、安慰、无语、赢了/输了、告别/晚安，都可以自然用；别人发了表情包/图片时，接完话基本都要回一张自己的。',
     `- ${freqByLevel}`,
     '- 选择：先看备注/笔记/标签能不能对上语境——完全贴切的优先，语义接近、氛围对的也可以用，不用等 100% 契合；只有明显不搭才别发。',
+    '- 换新的：清单里标「没用过」的优先用（尤其已经写好了备注的）——收藏不用等于白收藏；同一张别连着用，同一轮里也不要重复。',
     // 关掉图片输入时 get_sticker_image 不在工具表里，这条要换口径：只让模型用看得懂的（有备注的）
     vision
       ? '- 清单里标「没用过」的也可以直接用，不确定是什么就先 get_sticker_image 看一眼；用掉一张，下一张没用过的会自己顶上来。'

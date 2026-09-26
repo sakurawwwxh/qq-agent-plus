@@ -6713,10 +6713,11 @@ function renderAsrSection(c) {
       </div>
     </div>
 
-    <div class="field-row">
-      <div class="field"><label for="cfg-asr-max">每小时最多转写</label>
-        <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
-        <div class="hint">按"转写一条消息"计（长音频会拆成多段请求，服务商的额度按段扣）。</div></div>
+    <div class="field-row" style="align-items:start">
+      <div class="field"><label for="cfg-asr-max">每小时最多转写（次）</label>
+        <input type="number" id="cfg-asr-max" min="1" max="200" value="${normalizeAsrMax(c.asr?.maxPerHour)}"
+          placeholder="1-200，默认 12" />
+        <div class="hint">自己填 1-200（超出会按这个范围收口）。按"转写一条消息"计：长音频会拆成多段请求，服务商的额度按段扣。</div></div>
       <div class="field"><label for="cfg-asr-lang">识别语言（可选）</label>
         <input type="text" id="cfg-asr-lang" value="${esc(c.asr?.language || '')}" placeholder="zh / en；留空由服务自己判" /></div>
     </div>
@@ -8570,18 +8571,12 @@ function asrServiceOptions(provider, baseUrl) {
   return ASR_SERVICES.map((item) => `<option value="${item.id}" ${item.id === current ? 'selected' : ''}>${esc(item.label)}</option>`).join('');
 }
 
-// 语音转文字每小时上限的档位：与清单条数同一套写法（固定档位 + 保留存量自定义值）。
-// 与后端 config.asrMaxPerHour 的口径一致：非正数/坏值按 12，上限 200。
-const ASR_MAX_CHOICES = [5, 10, 20, 40];
+// 语音转文字每小时上限：用户自己填（2026-09-26 要求从档位下拉改成输入框）。
+// 与后端 config.asrMaxPerHour 同一口径：非正数/坏值按 12，范围收口到 1-200。
 function normalizeAsrMax(current) {
   const n = Number(current);
   if (!Number.isFinite(n) || n <= 0) return 12;
   return Math.min(200, Math.max(1, Math.round(n)));
-}
-function asrMaxSelectOptions(current) {
-  const value = normalizeAsrMax(current);
-  const choices = [...new Set([...ASR_MAX_CHOICES, value])].sort((a, b) => a - b);
-  return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 次</option>`).join('');
 }
 
 // 读取历史档位：名称与说明（档位制，累积生效）

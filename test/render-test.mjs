@@ -885,13 +885,28 @@ try {
   console.log('  ' + (zeroOk ? 'OK   ' : 'FAIL ') + '设置页：非正数存量值按运行时的 10 档显示'
     + (zeroOk ? '' : ` -> ${zeroSelect.slice(0, 120)}`));
 
-  // 设置 → 语音转文字：独立开关 + 每小时上限档位（默认 12 会作为一项保留并选中）
+  // 设置 → 语音转文字：独立开关 + 每小时上限是**可以自己填的输入框**（用户 2026-09-26 要求：
+  // 从档位下拉改成输入框），存量值要如实回填
   const asrOffHtml = ctx.renderAsrSection({ ...cfg, asr: { enabled: false, maxPerHour: 3 } });
   const asrOffOk = asrOffHtml.includes('id="cfg-asr"') && asrOffHtml.includes('id="cfg-asr-max"')
     && !/id="cfg-asr"[^>]*checked/.test(asrOffHtml)
-    && /<option value="3" selected>/.test(asrOffHtml);
+    && /id="cfg-asr-max"[^>]*value="3"/.test(asrOffHtml)
+    && asrOffHtml.includes('type="number" id="cfg-asr-max"')
+    && /id="cfg-asr-max"[^>]*max="200"/.test(asrOffHtml)
+    // 这一行要顶端对齐：.field-row 默认 end 对齐，左侧多一行 hint 时右边"识别语言"会往上/下错位
+    && asrOffHtml.includes('<div class="field-row" style="align-items:start">');
   asrOffOk ? pass++ : fail++;
-  console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
+  if (!asrOffOk) {
+    console.log('    DEBUG ' + JSON.stringify({
+      有开关: asrOffHtml.includes('id="cfg-asr"'),
+      默认没勾: !/id="cfg-asr"[^>]*checked/.test(asrOffHtml),
+      回填3: /id="cfg-asr-max"[^>]*value="3"/.test(asrOffHtml),
+      数字框: asrOffHtml.includes('type="number" id="cfg-asr-max"'),
+      上限200: /id="cfg-asr-max"[^>]*max="200"/.test(asrOffHtml),
+      顶端对齐: asrOffHtml.includes('<div class="field-row" style="align-items:start">')
+    }));
+  }
+  console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、每小时上限自己填（回填存量值、与识别语言对齐）');
 
   // 模式只有两个：免费本机 Whisper / API Key 托管服务（用户要求）
   const localHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local' } });
@@ -1041,7 +1056,7 @@ try {
   const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
     && /<option value="api" selected>/.test(asrSectionHtml)
     && /<option value="siliconflow" selected>/.test(asrSectionHtml)
-    && /<option value="12" selected>/.test(asrSectionHtml)
+    && /id="cfg-asr-max"[^>]*value="12"/.test(asrSectionHtml)
     && asrSectionHtml.includes('识别服务与「搜索服务」各自独立')
     && asrSectionHtml.includes('还没有可用的 Key，这项不会生效');
   asrDefaultOk ? pass++ : fail++;

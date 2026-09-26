@@ -233,3 +233,33 @@ test('prompt never teaches get_sticker_image when image input is off', () => {
   assert.match(buildStickerStrategyHint(2), /get_sticker_image/);
   assert.doesNotMatch(buildStickerStrategyHint(2, { vision: false }), /get_sticker_image/);
 });
+
+
+test('库大而用过的少时，清单多带没用过的进来（用户反馈"还是用旧表情包"）', () => {
+  // 39 张里只有 11 张用过 —— 常用位原来固定占一半名额，每次都是同一批老图排最前
+  const entries = [];
+  for (let i = 1; i <= 39; i += 1) {
+    entries.push({
+      id: `s${String(i).padStart(2, '0')}`, desc: `备注${i}`, url: `https://example.com/${i}.png`,
+      useCount: i <= 11 ? 5 : 0, lastUsedAt: i <= 11 ? 1_700_000_000_000 + i : 0,
+      createdAt: new Date(1_700_000_000_000 + i).toISOString()
+    });
+  }
+  const ids = (text) => [...text.matchAll(/stickerId：([\w-]+)/g)].map((m) => m[1]);
+  const prompt = buildStickerContext(entries, 30);
+  const shown = ids(prompt);
+  assert.equal(shown.length, 30, '条数按上限取满');
+  const usedShown = shown.filter((id) => Number(id.slice(1)) <= 11);
+  assert.equal(usedShown.length, 11, '用过的都还在（常用保底），但不占没有意义的名额');
+  assert.equal(shown.length - usedShown.length, 19, '剩下的名额全给没用过的');
+  assert.match(prompt, /库里还有 28 张没发过/, '抬头要写出库里还有多少张没用过');
+  assert.match(prompt, /优先挑后面这批没见过的用/);
+  // 幂等（这段清单常驻系统提示、属于缓存前缀）
+  assert.equal(buildStickerContext(entries, 30), prompt);
+});
+
+test('表情策略里明确写了"优先用没用过的"（不靠模型自觉）', () => {
+  const hint = buildStickerStrategyHint(3);
+  assert.match(hint, /换新的/);
+  assert.match(hint, /没用过」的优先用/);
+});
