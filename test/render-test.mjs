@@ -1114,6 +1114,30 @@ try {
   console.log('  ' + (mapOk ? 'OK   ' : 'FAIL ') + '设置页：保存时模式/服务正确映射成 provider/baseUrl/model/Key 归属'
     + (mapOk ? '' : ` -> ${mapNotes.join('；')}`));
 
+  // 每小时上限：清空 = 保持原值（不能变成 1，那是"清一下就变严格"的坑）
+  {
+    vm.runInContext("state.settingsSection = 'asr';", ctx);
+    vm.runInContext(`state.config = ${JSON.stringify({ ...cfg, asr: { ...cfg.asr, provider: 'volc', maxPerHour: 20 } })};`, ctx);
+    document.querySelector('#cfg-asr-mode').value = 'api';
+    document.querySelector('#cfg-asr-service').value = 'volc';
+    document.querySelector('#cfg-asr-max').value = '';
+    let posted = null;
+    const before = sandbox.fetch;
+    sandbox.fetch = async (url, options) => {
+      if (String(url).includes('/api/config') && options?.method === 'POST') {
+        posted = JSON.parse(options.body);
+        return { ok: true, status: 200, json: async () => ({ config: { ...cfg, asr: posted.asr } }), text: async () => '' };
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+    };
+    try { await ctx.saveConfig({ quiet: true }); } catch { /* 看 patch */ }
+    sandbox.fetch = before;
+    const emptyOk = posted?.asr?.maxPerHour === 20;
+    emptyOk ? pass++ : fail++;
+    console.log('  ' + (emptyOk ? 'OK   ' : 'FAIL ') + '设置页：每小时上限清空时保持原值（不会变成 1）'
+      + (emptyOk ? '' : ` -> ${posted?.asr?.maxPerHour}`));
+  }
+
   // 服务端说"这把 Key 不是给这家的"（换了地址）时保存：不能把它重新登记成当前这家的 Key。
   // 桩配置按服务端的真实形状来：/api/config 的脱敏会把 apiKey/apiKeyProvider/apiKeyHost 这些
   // 字段整个删掉（名字命中 apikey/secret 模式），只留 hasXxx 标记 —— 界面手里并没有这些值。

@@ -11179,8 +11179,11 @@ async function saveConfig({ quiet = false } = {}) {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
       provider: asrProviderNext,
-      // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
-      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
+      // 自己填 1-200；**清空 = 保持原值**（不是变成 1），空串/坏值都退回存量的值；
+      // clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
+      maxPerHour: clampInt(
+        val('#cfg-asr-max', '').trim() || String(c.asr?.maxPerHour ?? 12), 1, 200, 12
+      ),
       baseUrl: val('#cfg-asr-baseurl', c.asr?.baseUrl || '').trim(),
       model: val('#cfg-asr-model', c.asr?.model || '').trim(),
       language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
