@@ -6562,41 +6562,26 @@ function renderApiSection(c) {
 function renderAsrSection(c) {
   const provider = ['volc', 'openai', 'local'].includes(String(c.asr?.provider || ''))
     ? String(c.asr.provider)
-    : 'volc';
-  const hide = (id) => (provider === id ? '' : 'display:none');
-  // "配齐了没"以服务端判定为准（/api/config 里带 asr.configured）——前端自己拼一套会出现
-  // "界面说在生效、后端其实没注入"的矛盾（2026-09-26 审查）。没有该字段时按同一口径本地兜底。
+    : 'local';
+  // 用户要求：只给两个选项 —— 免费的本机 Whisper，或"用 API Key 的托管服务"（具体哪家由下面的服务预设决定）
+  const mode = provider === 'local' ? 'local' : 'api';
+  const hide = (want) => (mode === want ? '' : 'display:none');
   const keyReady = c.asr?.hasApiKey === true;
   const openaiReady = String(c.asr?.baseUrl || '').trim() !== '' && String(c.asr?.model || '').trim() !== '';
   const localReady = Boolean(String(c.asr?.localModel || '').trim());
-  // "装好了没"用服务端校验过的字段；没有该字段（老载荷/渲染测试）时退回"两个路径都解析出来了"
-  const localInstalled = typeof c.asr?.localInstalled === 'boolean'
-    ? c.asr.localInstalled
-    : (Boolean(c.asr?.localBinResolved) && Boolean(c.asr?.localModelResolved));
-  // 删除按钮只在"托管目录里真有东西"时显示：没有可删的就别给按钮（免得点了什么也没发生）
-  const localRemovable = typeof c.asr?.localManagedExists === 'boolean'
-    ? c.asr.localManagedExists
-    : localInstalled;
   const ready = typeof c.asr?.available === 'boolean'
-    ? c.asr.available                                   // 服务端权威结论：开关 + 配齐，两者都算
+    ? c.asr.available
     : (c.asr?.enabled !== false
       && (typeof c.asr?.configured === 'boolean'
         ? c.asr.configured
-        : (provider === 'local' ? localReady : (provider === 'openai' ? (keyReady && openaiReady) : keyReady))));
-  const providerHint = {
-    volc: '火山引擎语音技术的<strong>大模型录音识别（Seed-ASR）</strong>，按量计费；音频会上传到火山做识别。',
-    openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行 —— 下面选一个预设就自动填好地址与模型，'
-      + '再粘一个该服务的 Key 即可。免费的推荐<b>硅基流动</b>（<code>FunAudioLLM/SenseVoiceSmall</code>，'
-      + '官方价目表标"免费"、国内可直连）；<b>Groq</b> 有免费额度（约每天 2000 次 / 8 小时音频，单文件 25MB）。'
-      + '也可以填自建的 faster-whisper 网关。按各家当期政策计费。',
-    local: '<strong>默认方案：本机 whisper.cpp</strong> —— 不联网、不需要任何 Key、没有按量费用，音频不出机器。'
-      + '装一次就好：在服务器上跑 <code>node scripts/install-asr-local.mjs</code>'
-      + '（自动构建 + 从国内镜像下模型，默认 small 约 466MB；小机器可加 <code>--model base</code>。）'
-      + '装完记得重启一次服务，运行中的进程才会读到新配置。'
-      + 'CPU 转写约 1.5~2 倍实时（2 核上 30 秒语音约 15~25 秒），长音频较慢 —— 想更快就切到下面两家托管服务。'
-  }[provider];
-  // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
-  // Key 换供应商后要重填：配置里的 Key 与"存它时的供应商"绑定，后端不会再拿它去请求别家
+        : (mode === 'local' ? localReady : (provider === 'openai' ? (keyReady && openaiReady) : keyReady))));
+  // 删除按钮只在"托管目录里真有东西"时显示
+  const localInstalled = typeof c.asr?.localInstalled === 'boolean'
+    ? c.asr.localInstalled
+    : (Boolean(c.asr?.localBinResolved) && Boolean(c.asr?.localModelResolved));
+  const localRemovable = typeof c.asr?.localManagedExists === 'boolean'
+    ? c.asr.localManagedExists
+    : localInstalled;
   const wrongProviderKey = c.asr?.hasApiKey === true && String(c.asr?.keyProvider || '')
     && String(c.asr.keyProvider).toLowerCase() !== provider;
   const status = (c.asr?.enabled === false && c.asr?.configured === true)
@@ -6605,20 +6590,17 @@ function renderAsrSection(c) {
     ? (c.asr?.keySource === 'env'
       ? '<strong>已配置好，这项在生效</strong>（Key 来自环境变量 <code>ASR_API_KEY</code>，此处留空即可）。'
       : '<strong>已配置好，这项在生效。</strong>')
-    : (provider === 'local'
-      ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：在服务器上跑一次 '
-        + '<code>node scripts/install-asr-local.mjs</code> 即可；也可以直接把「识别服务」换成火山或 OpenAI 兼容服务。'
+    : (mode === 'local'
+      ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：在上面点「安装本机转写」即可；也可以改用 API Key 的托管服务。'
       : (wrongProviderKey
         ? '<strong>换了识别服务，请重新填一次 Key，否则这项不会生效</strong>：配置里的 Key 与存它时的服务绑定，后端不会把它发到别家。'
         : (provider === 'openai' && keyReady && !openaiReady
-          ? '<strong>还缺服务地址或模型名，这项不会生效</strong>：OpenAI 兼容服务各有各的模型名，没法替你猜。'
+          ? '<strong>还缺服务地址或模型，这项不会生效</strong>：地址由服务预设填好，模型点「获取模型列表」从服务商官网拉。'
           : '<strong>还没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。')));
   return `
     <h3 id="settings-asr">语音转文字</h3>
     <div class="hint" style="margin-bottom:10px">
       把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
-      两种用法二选一：<strong>免费的本机转写</strong>（在这台机器上跑，零 Key、音频不出机器，
-      点下面的按钮就能装）或<strong>用 API Key 的托管服务</strong>（更快，按量计费）。
       识别服务与「搜索服务」各自独立，不必是同一家、也不必是同一个账号。
     </div>
 
@@ -6626,51 +6608,66 @@ function renderAsrSection(c) {
       <label for="cfg-asr">启用语音转文字</label></div>
 
     <div class="field">
-      <label for="cfg-asr-provider">用哪种方式</label>
-      <select id="cfg-asr-provider">
-        <option value="local" ${provider === 'local' ? 'selected' : ''}>免费 · 本机转写（whisper.cpp，不联网、不要 Key）</option>
-        <option value="volc" ${provider === 'volc' ? 'selected' : ''}>API Key · 火山引擎大模型录音识别（Seed-ASR，按量计费）</option>
-        <option value="openai" ${provider === 'openai' ? 'selected' : ''}>API Key · OpenAI 兼容服务（Groq / 硅基流动 / 自建…）</option>
+      <label for="cfg-asr-mode">用哪种方式</label>
+      <select id="cfg-asr-mode">
+        <option value="local" ${mode === 'local' ? 'selected' : ''}>免费 · 本机安装的 Whisper（不联网、不要 Key）</option>
+        <option value="api" ${mode === 'api' ? 'selected' : ''}>API Key · 托管服务（更快，按量计费）</option>
       </select>
-      <div class="hint" id="cfg-asr-provider-hint">${providerHint}</div>
     </div>
 
-    <div class="field" id="asr-preset-field" style="${hide('openai')}">
-      <label for="cfg-asr-preset">服务预设</label>
-      <select id="cfg-asr-preset">${asrPresetOptions(c.asr?.baseUrl, c.asr?.model)}</select>
+    <div id="asr-local-mode" style="${hide('local')}">
+      <div class="hint">
+        装一次就好：点下面的按钮在这台机器上装（自动构建 + 从国内镜像下模型，默认 small 约 466MB）。
+        装完自动生效；不想要了可以完整卸载，把那 500MB 收回来。
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="cfg-asr-bin">whisper.cpp 可执行文件</label>
+          <input type="text" id="cfg-asr-bin" value="${esc(c.asr?.localBin || '')}" placeholder="留空自动找：安装脚本产物 → whisper-cli / whisper-cpp / main" /></div>
+        <div class="field"><label for="cfg-asr-localmodel">模型文件路径</label>
+          <input type="text" id="cfg-asr-localmodel" value="${esc(c.asr?.localModel || '')}" placeholder="留空自动找 &lt;数据目录&gt;/asr/ggml-*.bin" /></div>
+      </div>
+      <div class="hint" id="cfg-asr-local-resolved">
+        当前会自动用：<code>${esc(c.asr?.localBinResolved || '（还没找到可执行文件）')}</code>
+        ＋ <code>${esc(c.asr?.localModelResolved || '（还没找到模型文件）')}</code>
+      </div>
+      <div class="field" id="asr-install-field">
+        <button class="btn btn-primary btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
+        ${localRemovable ? '<button class="btn btn-small btn-danger" id="asr-uninstall-btn" type="button">完全卸载（删除模型与程序）</button>' : ''}
+        <span id="asr-install-hint" class="muted">${localInstalled
+          ? '已装好，无需再装。'
+          : '约 466MB（small 模型）+ 几分钟构建；装完自动生效，不用重启。'}</span>
+        <div id="asr-install-progress" class="hint" style="display:none"></div>
+      </div>
     </div>
 
-    <div class="field-row" id="asr-openai-fields" style="${hide('openai')}">
-      <div class="field"><label for="cfg-asr-baseurl">服务地址（到 /v1 那层）</label>
-        <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.groq.com/openai/v1" /></div>
-      <div class="field"><label for="cfg-asr-model">模型名</label>
-        <input type="text" id="cfg-asr-model" value="${esc(c.asr?.model || '')}" placeholder="whisper-large-v3-turbo" /></div>
-    </div>
-
-    <div class="field-row" id="asr-local-fields" style="${hide('local')}">
-      <div class="field"><label for="cfg-asr-bin">whisper.cpp 可执行文件</label>
-        <input type="text" id="cfg-asr-bin" value="${esc(c.asr?.localBin || '')}" placeholder="留空自动找：安装脚本产物 → whisper-cli / whisper-cpp / main" /></div>
-      <div class="field"><label for="cfg-asr-localmodel">模型文件路径</label>
-        <input type="text" id="cfg-asr-localmodel" value="${esc(c.asr?.localModel || '')}" placeholder="留空自动找 &lt;数据目录&gt;/asr/ggml-*.bin" /></div>
-    </div>
-    <div class="hint" id="cfg-asr-local-resolved">
-      当前会自动用：<code>${esc(c.asr?.localBinResolved || '（还没找到可执行文件）')}</code>
-      ＋ <code>${esc(c.asr?.localModelResolved || '（还没找到模型文件）')}</code>
-    </div>
-    <div class="field" id="asr-install-field" style="${hide('local')}">
-      <button class="btn btn-primary btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
-      ${localRemovable ? '<button class="btn btn-small btn-danger" id="asr-uninstall-btn" type="button">删除本机转写</button>' : ''}
-      <span id="asr-install-hint" class="muted">${localInstalled
-        ? '已装好，无需再装。换模型可以重跑安装并选 tiny / base / small。'
-        : '约 466MB（small 模型）+ 几分钟构建；装完自动生效，不用重启。也可以改用上面两种 API Key 服务。'}</span>
-      <div id="asr-install-progress" class="hint" style="display:none"></div>
-    </div>
-
-    <div class="field" id="asr-key-field" style="${provider === 'local' ? 'display:none' : ''}">
-      <label for="cfg-asr-key">API Key（留空用环境变量 ASR_API_KEY）</label>
-      <div style="display:flex;gap:8px">
-        <input type="password" id="cfg-asr-key" value="${esc(keyReady ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
-        <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
+    <div id="asr-api-mode" style="${hide('api')}">
+      <div class="field">
+        <label for="cfg-asr-service">服务预设</label>
+        <select id="cfg-asr-service">${asrServiceOptions(provider, c.asr?.baseUrl)}</select>
+        <div class="hint">
+          选一家会自动填好接口地址；<strong>模型一律点「获取模型列表」从服务商官网拉</strong>
+          —— 预设里写死模型名会过时（比如硅基流动新上的免费模型，列表跟着官网走才看得到）。
+          免费的推荐硅基流动（国内可直连）或 Groq（有免费额度）；火山走它自己的协议。
+        </div>
+      </div>
+      <div class="field-row" id="asr-openai-fields" style="${provider === 'openai' ? '' : 'display:none'}">
+        <div class="field"><label for="cfg-asr-baseurl">服务地址（到 /v1 那层）</label>
+          <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.siliconflow.cn/v1" /></div>
+        <div class="field"><label for="cfg-asr-model">模型</label>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="cfg-asr-model" value="${esc(c.asr?.model || '')}" placeholder="点右侧按钮从官网拉取" style="flex:1" />
+            <button class="btn btn-small" id="asr-fetch-models-btn" type="button">获取模型列表</button>
+          </div>
+          <select id="cfg-asr-model-pick" style="display:none;margin-top:6px"></select>
+          <div class="hint" id="asr-models-hint" style="display:none"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="cfg-asr-key">API Key（留空用环境变量 ASR_API_KEY）</label>
+        <div style="display:flex;gap:8px">
+          <input type="password" id="cfg-asr-key" value="${esc(keyReady ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
+          <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
+        </div>
       </div>
     </div>
 
@@ -8491,25 +8488,27 @@ function stickerMaxSelectOptions(current) {
   return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 条</option>`).join('');
 }
 
-// OpenAI 兼容那支的服务预设：选一下就把地址/模型填好，用户只需粘一个（免费）Key。
-// 事实核查于 2026-09-26：硅基流动的 FunAudioLLM/SenseVoiceSmall 在官方价目表上标"免费"、
-// 国内可直连；Groq 有免费额度（每分钟 20 次 / 每天 2000 次 / 每天 8 小时音频，单文件 25MB）。
-// 免费政策是会变的，所以这里只当"帮你填好默认值"，填完仍可手改。
-const ASR_PRESETS = [
-  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall' },
-  { id: 'groq', label: 'Groq（有免费额度）', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo' },
-  { id: 'custom', label: '自定义（自建 / 其它服务）', baseUrl: '', model: '' }
+// 语音识别服务预设：选一下把 provider / 地址填好，模型一律**从服务商官网拉**（见「获取模型列表」）——
+// 写死的模型名会过时（用户明确要求：硅基流动上了新的免费模型，预设跟不上）。
+// 事实核查于 2026-09-26（见 docs/CONFIG-EXAMPLES.md）：硅基流动的 SenseVoiceSmall 标"免费"、国内可直连；
+// Groq 有免费额度。这里只提供入口，实际可用模型以官网列表为准。
+const ASR_SERVICES = [
+  { id: 'volc', label: '火山引擎 · 大模型录音识别（Seed-ASR，按量计费）', provider: 'volc', baseUrl: '' },
+  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1' },
+  { id: 'groq', label: 'Groq（有免费额度）', provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1' },
+  { id: 'openai', label: 'OpenAI 官方', provider: 'openai', baseUrl: 'https://api.openai.com/v1' },
+  { id: 'custom', label: '自定义 / 自建（OpenAI 兼容）', provider: 'openai', baseUrl: '' }
 ];
-/** 按当前填的地址+模型反查是哪个预设（手改过就落到"自定义"）。 */
-function asrPresetOf(baseUrl, model) {
-  const b = String(baseUrl || '').trim().replace(/\/+$/, '');
-  const m = String(model || '').trim();
-  const hit = ASR_PRESETS.find((p) => p.id !== 'custom' && p.baseUrl === b && p.model === m);
+/** 按 provider + 地址反查当前是哪家（改过就落到"自定义"）。 */
+function asrServiceOf(provider, baseUrl) {
+  const norm = (v) => String(v || '').trim().replace(/[/]+$/, '').toLowerCase();
+  if (provider === 'volc') return 'volc';
+  const hit = ASR_SERVICES.find((item) => item.provider === 'openai' && norm(item.baseUrl) && norm(item.baseUrl) === norm(baseUrl));
   return hit ? hit.id : 'custom';
 }
-function asrPresetOptions(baseUrl, model) {
-  const current = asrPresetOf(baseUrl, model);
-  return ASR_PRESETS.map((p) => `<option value="${p.id}" ${p.id === current ? 'selected' : ''}>${esc(p.label)}</option>`).join('');
+function asrServiceOptions(provider, baseUrl) {
+  const current = asrServiceOf(provider, baseUrl);
+  return ASR_SERVICES.map((item) => `<option value="${item.id}" ${item.id === current ? 'selected' : ''}>${esc(item.label)}</option>`).join('');
 }
 
 // 语音转文字每小时上限的档位：与清单条数同一套写法（固定档位 + 保留存量自定义值）。
@@ -9207,25 +9206,84 @@ function bindSettingsEvents(c) {
     $('#daily-moments-run-btn')?.addEventListener('click', () => runMoments(true));
   }
 
-  // 语音转文字：切供应商就切换对应字段（Key/地址/模型 vs 本机路径）
+  // 语音转文字：模式（免费本机 / API Key）切换字段；服务预设填地址；模型从官网拉
   if ((state.settingsSection || 'api') === 'asr') {
-    const provSel = $('#cfg-asr-provider');
+    const modeSel = $('#cfg-asr-mode');
+    const serviceSel = $('#cfg-asr-service');
     const syncAsrFields = () => {
-      const prov = provSel ? provSel.value : 'volc';
+      const mode = modeSel ? modeSel.value : 'local';
+      const localBox = $('#asr-local-mode');
+      const apiBox = $('#asr-api-mode');
+      if (localBox) localBox.style.display = mode === 'local' ? '' : 'none';
+      if (apiBox) apiBox.style.display = mode === 'api' ? '' : 'none';
+      // 火山走它自己的协议：没有 /v1 地址与模型名要填
+      const prov = serviceSel?.value === 'volc' ? 'volc' : 'openai';
       const openaiFields = $('#asr-openai-fields');
-      const localFields = $('#asr-local-fields');
-      const keyField = $('#asr-key-field');
-      const presetField = $('#asr-preset-field');
-      const installField = $('#asr-install-field');
       if (openaiFields) openaiFields.style.display = prov === 'openai' ? '' : 'none';
-      if (localFields) localFields.style.display = prov === 'local' ? '' : 'none';
-      if (keyField) keyField.style.display = prov === 'local' ? 'none' : '';
-      if (presetField) presetField.style.display = prov === 'openai' ? '' : 'none';
-      // 安装按钮只属于"免费·本机转写"这一支：选了 API Key 服务就不该看到它
-      if (installField) installField.style.display = prov === 'local' ? '' : 'none';
     };
-    if (provSel) provSel.addEventListener('change', syncAsrFields);
+    if (modeSel) modeSel.addEventListener('change', syncAsrFields);
+    if (serviceSel) serviceSel.addEventListener('change', () => {
+      const item = ASR_SERVICES.find((x) => x.id === serviceSel.value);
+      const urlEl = $('#cfg-asr-baseurl');
+      const modelEl = $('#cfg-asr-model');
+      if (item?.provider === 'volc') {
+        // 火山走自己的协议：地址与模型都不适用，清掉免得留下别家的旧值
+        if (urlEl) urlEl.value = '';
+        if (modelEl) modelEl.value = '';
+      } else if (item && urlEl) {
+        const changed = urlEl.value.trim() !== String(item.baseUrl).trim();
+        urlEl.value = item.baseUrl;
+        // 换了一家就清掉模型：各家模型名不通用，留着会"看起来配好了、实际每次调用必失败"（审查抓到）
+        if (changed && modelEl) modelEl.value = '';
+      }
+      // 拉过的列表属于上一家，一起收起来
+      const pick = $('#cfg-asr-model-pick');
+      if (pick) { pick.style.display = 'none'; pick.innerHTML = ''; }
+      const modelsHint = $('#asr-models-hint');
+      if (modelsHint) modelsHint.style.display = 'none';
+      syncAsrFields();
+    });
     syncAsrFields();
+
+    // 拉模型列表：从服务商官网的 /models 拉（预设里的模型名会过时，官网不会）
+    const fetchModelsBtn = $('#asr-fetch-models-btn');
+    if (fetchModelsBtn) fetchModelsBtn.addEventListener('click', async () => {
+      const hintEl = $('#asr-models-hint');
+      const pick = $('#cfg-asr-model-pick');
+      const url = $('#cfg-asr-baseurl')?.value?.trim() || '';
+      if (!url) {
+        if (hintEl) { hintEl.style.display = ''; hintEl.textContent = '先选服务预设（或填服务地址），再拉模型列表。'; }
+        return;
+      }
+      fetchModelsBtn.disabled = true;
+      if (hintEl) { hintEl.style.display = ''; hintEl.textContent = '正在从服务商拉取…'; }
+      try {
+        const submitted = ($('#cfg-asr-key')?.value || '').trim();
+        const res = await api('/api/asr/models', {
+          method: 'POST',
+          body: JSON.stringify({ baseUrl: url, apiKey: submitted === '******' ? '' : submitted })
+        });
+        const models = res.models || [];
+        if (!models.length) { if (hintEl) hintEl.textContent = '这家没有返回模型列表。'; return; }
+        if (pick) {
+          pick.style.display = '';
+          pick.innerHTML = '<option value="">（选择一个模型）</option>'
+            + models.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+          pick.onchange = () => { const field = $('#cfg-asr-model'); if (field && pick.value) field.value = pick.value; };
+        }
+        const likely = res.asrLikely || [];
+        if (hintEl) {
+          hintEl.textContent = likely.length
+            ? `共 ${models.length} 个模型；能转写的排在前面：${likely.slice(0, 6).join('、')}。选一个即填入上面的模型框。`
+            : `共 ${models.length} 个模型（没看出明显的转写模型名，挑一个试试）。`;
+        }
+      } catch (error) {
+        if (hintEl) hintEl.textContent = `拉取失败：${String(error?.message ?? error)}`;
+      } finally {
+        fetchModelsBtn.disabled = false;
+      }
+    });
+
     // 「安装本机转写」：POST 起安装，然后轮询状态把进度写到那块 hint 里
     const installBtn = $('#asr-install-btn');
     if (installBtn) installBtn.addEventListener('click', async () => {
@@ -9290,7 +9348,7 @@ function bindSettingsEvents(c) {
         const kept = (res?.keptOutside || []).length
           ? `<br><span class="muted">这些不在托管目录里，没有删除：${esc((res.keptOutside || []).join(' / '))}</span>`
           : '';
-        const msg = `已删除本机转写${mb}。${kept}`;
+        const msg = `已完整卸载本机转写${mb}。${kept}`;
         await loadSettings().catch(() => {});
         renderSettings();
         const after = $('#asr-install-progress');
@@ -9302,16 +9360,6 @@ function bindSettingsEvents(c) {
       }
     });
 
-    // 选预设 = 帮你把地址与模型填好（仍可手改；改了就显示"自定义"）
-    const presetSel = $('#cfg-asr-preset');
-    if (presetSel) presetSel.addEventListener('change', () => {
-      const hit = ASR_PRESETS.find((p) => p.id === presetSel.value);
-      if (!hit) return;
-      const bu = $('#cfg-asr-baseurl');
-      const md = $('#cfg-asr-model');
-      if (bu) bu.value = hit.baseUrl;
-      if (md) md.value = hit.model;
-    });
   }
 
   if ((state.settingsSection || 'api') === 'qzone-interactions') {
@@ -11007,10 +11055,18 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'asr') {
     // 语音识别的 Key 与搜索的 Key 各自独立：****** = 保持原 Key 不变，明文/新输入才更新
     const enteredAsrKey = val('#cfg-asr-key', '').trim();
+    // 界面上只有两个模式 + 一个服务预设；这里把它们翻译成真实配置：
+    //   免费本机 → provider=local；API Key → 火山=volc，其余=openai（地址来自预设或手填）
+    const asrMode = val('#cfg-asr-mode', String(c.asr?.provider || 'local') === 'local' ? 'local' : 'api');
+    const asrService = val('#cfg-asr-service', '');
+    let asrProviderNext = 'openai';
+    if (asrMode === 'local') asrProviderNext = 'local';
+    else if (asrService === 'volc') asrProviderNext = 'volc';
+    else if (!asrService && String(c.asr?.provider || '') === 'volc') asrProviderNext = 'volc';   // 预设控件没渲染时保留原值
     patch.asr = {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
-      provider: val('#cfg-asr-provider', c.asr?.provider || 'volc'),
+      provider: asrProviderNext,
       // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
       maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
       baseUrl: val('#cfg-asr-baseurl', c.asr?.baseUrl || '').trim(),
@@ -11020,7 +11076,7 @@ async function saveConfig({ quiet = false } = {}) {
       localModel: val('#cfg-asr-localmodel', c.asr?.localModel || '').trim(),
       // 新填/替换 Key 时记下它是给哪家存的：换供应商后后端不再拿旧 Key 去请求别家
       ...(enteredAsrKey && enteredAsrKey !== '******'
-        ? { apiKey: enteredAsrKey, apiKeyProvider: val('#cfg-asr-provider', c.asr?.provider || 'volc') }
+        ? { apiKey: enteredAsrKey, apiKeyProvider: asrProviderNext }
         : {})
     };
   }

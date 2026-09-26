@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
+import { asrApiKey, asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
 import { customSearch } from '../llm/web-search.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
@@ -1944,6 +1944,31 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
           return json(res, 400, { error: `未知搜索服务：${field}` });
         }
         return json(res, 200, { apiKey: String(getConfig().webSearch?.[field]?.apiKey || '') });
+      }
+
+      // 语音识别的模型列表：从服务商官网拉（用户要求 —— 写死的预设会过时，
+      // 例如硅基流动上了新的免费模型，列表应该跟着官网走）。
+      // 与 LLM 那边同一套密钥规则：只有地址是配置里已知的，才使用保存的 Key。
+      if (pathname === '/api/asr/models' && method === 'POST') {
+        try {
+          const body = await readBody(req);
+          const cfgNow = getConfig();
+          const baseUrl = String(body.baseUrl || cfgNow.asr?.baseUrl || '').trim();
+          const submitted = String(body.apiKey ?? '').trim();
+          const trimSlash = (value) => String(value || '').trim().replace(/[/]+$/, '').toLowerCase();
+          const knownBase = trimSlash(cfgNow.asr?.baseUrl);
+          const target = trimSlash(baseUrl);
+          const apiKey = (submitted && submitted !== '******')
+            ? submitted
+            : (target && target === knownBase ? asrApiKey(cfgNow) : '');
+          const models = await fetchModelsFrom(baseUrl, apiKey);
+          // 语音/转写相关的排前面（列表里通常混着几十个 LLM，用户要的是能转写的那些）
+          const isAsr = (id) => /whisper|sensevoice|asr|audio|transcri|speech|teleasr|funaudio/i.test(id);
+          const sorted = [...models].sort((a, b) => (isAsr(b) ? 1 : 0) - (isAsr(a) ? 1 : 0) || a.localeCompare(b));
+          return json(res, 200, { ok: true, models: sorted, asrLikely: sorted.filter(isAsr) });
+        } catch (error) {
+          return json(res, 502, { ok: false, error: String(error?.message ?? error) });
+        }
       }
 
       // 本机语音转写：状态查询与"点一下安装"（只有控制台来源放行；不擅自重启服务）

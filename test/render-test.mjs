@@ -892,57 +892,44 @@ try {
     && /<option value="3" selected>/.test(asrOffHtml);
   asrOffOk ? pass++ : fail++;
   console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
-  const asrSectionHtml = ctx.renderAsrSection(cfg);
-  const asrDefaultOk = asrSectionHtml.includes('默认方案：本机 whisper.cpp')
-    && asrSectionHtml.includes('当前会自动用')
-    && /<option value="local" selected>/.test(asrSectionHtml)
-    && /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
-    && /<option value="12" selected>/.test(asrSectionHtml)
-    && asrSectionHtml.includes('识别服务与「搜索服务」各自独立')
-    && asrSectionHtml.includes('不必是同一家');
-  asrDefaultOk ? pass++ : fail++;
-  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
 
-  // 没有 Key 时界面必须说清"这项不会生效"，别让人以为默认勾上就在跑；有 Key 才显示"已配置"
-  // 讲 Key 的情形都固定用 volc（Key 是那一家的东西；本机那支不需要 Key，单独有断言）
-  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false } });
-  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
-  const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
-    && noKeyHtml.includes('也不会产生任何调用与费用')
-    && noKeyHtml.includes('识别服务与「搜索服务」各自独立')
-    && keyedHtml.includes('已配置好，这项在生效')
-    && !keyedHtml.includes('这项不会生效');
-  asrKeyStateOk ? pass++ : fail++;
-  console.log('  ' + (asrKeyStateOk ? 'OK   ' : 'FAIL ') + '设置页：没配 Key 时明说"不生效、不产生费用"，配了则显示已配置');
-
-  // 供应商可换：三家选项 + 各自字段 + 本地不需要 Key 的判定
-  const localHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '' } });
-  const localReadyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '/opt/ggml-base.bin' } });
-  const openaiHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'openai' } });
-  const providerOk = /<option value="volc" selected>/.test(ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc' } }))
-    && /<option value="openai" selected>/.test(openaiHtml)
+  // 模式只有两个：免费本机 Whisper / API Key 托管服务（用户要求）
+  const localHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local' } });
+  const notInstalledHtml = localHtml;
+  const installedHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'local', localInstalled: true, localManagedExists: true, localBinResolved: '/x/whisper-cli', localModelResolved: '/x/ggml-small.bin' }
+  });
+  const apiModeHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1' } });
+  const volcModeHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
+  const twoModesOk = (localHtml.match(/<option value="(local|api)"/g) || []).length === 2         // 下拉只有两个选项
     && /<option value="local" selected>/.test(localHtml)
-    // 本地：不要求 Key，缺模型路径时明说不会生效；填了就显示已配置
-    && localHtml.includes('本机转写还没装好，这项暂不生效')
-    && localHtml.includes('install-asr-local.mjs')
-    && localReadyHtml.includes('已配置好，这项在生效')
-    // 本地隐藏 Key 字段（不需要 Key），OpenAI 兼容则显示；地址/模型字段只在该 provider 下显示
-    && /id="asr-key-field" style="display:none"/.test(localHtml)
-    && /id="asr-key-field" style=""/.test(openaiHtml)
-    && /id="asr-openai-fields" style=""/.test(openaiHtml)
-    && /id="asr-local-fields" style="display:none"/.test(openaiHtml)
-    // 免费选项：说明里点名硅基流动的免费模型，预设下拉能把地址+模型填好
-    && openaiHtml.includes('FunAudioLLM/SenseVoiceSmall') && openaiHtml.includes('官方价目表标"免费"')
-    && /<select id="cfg-asr-preset">/.test(openaiHtml)
-    && /<option value="siliconflow"/.test(openaiHtml)
-    && /<option value="groq"/.test(openaiHtml)
-    && /<option value="custom" selected>/.test(openaiHtml)
-    // 已选硅基流动那套地址+模型时，预设要认出来是它（反查逻辑）
-    && /<option value="siliconflow" selected>/.test(ctx.renderAsrSection({
-      ...cfg, asr: { ...cfg.asr, provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1/', model: 'FunAudioLLM/SenseVoiceSmall' }
-    }));
-  providerOk ? pass++ : fail++;
-  console.log('  ' + (providerOk ? 'OK   ' : 'FAIL ') + '设置页：三家识别服务可选（本机不要 Key、OpenAI 兼容填地址+模型）');
+    && /<option value="api" selected>/.test(apiModeHtml)
+    && /id="asr-local-mode" style=""/.test(localHtml) && /id="asr-api-mode" style="display:none"/.test(localHtml)
+    && /id="asr-local-mode" style="display:none"/.test(apiModeHtml) && /id="asr-api-mode" style="/.test(apiModeHtml);
+  twoModesOk ? pass++ : fail++;
+  console.log('  ' + (twoModesOk ? 'OK   ' : 'FAIL ') + '设置页：用哪种方式只有两项（免费本机 Whisper / API Key 托管）');
+
+  // 本机支：安装入口 + 完整卸载（已装时）
+  const installOk = /id="asr-install-field"/.test(localHtml)
+    && /class="btn btn-primary btn-small" id="asr-install-btn"/.test(localHtml)
+    && /id="asr-install-btn"[^>]*>安装本机转写（免费）</.test(localHtml)
+    && !localHtml.includes('asr-uninstall-btn')
+    && /id="asr-install-btn"[^>]*>重新安装 \/ 修复</.test(installedHtml)
+    && /type="button">完全卸载（删除模型与程序）</.test(installedHtml)
+    && /class="btn btn-small btn-danger" id="asr-uninstall-btn"/.test(installedHtml);
+  installOk ? pass++ : fail++;
+  console.log('  ' + (installOk ? 'OK   ' : 'FAIL ') + '设置页：本机支有安装入口，已装时显示「完全卸载（删除模型与程序）」');
+
+  // API Key 支：服务预设含火山，模型从服务商官网拉（预设里的模型名会过时）
+  const serviceOk = /<option value="volc"/.test(volcModeHtml) && volcModeHtml.includes('火山引擎 · 大模型录音识别')
+    && /<option value="siliconflow"/.test(apiModeHtml) && /<option value="groq"/.test(apiModeHtml)
+    && /<option value="openai"/.test(apiModeHtml) && /<option value="custom"/.test(apiModeHtml)
+    && apiModeHtml.includes('id="asr-fetch-models-btn"') && apiModeHtml.includes('从服务商官网拉')
+    && /id="asr-openai-fields" style=""/.test(apiModeHtml)          // OpenAI 兼容：显示地址与模型
+    && /id="asr-openai-fields" style="display:none"/.test(volcModeHtml)  // 火山：走自己的协议，不显示
+    && apiModeHtml.includes('id="cfg-asr-model-pick"');
+  serviceOk ? pass++ : fail++;
+  console.log('  ' + (serviceOk ? 'OK   ' : 'FAIL ') + '设置页：服务预设含火山等多家，模型点按钮从官网拉');
 
   // 状态以服务端判定为准，且把"换供应商要重填 Key / 缺地址模型 / Key 来自环境变量"讲清
   const needKeyHtml = ctx.renderAsrSection({
@@ -955,16 +942,13 @@ try {
     ...cfg, asr: { ...cfg.asr, provider: 'volc', configured: true, hasApiKey: false, keySource: 'env' }
   });
   const statusOk = needKeyHtml.includes('换了识别服务，请重新填一次 Key')
-    && needAddrHtml.includes('还缺服务地址或模型名')
-    && envHtml.includes('ASR_API_KEY')
-    && envHtml.includes('在生效')
-    // 服务端说 configured=false 时，界面绝不显示"在生效"
-    && !needKeyHtml.includes('已配置好')
-    && !needAddrHtml.includes('已配置好');
+    && needAddrHtml.includes('还缺服务地址或模型')
+    && envHtml.includes('ASR_API_KEY') && envHtml.includes('在生效')
+    && !needKeyHtml.includes('已配置好') && !needAddrHtml.includes('已配置好');
   statusOk ? pass++ : fail++;
   console.log('  ' + (statusOk ? 'OK   ' : 'FAIL ') + '设置页：状态按服务端判定，并区分换服务/缺地址/环境变量三种情形');
 
-  // 开关关着时不能说"在生效"：ready 必须用服务端的 available，而不是 configured（审查抓到过）
+  // 开关关着时不能说"在生效"
   const disabledHtml = ctx.renderAsrSection({
     ...cfg, asr: { ...cfg.asr, provider: 'volc', enabled: false, configured: true, available: false, hasApiKey: true }
   });
@@ -977,32 +961,63 @@ try {
   switchOk ? pass++ : fail++;
   console.log('  ' + (switchOk ? 'OK   ' : 'FAIL ') + '设置页：开关关着时显示"配置齐但不生效"，打开才说在生效');
 
-  // 免费 / API Key 二选一：文案要讲清两种用法，且给出"点一下就装"的入口
-  const notInstalledHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local' } });
-  const installedHtml = ctx.renderAsrSection({
-    ...cfg, asr: { ...cfg.asr, provider: 'local', localBinResolved: '/x/whisper-cli', localModelResolved: '/x/ggml-small.bin' }
-  });
-  const choiceOk = /id="asr-install-field" style=""/.test(notInstalledHtml)          // 本机支：显示
-    && /id="asr-install-field" style="display:none"/.test(openaiHtml)                 // API Key 支：不显示
-    && /class="btn btn-primary btn-small" id="asr-install-btn"/.test(notInstalledHtml) // 强调色按钮
-    && notInstalledHtml.includes('两种用法二选一')
-    && notInstalledHtml.includes('免费 · 本机转写') && notInstalledHtml.includes('API Key · 火山引擎')
-    && /id="asr-install-btn"[^>]*>安装本机转写（免费）</.test(notInstalledHtml)
-    && notInstalledHtml.includes('也可以改用上面两种 API Key 服务')
-    // 已装好时按钮改成"重新安装 / 修复"，并说明无需再装
-    && /id="asr-install-btn"[^>]*>重新安装 \/ 修复</.test(installedHtml)
-    && installedHtml.includes('已装好，无需再装')
-    // 删除按钮只在"已装好"时出现，且是危险色（删的是模型与构建产物）
-    && /type="button">删除本机转写</.test(installedHtml)
-    && /class="btn btn-small btn-danger" id="asr-uninstall-btn"/.test(installedHtml)
-    && !notInstalledHtml.includes('asr-uninstall-btn');
-  choiceOk ? pass++ : fail++;
-  console.log('  ' + (choiceOk ? 'OK   ' : 'FAIL ') + '设置页：免费/API Key 二选一 + 一键安装入口（已装则显示修复）');
-  const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
-    && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
-    && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');
-  asrMovedOk ? pass++ : fail++;
-  console.log('  ' + (asrMovedOk ? 'OK   ' : 'FAIL ') + '设置页：ASR 已从「聊天设置」移出，独立成「语音转文字」分区');
+  // 缺省那支是本机：默认开启 + 12 次/小时 + 写明与搜索解耦
+  const asrSectionHtml = ctx.renderAsrSection(cfg);
+  const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
+    && /<option value="local" selected>/.test(asrSectionHtml)
+    && /<option value="12" selected>/.test(asrSectionHtml)
+    && asrSectionHtml.includes('识别服务与「搜索服务」各自独立')
+    && asrSectionHtml.includes('当前会自动用');
+  asrDefaultOk ? pass++ : fail++;
+  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置指向免费本机（12 次/小时）且写明与搜索解耦');
+
+  // 没有 Key 时界面必须说清"这项不会生效"
+  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false } });
+  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
+  const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
+    && noKeyHtml.includes('也不会产生任何调用与费用')
+    && keyedHtml.includes('已配置好，这项在生效')
+    && !keyedHtml.includes('这项不会生效');
+  asrKeyStateOk ? pass++ : fail++;
+  console.log('  ' + (asrKeyStateOk ? 'OK   ' : 'FAIL ') + '设置页：没配 Key 时明说"不生效、不产生费用"，配了则显示已配置');
+
+  // 界面 → 配置的映射（审查抓到过：保存时 apiKeyProvider 读了个已删掉的元素，
+  // 于是新填的 Key 被记成"上一家的"，轻则该用不用、重则把旧 Key 发给别家）
+  const saveCases = [
+    { name: 'API Key + Groq', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'groq', '#cfg-asr-baseurl': 'https://api.groq.com/openai/v1', '#cfg-asr-model': 'whisper-large-v3-turbo', '#cfg-asr-key': 'typed-key' },
+      expect: { provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', apiKey: 'typed-key', apiKeyProvider: 'openai' } },
+    { name: 'API Key + 火山', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'volc', '#cfg-asr-baseurl': '', '#cfg-asr-model': '', '#cfg-asr-key': 'volc-key' },
+      expect: { provider: 'volc', apiKey: 'volc-key', apiKeyProvider: 'volc' } },
+    { name: '免费本机', values: { '#cfg-asr-mode': 'local', '#cfg-asr-service': 'siliconflow', '#cfg-asr-key': '' },
+      expect: { provider: 'local' } }
+  ];
+  let mapOk = true;
+  const mapNotes = [];
+  for (const item of saveCases) {
+    vm.runInContext("state.settingsSection = 'asr';", ctx);
+    // 用 document.querySelector 取桩（store 里没有的会惰性创建），与 harness 其它用例一致
+    for (const [sel, value] of Object.entries(item.values)) document.querySelector(sel).value = value;
+    document.querySelector('#cfg-asr').checked = true;
+    let posted = null;
+    const fetchBefore = sandbox.fetch;
+    sandbox.fetch = async (url, options) => {
+      if (String(url).includes('/api/config') && options?.method === 'POST') {
+        posted = JSON.parse(options.body);
+        return { ok: true, status: 200, json: async () => ({ config: { ...(cfg), asr: posted.asr } }), text: async () => '' };
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+    };
+    try { await ctx.saveConfig({ quiet: true }); } catch (error) { mapNotes.push(`${item.name}: saveConfig 抛错 ${error?.message}`); }
+    sandbox.fetch = fetchBefore;
+    for (const [key, want] of Object.entries(item.expect)) {
+      const got = posted?.asr?.[key];
+      if (got !== want) { mapOk = false; mapNotes.push(`${item.name}.${key}=${JSON.stringify(got)}（期望 ${JSON.stringify(want)}）`); }
+    }
+    if (posted?.asr?.apiKey === '******') { mapOk = false; mapNotes.push(`${item.name}: 掩码被当成新 Key 存了`); }
+  }
+  mapOk ? pass++ : fail++;
+  console.log('  ' + (mapOk ? 'OK   ' : 'FAIL ') + '设置页：保存时模式/服务正确映射成 provider/baseUrl/model/Key 归属'
+    + (mapOk ? '' : ` -> ${mapNotes.join('；')}`));
 
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');

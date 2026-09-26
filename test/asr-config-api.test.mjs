@@ -90,3 +90,63 @@ test('ASR 状态由服务端判定，并随配置即时变化', async (t) => {
   assert.equal(st.configured, true, '配置还在');
   assert.equal(st.available, false, '但开关关掉就不生效');
 });
+
+test('模型列表从服务商官网拉，且保存的 Key 只发给配置里的地址', async (t) => {
+  // 造两个"服务商"：一个是我们配置里已知的地址，一个是陌生地址
+  const seen = [];
+  const makeProvider = async (models) => {
+    const server = http.createServer((req, res) => {
+      seen.push({ host: req.headers.host, auth: req.headers.authorization || '' , url: req.url });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: models.map((id) => ({ id })) }));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { port: server.address().port, close: () => new Promise((r) => server.close(r)) };
+  };
+  const known = await makeProvider(['FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B', 'deepseek-chat']);
+  const stranger = await makeProvider(['whisper-large-v3-turbo']);
+  t.after(async () => { await known.close(); await stranger.close(); });
+
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'observe';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  cfg.asr = {
+    ...cfg.asr, enabled: true, provider: 'openai',
+    baseUrl: `http://127.0.0.1:${known.port}/v1`, model: '', apiKey: 'saved-asr-key', apiKeyProvider: 'openai'
+  };
+  updateConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await app.start();
+  const post = async (body) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/asr/models`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  };
+
+  // ① 已知地址 + 不传 Key → 用保存的 Key；转写相关的模型排前面
+  const first = await post({ baseUrl: `http://127.0.0.1:${known.port}/v1` });
+  assert.equal(first.status, 200);
+  assert.equal(seen[0].auth, 'Bearer saved-asr-key', '已知地址才用保存的 Key');
+  assert.deepEqual(first.body.asrLikely.slice().sort(),
+    ['FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B'], '能转写的模型被识别出来');
+  assert.equal(first.body.models[0], 'FunAudioLLM/SenseVoiceSmall', '转写模型排最前');
+
+  // ② 陌生地址 + 不传 Key → **不能**把保存的 Key 发过去
+  seen.length = 0;
+  const second = await post({ baseUrl: `http://127.0.0.1:${stranger.port}/v1` });
+  assert.equal(second.status, 200);
+  assert.equal(seen[0].auth, '', '陌生地址不得携带保存的 Key');
+
+  // ③ 用户当场填了 Key → 发给他填的那个地址（这是他的明确意图）
+  seen.length = 0;
+  await post({ baseUrl: `http://127.0.0.1:${stranger.port}/v1`, apiKey: 'typed-key' });
+  assert.equal(seen[0].auth, 'Bearer typed-key');
+});
