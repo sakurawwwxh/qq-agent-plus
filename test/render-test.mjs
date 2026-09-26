@@ -143,7 +143,7 @@ try {
 
   // 取出渲染函数并执行
   const sections = [
-    'renderSettingsSection', 'renderApiSection', 'renderSearchSection',
+    'renderSettingsSection', 'renderApiSection', 'renderSearchSection', 'renderAsrSection',
     'renderMemorySettingsSection', 'renderExperimentalSettingsSection',
     'renderDailyMomentsSection',
     'renderQzoneInteractionSection', 'renderTimeControlSection',
@@ -886,21 +886,22 @@ try {
     + (zeroOk ? '' : ` -> ${zeroSelect.slice(0, 120)}`));
 
   // 设置 → 语音转文字：独立开关 + 每小时上限档位（默认 12 会作为一项保留并选中）
-  const asrOffHtml = ctx.renderChatSection({ ...cfg, asr: { enabled: false, maxPerHour: 3 } });
+  const asrOffHtml = ctx.renderAsrSection({ ...cfg, asr: { enabled: false, maxPerHour: 3 } });
   const asrOffOk = asrOffHtml.includes('id="cfg-asr"') && asrOffHtml.includes('id="cfg-asr-max"')
     && !/id="cfg-asr"[^>]*checked/.test(asrOffHtml)
     && /<option value="3" selected>/.test(asrOffHtml);
   asrOffOk ? pass++ : fail++;
   console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
-  const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(defaultHtml)
-    && /<option value="12" selected>/.test(defaultHtml)
-    && defaultHtml.includes('「联网搜索」开关') && defaultHtml.includes('相互独立');
+  const asrSectionHtml = ctx.renderAsrSection(cfg);
+  const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
+    && /<option value="12" selected>/.test(asrSectionHtml)
+    && asrSectionHtml.includes('「联网搜索」开关') && asrSectionHtml.includes('相互独立');
   asrDefaultOk ? pass++ : fail++;
   console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
 
   // 没有 Key 时界面必须说清"这项不会生效"，别让人以为默认勾上就在跑；有 Key 才显示"已配置"
-  const noKeyHtml = ctx.renderChatSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: false } });
-  const keyedHtml = ctx.renderChatSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: true } });
+  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: false } });
+  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: true } });
   const asrKeyStateOk = noKeyHtml.includes('当前没有可用的 Key，这项不会生效')
     && noKeyHtml.includes('也不会产生任何调用与费用')
     && noKeyHtml.includes('与「搜索服务」里那个<strong>分开配置</strong>')
@@ -908,6 +909,11 @@ try {
     && !keyedHtml.includes('这项不会生效');
   asrKeyStateOk ? pass++ : fail++;
   console.log('  ' + (asrKeyStateOk ? 'OK   ' : 'FAIL ') + '设置页：没配 Key 时明说"不生效、不产生费用"，配了则显示已配置');
+  const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
+    && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
+    && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');
+  asrMovedOk ? pass++ : fail++;
+  console.log('  ' + (asrMovedOk ? 'OK   ' : 'FAIL ') + '设置页：ASR 已从「聊天设置」移出，独立成「语音转文字」分区');
 
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');

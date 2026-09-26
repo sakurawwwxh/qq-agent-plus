@@ -6328,6 +6328,7 @@ function renderSettingsSidebar() {
   const menu = [
     ['api', '模型 API'],
     ['search', '搜索服务'],
+    ['asr', '语音转文字'],
     ['memory', '记忆'],
     ['experiments', '实验功能'],
     ['moments', '每日动态'],
@@ -6372,6 +6373,7 @@ function renderSettingsSection(c) {
   const sections = {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
+    asr: () => renderAsrSection(c),
     memory: () => renderMemorySettingsSection(c),
     experiments: () => renderExperimentalSettingsSection(c),
     moments: () => renderDailyMomentsSection(c),
@@ -6551,6 +6553,45 @@ function renderApiSection(c) {
     <div class="hint" id="provider-action-hint"></div>`;
 }
 
+
+/**
+ * 语音转文字（ASR）独立分区：Key 属于"外部服务配置"，跟聊天行为（聊天设置）分开放，
+ * 与「搜索服务」相邻 —— 两者都是外部服务 + Key 那一类。
+ */
+function renderAsrSection(c) {
+  return `
+    <h3 id="settings-asr">语音转文字</h3>
+    <div class="hint" style="margin-bottom:10px">
+      把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
+    </div>
+
+    <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
+      <label for="cfg-asr">启用语音转文字</label></div>
+
+    <div class="field">
+      <label for="cfg-asr-key">语音识别 API Key（留空用环境变量 ASR_API_KEY）</label>
+      <div style="display:flex;gap:8px">
+        <input type="password" id="cfg-asr-key" value="${esc(c.asr?.hasApiKey ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
+        <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
+      </div>
+      <div class="hint">
+        ${c.asr?.hasApiKey
+          ? 'Key 已配置。'
+          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。'}
+        这是<strong>语音识别服务</strong>（火山引擎语音技术的大模型录音识别 / Seed-ASR）的 Key，
+        与「搜索服务」里那个<strong>分开配置</strong>：只配搜索 Key 不会开启这项，反之亦然。
+        音频会上传到火山做识别，群友发来的语音因此会离开本机，按量计费。
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="cfg-asr-max">每小时最多转写</label>
+      <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
+      <div class="hint">
+        按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）。这一项与「联网搜索」开关也相互独立。
+      </div>
+    </div>`;
+}
 
 function renderSearchSection(c) {
   // 每个提供方区块的初始显隐都要跟当前 provider 一致
@@ -8702,32 +8743,6 @@ return `
       </div>
     </div>
 
-    <h3>所有模式 · 语音转文字</h3>
-    <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
-      <label for="cfg-asr">启用语音转文字（语音/视频里的音轨 → 文字）</label></div>
-    <div class="field">
-      <label for="cfg-asr-key">语音识别 API Key（留空用环境变量 ASR_API_KEY）</label>
-      <div style="display:flex;gap:8px">
-        <input type="password" id="cfg-asr-key" value="${esc(c.asr?.hasApiKey ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
-        <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
-      </div>
-      <div class="hint">
-        ${c.asr?.hasApiKey
-          ? 'Key 已配置。'
-          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。'}
-        这是<strong>语音识别服务</strong>（火山引擎语音技术的大模型录音识别 / Seed-ASR）的 Key，
-        与「搜索服务」里那个<strong>分开配置</strong>：只配搜索 Key 不会开启这项，反之亦然。
-        音频会上传到火山做识别，群友发来的语音因此会离开本机，按量计费。
-      </div>
-    </div>
-    <div class="field">
-      <label for="cfg-asr-max">每小时最多转写</label>
-      <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
-      <div class="hint">
-        按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）。这一项与「联网搜索」开关也相互独立。
-      </div>
-    </div>
-
     <h3>首次唤醒与历史</h3>
     <div class="hint conversation-trigger-hint" id="conversation-trigger-hint"></div>
 
@@ -10764,6 +10779,18 @@ async function saveConfig({ quiet = false } = {}) {
     }
   }
 
+  if (sec === 'asr') {
+    // 语音识别的 Key 单独配置（不复用搜索那个）：****** = 保持原 Key 不变，明文/新输入才更新
+    const enteredAsrKey = val('#cfg-asr-key', '').trim();
+    patch.asr = {
+      ...(c.asr || {}),
+      enabled: chk('#cfg-asr', c.asr?.enabled !== false),
+      // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
+      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
+      ...(enteredAsrKey && enteredAsrKey !== '******' ? { apiKey: enteredAsrKey } : {})
+    };
+  }
+
   if (sec === 'search') {
     // 搜索 API Key：****** = 保持原 Key 不变；明文或新输入才更新
     const enteredDsKey = val('#cfg-ds-searchkey', '').trim();
@@ -10943,15 +10970,6 @@ async function saveConfig({ quiet = false } = {}) {
       ) || 0)),
       // 下拉只提供 1~60 内的档位；这里的 clampInt 是防手工改 DOM 的兜底（服务端也会再夹一次）
       promptMaxStickers: clampInt(val('#cfg-sticker-max', c.sticker?.promptMaxStickers), 1, 60, 10)
-    };
-    // ASR 的 Key 单独配置（不复用搜索那个）：****** = 保持原 Key 不变，明文/新输入才更新
-    const enteredAsrKey = val('#cfg-asr-key', '').trim();
-    patch.asr = {
-      ...(c.asr || {}),
-      enabled: chk('#cfg-asr', c.asr?.enabled !== false),
-      // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
-      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
-      ...(enteredAsrKey && enteredAsrKey !== '******' ? { apiKey: enteredAsrKey } : {})
     };
     // 读取历史档位（替代原来的「最多条数 + 字符预算」两个固定值）
     patch.store = {
