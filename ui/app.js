@@ -6555,41 +6555,84 @@ function renderApiSection(c) {
 
 
 /**
- * 语音转文字（ASR）独立分区：Key 属于"外部服务配置"，跟聊天行为（聊天设置）分开放，
+ * 语音转文字（ASR）独立分区：Key 与服务属于"外部服务配置"，跟聊天行为（聊天设置）分开放，
  * 与「搜索服务」相邻 —— 两者都是外部服务 + Key 那一类。
+ * 供应商可换：识别服务与「搜索服务」不必是同一家，也不必是同一个账号。
  */
 function renderAsrSection(c) {
+  const provider = ['volc', 'openai', 'local'].includes(String(c.asr?.provider || ''))
+    ? String(c.asr.provider)
+    : 'volc';
+  const hide = (id) => (provider === id ? '' : 'display:none');
+  const keyReady = c.asr?.hasApiKey === true;
+  const localReady = Boolean(String(c.asr?.localModel || '').trim());
+  const ready = provider === 'local' ? localReady : keyReady;
+  const providerHint = {
+    volc: '火山引擎语音技术的<strong>大模型录音识别（Seed-ASR）</strong>，按量计费；音频会上传到火山做识别。',
+    openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行：填服务地址（到 <code>/v1</code> 那层）与模型名即可 —— '
+      + '例如 Groq（<code>https://api.groq.com/openai/v1</code>，模型 <code>whisper-large-v3-turbo</code>，有免费额度）、'
+      + '硅基流动（<code>https://api.siliconflow.cn/v1</code>，中文可试 <code>FunAudioLLM/SenseVoiceSmall</code>）、'
+      + '或自建的 faster-whisper 网关。按各家规则计费或免费。',
+    local: '本机 <strong>whisper.cpp</strong>：不联网、不需要 Key、没有按量费用，音频不出机器。'
+      + '代价是要在这台机器上装一次可执行文件与模型（<code>ggml-*.bin</code>），CPU 转写比托管服务慢，短语音够用。'
+  }[provider];
+  // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
+  const status = ready
+    ? '<strong>已配置好，这项在生效。</strong>'
+    : (provider === 'local'
+      ? '<strong>还没填模型文件路径，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用。'
+      : '<strong>还没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。');
   return `
     <h3 id="settings-asr">语音转文字</h3>
     <div class="hint" style="margin-bottom:10px">
       把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
+      识别服务与「搜索服务」<strong>各自独立</strong>，不必是同一家、也不必是同一个账号。
     </div>
 
     <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
       <label for="cfg-asr">启用语音转文字</label></div>
 
     <div class="field">
-      <label for="cfg-asr-key">语音识别 API Key（留空用环境变量 ASR_API_KEY）</label>
+      <label for="cfg-asr-provider">识别服务</label>
+      <select id="cfg-asr-provider">
+        <option value="volc" ${provider === 'volc' ? 'selected' : ''}>火山引擎 · 大模型录音识别（Seed-ASR，按量计费）</option>
+        <option value="openai" ${provider === 'openai' ? 'selected' : ''}>OpenAI 兼容服务（Groq / 硅基流动 / 自建…）</option>
+        <option value="local" ${provider === 'local' ? 'selected' : ''}>本机 whisper.cpp（不联网、不要 Key）</option>
+      </select>
+      <div class="hint" id="cfg-asr-provider-hint">${providerHint}</div>
+    </div>
+
+    <div class="field-row" id="asr-openai-fields" style="${hide('openai')}">
+      <div class="field"><label for="cfg-asr-baseurl">服务地址（到 /v1 那层）</label>
+        <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.groq.com/openai/v1" /></div>
+      <div class="field"><label for="cfg-asr-model">模型名</label>
+        <input type="text" id="cfg-asr-model" value="${esc(c.asr?.model || '')}" placeholder="whisper-large-v3-turbo" /></div>
+    </div>
+
+    <div class="field-row" id="asr-local-fields" style="${hide('local')}">
+      <div class="field"><label for="cfg-asr-bin">whisper.cpp 可执行文件</label>
+        <input type="text" id="cfg-asr-bin" value="${esc(c.asr?.localBin || '')}" placeholder="留空自动找 whisper-cli / whisper-cpp / main" /></div>
+      <div class="field"><label for="cfg-asr-localmodel">模型文件路径</label>
+        <input type="text" id="cfg-asr-localmodel" value="${esc(c.asr?.localModel || '')}" placeholder="/path/to/ggml-base.bin" /></div>
+    </div>
+
+    <div class="field" id="asr-key-field" style="${provider === 'local' ? 'display:none' : ''}">
+      <label for="cfg-asr-key">API Key（留空用环境变量 ASR_API_KEY）</label>
       <div style="display:flex;gap:8px">
-        <input type="password" id="cfg-asr-key" value="${esc(c.asr?.hasApiKey ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
+        <input type="password" id="cfg-asr-key" value="${esc(keyReady ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
         <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
-      </div>
-      <div class="hint">
-        ${c.asr?.hasApiKey
-          ? 'Key 已配置。'
-          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。'}
-        这是<strong>语音识别服务</strong>（火山引擎语音技术的大模型录音识别 / Seed-ASR）的 Key，
-        与「搜索服务」里那个<strong>分开配置</strong>：只配搜索 Key 不会开启这项，反之亦然。
-        音频会上传到火山做识别，群友发来的语音因此会离开本机，按量计费。
       </div>
     </div>
 
-    <div class="field">
-      <label for="cfg-asr-max">每小时最多转写</label>
-      <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
-      <div class="hint">
-        按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）。这一项与「联网搜索」开关也相互独立。
-      </div>
+    <div class="field-row">
+      <div class="field"><label for="cfg-asr-max">每小时最多转写</label>
+        <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select></div>
+      <div class="field"><label for="cfg-asr-lang">识别语言（可选）</label>
+        <input type="text" id="cfg-asr-lang" value="${esc(c.asr?.language || '')}" placeholder="zh / en；留空由服务自己判" /></div>
+    </div>
+    <div class="hint">
+      ${status}
+      每小时上限是按量计费服务的硬闸门（跨会话共享）；本地转写不花钱，但也受这个次数限制。
     </div>`;
 }
 
@@ -9093,6 +9136,22 @@ function bindSettingsEvents(c) {
     $('#daily-moments-run-btn')?.addEventListener('click', () => runMoments(true));
   }
 
+  // 语音转文字：切供应商就切换对应字段（Key/地址/模型 vs 本机路径）
+  if ((state.settingsSection || 'api') === 'asr') {
+    const provSel = $('#cfg-asr-provider');
+    const syncAsrFields = () => {
+      const prov = provSel ? provSel.value : 'volc';
+      const openaiFields = $('#asr-openai-fields');
+      const localFields = $('#asr-local-fields');
+      const keyField = $('#asr-key-field');
+      if (openaiFields) openaiFields.style.display = prov === 'openai' ? '' : 'none';
+      if (localFields) localFields.style.display = prov === 'local' ? '' : 'none';
+      if (keyField) keyField.style.display = prov === 'local' ? 'none' : '';
+    };
+    if (provSel) provSel.addEventListener('change', syncAsrFields);
+    syncAsrFields();
+  }
+
   if ((state.settingsSection || 'api') === 'qzone-interactions') {
     loadQzoneInteractionStatus();
     const runInteractions = async (kind) => {
@@ -10780,13 +10839,19 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'asr') {
-    // 语音识别的 Key 单独配置（不复用搜索那个）：****** = 保持原 Key 不变，明文/新输入才更新
+    // 语音识别的 Key 与搜索的 Key 各自独立：****** = 保持原 Key 不变，明文/新输入才更新
     const enteredAsrKey = val('#cfg-asr-key', '').trim();
     patch.asr = {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
+      provider: val('#cfg-asr-provider', c.asr?.provider || 'volc'),
       // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
       maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
+      baseUrl: val('#cfg-asr-baseurl', c.asr?.baseUrl || '').trim(),
+      model: val('#cfg-asr-model', c.asr?.model || '').trim(),
+      language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
+      localBin: val('#cfg-asr-bin', c.asr?.localBin || '').trim(),
+      localModel: val('#cfg-asr-localmodel', c.asr?.localModel || '').trim(),
       ...(enteredAsrKey && enteredAsrKey !== '******' ? { apiKey: enteredAsrKey } : {})
     };
   }

@@ -338,6 +338,7 @@ process setTimeout clearTimeout setInterval clearInterval setImmediate queueMicr
 parseInt parseFloat isNaN isFinite encodeURIComponent decodeURIComponent fetch URL URLSearchParams
 structuredClone BigInt RegExp Error TypeError RangeError SyntaxError Symbol AbortController AbortSignal
 TextEncoder TextDecoder atob btoa globalThis performance crypto require module exports
+FormData Blob Headers Response Request
 if for while switch catch return typeof function await new delete void in of do else try throw case instanceof
 yield super this null true false async static get set import export default class const let var new`.split(/\s+/).filter(Boolean));
 

@@ -895,20 +895,41 @@ try {
   const asrSectionHtml = ctx.renderAsrSection(cfg);
   const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
     && /<option value="12" selected>/.test(asrSectionHtml)
-    && asrSectionHtml.includes('「联网搜索」开关') && asrSectionHtml.includes('相互独立');
+    && asrSectionHtml.includes('识别服务与「搜索服务」<strong>各自独立</strong>')
+    && asrSectionHtml.includes('不必是同一家');
   asrDefaultOk ? pass++ : fail++;
   console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
 
   // 没有 Key 时界面必须说清"这项不会生效"，别让人以为默认勾上就在跑；有 Key 才显示"已配置"
   const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: false } });
   const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: true } });
-  const asrKeyStateOk = noKeyHtml.includes('当前没有可用的 Key，这项不会生效')
+  const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
     && noKeyHtml.includes('也不会产生任何调用与费用')
-    && noKeyHtml.includes('与「搜索服务」里那个<strong>分开配置</strong>')
-    && keyedHtml.includes('Key 已配置')
+    && noKeyHtml.includes('与「搜索服务」<strong>各自独立</strong>')
+    && keyedHtml.includes('已配置好，这项在生效')
     && !keyedHtml.includes('这项不会生效');
   asrKeyStateOk ? pass++ : fail++;
   console.log('  ' + (asrKeyStateOk ? 'OK   ' : 'FAIL ') + '设置页：没配 Key 时明说"不生效、不产生费用"，配了则显示已配置');
+
+  // 供应商可换：三家选项 + 各自字段 + 本地不需要 Key 的判定
+  const localHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '' } });
+  const localReadyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '/opt/ggml-base.bin' } });
+  const openaiHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'openai' } });
+  const providerOk = /<option value="volc" selected>/.test(ctx.renderAsrSection(cfg))
+    && /<option value="openai" selected>/.test(openaiHtml)
+    && /<option value="local" selected>/.test(localHtml)
+    // 本地：不要求 Key，缺模型路径时明说不会生效；填了就显示已配置
+    && localHtml.includes('还没填模型文件路径，这项不会生效')
+    && localReadyHtml.includes('已配置好，这项在生效')
+    // 本地隐藏 Key 字段（不需要 Key），OpenAI 兼容则显示；地址/模型字段只在该 provider 下显示
+    && /id="asr-key-field" style="display:none"/.test(localHtml)
+    && /id="asr-key-field" style=""/.test(openaiHtml)
+    && /id="asr-openai-fields" style=""/.test(openaiHtml)
+    && /id="asr-local-fields" style="display:none"/.test(openaiHtml)
+    // 免费选项写在 OpenAI 兼容那支的说明里
+    && openaiHtml.includes('whisper-large-v3-turbo') && openaiHtml.includes('硅基流动');
+  providerOk ? pass++ : fail++;
+  console.log('  ' + (providerOk ? 'OK   ' : 'FAIL ') + '设置页：三家识别服务可选（本机不要 Key、OpenAI 兼容填地址+模型）');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
     && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
     && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');

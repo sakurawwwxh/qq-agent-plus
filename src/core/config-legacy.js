@@ -132,13 +132,22 @@ export const DEFAULT_CONFIG = {
     }
   },
   // 语音转文字（ASR，可选）：把语音/视频里的音轨转成文字，任何聊天模型都能用。
-  // 走火山语音技术的大模型录音识别（Seed-ASR），**自己的 Key 独立配置**：
-  // 不复用「搜索服务」里那个（搜索走方舟、转写走 openspeech，是两套服务），
-  // 免得"有没有搜索 Key"决定"能不能转写"。留空可回退环境变量 ASR_API_KEY。
+  // 供应商可换，与「搜索服务」的 Key/服务完全无关：
+  //   volc   —— 火山引擎语音技术的大模型录音识别（Seed-ASR，走 WebSocket，按量计费）
+  //   openai —— 任意 OpenAI 兼容的转写服务（Groq / SiliconFlow / 自建 faster-whisper 网关…）：
+  //             填 baseUrl（到 /v1 那层）+ model 即可，不用等我们适配
+  //   local  —— 本机 whisper.cpp：不联网、不要 Key、音频不出机器，代价是要自己装二进制与模型
+  // 不同供应商的 API 不必是同一家，甚至不必是同一个账号。
   asr: {
     enabled: true,
+    provider: 'volc',
     maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
-    apiKey: ''                // 火山语音技术（大模型录音识别）的 API Key
+    apiKey: '',               // volc / openai 用；留空回退环境变量 ASR_API_KEY
+    baseUrl: '',              // openai 兼容服务地址，例：https://api.groq.com/openai/v1
+    model: '',                // openai 兼容的模型名，例：whisper-large-v3-turbo
+    language: '',             // 可选：提示语言（zh / en…），留空由服务自己判
+    localBin: '',             // 本机转写可执行文件，留空按 whisper-cli → whisper-cpp → main 找
+    localModel: ''            // 本机转写的模型文件路径（如 ggml-base.bin）
   },
   // 安全例外（默认全部关闭）
   security: {

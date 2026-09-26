@@ -130,3 +130,76 @@ it('坏值兜底：maxPerHour 非正数/离谱值都收敛到 12 / 200 上限', 
   cfg.asr.maxPerHour = 9999;
   assert.equal(asrMaxPerHour(cfg), 200);
 });
+
+// ── 多供应商（2026-09-26：用户要求"API 不一定要同一家、不一定要火山"）──
+
+it('pcmToWav 产出合法 WAV 头（托管服务只吃带容器的文件）', async () => {
+  const { pcmToWav } = await import('../src/llm/asr-openai.js');
+  const pcm = Buffer.alloc(16000, 1);              // 0.5 秒 16k 单声道
+  const wav = pcmToWav(pcm);
+  assert.equal(wav.subarray(0, 4).toString(), 'RIFF');
+  assert.equal(wav.subarray(8, 12).toString(), 'WAVE');
+  assert.equal(wav.subarray(12, 16).toString(), 'fmt ');
+  assert.equal(wav.readUInt16LE(20), 1, 'PCM 格式');
+  assert.equal(wav.readUInt16LE(22), 1, '单声道');
+  assert.equal(wav.readUInt32LE(24), 16000, '16k 采样率');
+  assert.equal(wav.readUInt32LE(28), 32000, '字节率 = 采样率×块对齐');
+  assert.equal(wav.readUInt16LE(32), 2, '块对齐 = 声道×位深/8');
+  assert.equal(wav.subarray(36, 40).toString(), 'data');
+  assert.equal(wav.readUInt32LE(40), pcm.length);
+  assert.equal(wav.length, 44 + pcm.length);
+});
+
+it('OpenAI 兼容转写：拼端点、带 Bearer、解析 text（含错误路径）', async () => {
+  const { openAiCompatibleTranscribe, transcriptionEndpoint } = await import('../src/llm/asr-openai.js');
+  assert.equal(transcriptionEndpoint('https://api.groq.com/openai/v1/'), 'https://api.groq.com/openai/v1/audio/transcriptions');
+  const calls = [];
+  const text = await openAiCompatibleTranscribe(Buffer.from('wav'), {
+    baseUrl: 'https://example.com/v1', apiKey: 'k-1', model: 'whisper-large-v3-turbo', language: 'zh',
+    fetchFn: async (url, init) => {
+      calls.push({ url, auth: init.headers.Authorization, isForm: typeof init.body?.append === 'function' });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ text: ' 你好世界 ' }) };
+    }
+  });
+  assert.equal(text, '你好世界', '去空白后返回文本');
+  assert.deepEqual(calls, [{ url: 'https://example.com/v1/audio/transcriptions', auth: 'Bearer k-1', isForm: true }]);
+  // 非 2xx 要抛错，并把响应片段带出来（用户自查用）
+  await assert.rejects(
+    () => openAiCompatibleTranscribe(Buffer.from('wav'), {
+      baseUrl: 'https://example.com/v1', apiKey: 'k', model: 'm',
+      fetchFn: async () => ({ ok: false, status: 401, text: async () => 'invalid api key' })
+    }),
+    /401.*invalid api key/
+  );
+  // 缺字段各自报清楚
+  await assert.rejects(() => openAiCompatibleTranscribe(Buffer.from('wav'), { apiKey: 'k', model: 'm' }), /地址/);
+  await assert.rejects(() => openAiCompatibleTranscribe(Buffer.from('wav'), { baseUrl: 'https://x/v1', model: 'm' }), /API Key/);
+  await assert.rejects(() => openAiCompatibleTranscribe(Buffer.from('wav'), { baseUrl: 'https://x/v1', apiKey: 'k' }), /模型名/);
+});
+
+it('本机 whisper.cpp：参数拼装 + 缺模型时报错', async () => {
+  const { whisperArgs, localWhisperTranscribe, WHISPER_BIN_CANDIDATES } = await import('../src/llm/asr-local.js');
+  assert.deepEqual(WHISPER_BIN_CANDIDATES, ['whisper-cli', 'whisper-cpp', 'main']);
+  const args = whisperArgs({ model: '/m/ggml-base.bin', wavPath: '/tmp/a.wav', outPrefix: '/tmp/a.out', language: 'zh' });
+  assert.deepEqual(args, ['-m', '/m/ggml-base.bin', '-f', '/tmp/a.wav', '-otxt', '-of', '/tmp/a.out', '-np', '-l', 'zh']);
+  assert.ok(whisperArgs({ model: 'm', wavPath: 'a', outPrefix: 'o', language: '', threads: 4 }).includes('-t'));
+  await assert.rejects(() => localWhisperTranscribe('/tmp/x.wav', { model: '' }), /localModel/);
+});
+
+it('供应商路由：按 asr.provider 选后端，配置齐才判定可用', async () => {
+  const { asrProvider, asrConfigured, asrAvailable } = await import('../src/core/config.js');
+  const base = structuredClone(DEFAULT_CONFIG);
+  assert.equal(asrProvider(base), 'volc', '缺省仍是火山');
+  assert.equal(asrProvider({ asr: { provider: 'OPENAI' } }), 'openai', '大小写不敏感');
+  assert.equal(asrProvider({ asr: { provider: '乱写的' } }), 'volc', '坏值回落到默认供应商');
+  // volc：只要 Key
+  assert.equal(asrConfigured({ asr: { provider: 'volc', apiKey: '' } }), false);
+  assert.equal(asrConfigured({ asr: { provider: 'volc', apiKey: 'k' } }), true);
+  // openai 兼容：要 Key + 地址 + 模型名（服务不同，模型名不能猜）
+  assert.equal(asrConfigured({ asr: { provider: 'openai', apiKey: 'k', baseUrl: 'https://x/v1' } }), false);
+  assert.equal(asrConfigured({ asr: { provider: 'openai', apiKey: 'k', baseUrl: 'https://x/v1', model: 'm' } }), true);
+  // local：不要 Key，但要模型文件
+  assert.equal(asrConfigured({ asr: { provider: 'local', localModel: '' } }), false);
+  assert.equal(asrAvailable({ asr: { enabled: true, provider: 'local', localModel: '/m.bin' } }), true);
+  assert.equal(asrAvailable({ asr: { enabled: false, provider: 'local', localModel: '/m.bin' } }), false);
+});

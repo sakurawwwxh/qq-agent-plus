@@ -98,22 +98,36 @@
 {
   "asr": {
     "enabled": true,
+    "provider": "volc",
     "maxPerHour": 12,
-    "apiKey": ""
+    "apiKey": "",
+    "baseUrl": "",
+    "model": "",
+    "language": "",
+    "localBin": "",
+    "localModel": ""
   }
 }
 ```
 
 - 作用：把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
-  控制台「设置 → 聊天设置 → 所有模式 · 语音转文字」里有同一组开关、Key 与每小时上限档位。
-- **Key 单独配置**（`asr.apiKey`，留空时回退环境变量 `ASR_API_KEY`）：走的是火山引擎语音技术的
-  大模型录音识别（Seed-ASR），与「搜索服务 → 豆包」那个方舟的 Key 是两套服务，**不复用**——
-  免得"有没有配搜索 Key"决定"能不能转写"。两者可以各自独立开关。
-- 没配 Key 时这项**完全不生效**：工具不会注入给模型、不会产生任何调用与费用，
-  提示词照旧说"听不了语音"，与没开这项时表现一致。
-- **数据流向与计费**：音频会上传到火山做识别，按量计费；`maxPerHour` 是每小时最多转写几次的硬闸门
+  控制台「设置 → 语音转文字」有同一组开关与字段。
+- **识别服务可换**（`provider`），与「搜索服务」完全独立 —— 不必是同一家、也不必是同一个账号：
+
+  | provider | 说明 | 需要什么 |
+  | --- | --- | --- |
+  | `volc`（默认） | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
+  | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
+  | `local` | 本机 **whisper.cpp**：不联网、不要 Key、音频不出机器、无按量费用 | 装好二进制与模型，填 `localModel`（`localBin` 可留空，按 `whisper-cli` → `whisper-cpp` → `main` 找） |
+
+- 免费选项（在 `openai` 那一支填即可，具体额度以各家当期政策为准）：
+  - **Groq**：`baseUrl=https://api.groq.com/openai/v1`，`model=whisper-large-v3-turbo`，有免费额度；
+  - **硅基流动（SiliconFlow）**：`baseUrl=https://api.siliconflow.cn/v1`，中文可试 `model=FunAudioLLM/SenseVoiceSmall`，有免费额度；
+  - **完全不想用托管服务**：选 `local`，一次装好之后永久免费、离线可用（CPU 转写，短语音够用）。
+- 没配齐时这项**完全不生效**：工具不会注入给模型、不会产生任何调用与费用，提示词照旧说"听不了语音"。
+- `language` 可选（`zh` / `en`…），留空由服务自己判；`maxPerHour` 是每小时最多转写几次的硬闸门
   （跨会话共享，默认 12，非正数按 12 处理）。
-- 需要服务器上有 `ffmpeg`（服务器上已有则无需处理）；单条音频上限 15 分钟，超长会直接报错不转写。
+- 需要服务器上有 `ffmpeg`；单条音频上限 15 分钟，超长会直接报错不转写。
 
 ## pacing：自主节奏（实验性，默认关闭）
 

@@ -1,5 +1,6 @@
-// 语音/视频转文字：取文件 URL → ffmpeg 转 16k PCM → Seed-ASR (Agent Plan)。
+// 语音/视频转文字：取文件 URL → ffmpeg 转 16k PCM → 交给配置的语音识别服务。
 // 聊天模型无关：任何模型都消费转写文本，音频理解不依赖多模态。
+// 供应商可换（见 config.asr.provider）：火山 Seed-ASR / 任意 OpenAI 兼容服务 / 本机 whisper.cpp。
 import { spawn } from 'node:child_process';
 // fs/path/os 用顶层静态 import：函数体里的 `const { x } = await import(...)`
 // 在 ops scan --strict 里会被判成"调用点有、定义没有"（CI 硬门禁），
@@ -9,7 +10,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.js';
-import { asrApiKey, asrMaxPerHour, getConfig } from '../core/config.js';
+import { asrConfigured, asrMaxPerHour, asrProvider, getConfig } from '../core/config.js';
+import { openAiCompatibleTranscribe, openAiProviderOptions, pcmToWav } from '../llm/asr-openai.js';
+import { localWhisperTranscribe, WHISPER_BIN_CANDIDATES } from '../llm/asr-local.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -70,13 +73,6 @@ export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = 
   });
 }
 
-function asrKeyOf() {
-  // 自己的 Key（asr.apiKey，留空回退 ASR_API_KEY）—— 不再复用「搜索服务」那个：
-  // 搜索走方舟、转写走 openspeech，是两套服务。取配置走 config.js 的共享 helper，
-  // 免得这里和工具注入闸门（asrAvailable）各判一套。
-  return asrApiKey();
-}
-
 /**
  * 从消息 entry 提取可转写的音频 URL。
  * 优先 getMsg 现取（URL 短期有效），退到 entry.media 存档。
@@ -112,6 +108,35 @@ export async function currentMessageAudioUrl(ctx, entry) {
   return archived ? { kind: 'audio', url: String(archived.url), name: String(archived.name || '') } : null;
 }
 
+/**
+ * 按配置的供应商转写：三个后端各自处理"要什么输入"的差异，主流程只管路由。
+ * 火山吃裸 PCM（WS 分片），OpenAI 兼容吃带容器的文件，本机 whisper.cpp 吃文件路径。
+ */
+export async function runProvider(cfg, pcm, { signal } = {}) {
+  const provider = asrProvider(cfg);
+  if (provider === 'local') return await localTranscribe(cfg, pcm, signal);
+  if (provider === 'openai') {
+    return await openAiCompatibleTranscribe(pcmToWav(pcm), { ...openAiProviderOptions(cfg), signal });
+  }
+  return await seedAsrTranscribe(pcm, { apiKey: openAiProviderOptions(cfg).apiKey, signal });
+}
+
+/** 本机转写：whisper.cpp 只吃文件，所以把 PCM 套 WAV 头落盘再调用（fs/path/os 都在文件顶层 import）。 */
+async function localTranscribe(cfg, pcm, signal) {
+  const wavPath = join(tmpdir(), `qa-asr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
+  writeFileSync(wavPath, pcmToWav(pcm));
+  try {
+    return await localWhisperTranscribe(wavPath, {
+      bin: String(cfg?.asr?.localBin || '').trim() || WHISPER_BIN_CANDIDATES[0],
+      model: String(cfg?.asr?.localModel || '').trim(),
+      language: String(cfg?.asr?.language || 'zh').trim(),
+      signal
+    });
+  } finally {
+    try { rmSync(wavPath, { force: true }); } catch { /* 清不掉无害 */ }
+  }
+}
+
 /** 主入口：给 tools-core 的 get_message_audio 工具用，返回转写文本。 */
 export async function transcribeMessageAudio(ctx, entry) {
   const target = await currentMessageAudioUrl(ctx, entry);
@@ -145,12 +170,12 @@ export async function transcribeMessageAudio(ctx, entry) {
       try { rmSync(tmpFile, { force: true }); } catch { /* 清理失败无害 */ }
       tmpFile = null;
     }
-    const apiKey = await asrKeyOf();
-    if (!apiKey) {
-      return { ok: false, error: '未配置语音识别服务（缺少 ASR API Key），无法转写音频。请管理员在控制台「聊天设置 → 语音转文字」里填 Key，或设环境变量 ASR_API_KEY' };
+    const cfg = getConfig();
+    if (!asrConfigured(cfg)) {
+      return { ok: false, error: '语音识别还没配好，无法转写音频。请管理员在控制台「设置 → 语音转文字」里把当前供应商填齐（或设环境变量 ASR_API_KEY）' };
     }
     try {
-      const text = await seedAsrTranscribe(pcm, { apiKey, signal: ctx.signal });
+      const text = await runProvider(cfg, pcm, { signal: ctx.signal });
       if (!text?.trim()) return { ok: false, error: '语音识别没有返回内容（可能整段是静音/无语音）' };
       return { ok: true, text: text.trim() };
     } catch (e) {

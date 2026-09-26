@@ -138,22 +138,44 @@ export function incidentPilotEnabled() {
   return true;
 }
 
+/** 语音转写的供应商：'volc'（火山 Seed-ASR）/ 'openai'（任意 OpenAI 兼容服务）/ 'local'（本机 whisper.cpp）。 */
+export const ASR_PROVIDERS = ['volc', 'openai', 'local'];
+export function asrProvider(cfg = getConfig()) {
+  const raw = String(cfg?.asr?.provider || '').trim().toLowerCase();
+  return ASR_PROVIDERS.includes(raw) ? raw : 'volc';
+}
+
 /**
  * 语音转文字用的 API Key：只认自己的（`asr.apiKey`，留空回退环境变量 ASR_API_KEY）。
- * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索走方舟、转写走 openspeech，
- * 是两套服务，耦合会让"配没配搜索 Key"决定"能不能转写"（用户明确要求分开）。
+ * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索与转写是两套服务/两家供应商都可能，
+ * 耦合会让"配没配搜索 Key"决定"能不能转写"（用户明确要求分开）。
  */
 export function asrApiKey(cfg = getConfig()) {
   return String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim();
 }
 
 /**
- * 语音转文字（ASR）是否可用：自己的开关打开，且配了自己的 Key。
- * 与「联网搜索」开关**相互独立** —— 关掉搜索不该把语音转写一起关掉，反之亦然。
- * 这个条件有两处用（工具注入、提示词口径），收敛在这里，别各写一份。
+ * 当前供应商是否已配置齐（够不够用）：
+ * - volc / openai：要 Key；openai 兼容的还要地址与模型名（服务不同，模型名不能猜）。
+ * - local：不需要 Key，但要填模型文件路径（二进制可省，默认找 whisper-cli）。
+ */
+export function asrConfigured(cfg = getConfig()) {
+  const provider = asrProvider(cfg);
+  if (provider === 'local') return String(cfg?.asr?.localModel || '').trim() !== '';
+  if (provider === 'openai') {
+    return asrApiKey(cfg) !== ''
+      && String(cfg?.asr?.baseUrl || '').trim() !== ''
+      && String(cfg?.asr?.model || '').trim() !== '';
+  }
+  return asrApiKey(cfg) !== '';
+}
+
+/**
+ * 语音转文字（ASR）是否可用：自己的开关打开，且当前供应商配置齐了。
+ * 与「联网搜索」开关、与搜索用的 Key **完全独立**：换供应商只改 asr 这一节。
  */
 export function asrAvailable(cfg = getConfig()) {
-  return cfg?.asr?.enabled !== false && asrApiKey(cfg) !== '';
+  return cfg?.asr?.enabled !== false && asrConfigured(cfg);
 }
 
 /** 每小时最多转写几次（按量计费服务的硬闸门）。 */
