@@ -131,6 +131,13 @@ export const DEFAULT_CONFIG = {
       timeoutMs: 20000
     }
   },
+  // 语音转文字（ASR，可选）：把语音/视频里的音轨转成文字，任何聊天模型都能用。
+  // key 复用 webSearch.doubao.apiKey（同一个火山方舟 Agent Plan key，按量计费）；
+  // 开关与「联网搜索」相互独立 —— 关搜索不该顺带关掉它，反之亦然。
+  asr: {
+    enabled: true,
+    maxPerHour: 12            // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
+  },
   // 安全例外（默认全部关闭）
   security: {
     allowPrivateImageHosts: false           // true 时图片下载允许内网地址（仅本地测试/自建图床）

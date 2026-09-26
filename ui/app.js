@@ -8357,6 +8357,20 @@ function stickerMaxSelectOptions(current) {
   return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 条</option>`).join('');
 }
 
+// 语音转文字每小时上限的档位：与清单条数同一套写法（固定档位 + 保留存量自定义值）。
+// 与后端 config.asrMaxPerHour 的口径一致：非正数/坏值按 12，上限 200。
+const ASR_MAX_CHOICES = [5, 10, 20, 40];
+function normalizeAsrMax(current) {
+  const n = Number(current);
+  if (!Number.isFinite(n) || n <= 0) return 12;
+  return Math.min(200, Math.max(1, Math.round(n)));
+}
+function asrMaxSelectOptions(current) {
+  const value = normalizeAsrMax(current);
+  const choices = [...new Set([...ASR_MAX_CHOICES, value])].sort((a, b) => a - b);
+  return choices.map((n) => `<option value="${n}" ${n === value ? 'selected' : ''}>${n} 次</option>`).join('');
+}
+
 // 读取历史档位：名称与说明（档位制，累积生效）
 /** 把输入钳制到 [min,max]，非法值退回 fallback。 */
 /**
@@ -8688,6 +8702,19 @@ return `
       </div>
     </div>
 
+    <h3>所有模式 · 语音转文字</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
+      <label for="cfg-asr">启用语音转文字（语音/视频里的音轨 → 文字）</label></div>
+    <div class="field">
+      <label for="cfg-asr-max">每小时最多转写</label>
+      <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
+      <div class="hint">
+        复用「搜索服务 → 豆包」的 API Key（火山方舟 Agent Plan，<strong>按量计费</strong>）；
+        音频会上传到火山做识别，群友发来的语音因此会离开本机。这一项与「联网搜索」开关相互独立：
+        关掉搜索不影响语音转写，反之亦然；不要它就把上面的勾去掉。
+      </div>
+    </div>
+
     <h3>首次唤醒与历史</h3>
     <div class="hint conversation-trigger-hint" id="conversation-trigger-hint"></div>
 
@@ -8855,6 +8882,10 @@ function syncClampedInputs() {
   const stickerMax = $('#cfg-sticker-max');
   if (stickerMax) {
     stickerMax.value = String(normalizeStickerMax(state.config?.sticker?.promptMaxStickers));
+  }
+  const asrMax = $('#cfg-asr-max');
+  if (asrMax) {
+    asrMax.value = String(normalizeAsrMax(state.config?.asr?.maxPerHour));
   }
 }
 
@@ -10898,6 +10929,12 @@ async function saveConfig({ quiet = false } = {}) {
       ) || 0)),
       // 下拉只提供 1~60 内的档位；这里的 clampInt 是防手工改 DOM 的兜底（服务端也会再夹一次）
       promptMaxStickers: clampInt(val('#cfg-sticker-max', c.sticker?.promptMaxStickers), 1, 60, 10)
+    };
+    patch.asr = {
+      ...(c.asr || {}),
+      enabled: chk('#cfg-asr', c.asr?.enabled !== false),
+      // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
+      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12)
     };
     // 读取历史档位（替代原来的「最多条数 + 字符预算」两个固定值）
     patch.store = {

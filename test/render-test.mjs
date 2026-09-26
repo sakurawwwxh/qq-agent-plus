@@ -885,6 +885,19 @@ try {
   console.log('  ' + (zeroOk ? 'OK   ' : 'FAIL ') + '设置页：非正数存量值按运行时的 10 档显示'
     + (zeroOk ? '' : ` -> ${zeroSelect.slice(0, 120)}`));
 
+  // 设置 → 语音转文字：独立开关 + 每小时上限档位（默认 12 会作为一项保留并选中）
+  const asrOffHtml = ctx.renderChatSection({ ...cfg, asr: { enabled: false, maxPerHour: 3 } });
+  const asrOffOk = asrOffHtml.includes('id="cfg-asr"') && asrOffHtml.includes('id="cfg-asr-max"')
+    && !/id="cfg-asr"[^>]*checked/.test(asrOffHtml)
+    && /<option value="3" selected>/.test(asrOffHtml);
+  asrOffOk ? pass++ : fail++;
+  console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
+  const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(defaultHtml)
+    && /<option value="12" selected>/.test(defaultHtml)
+    && defaultHtml.includes('按量计费') && defaultHtml.includes('与「联网搜索」开关相互独立');
+  asrDefaultOk ? pass++ : fail++;
+  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明计费与解耦');
+
   // 保存后回填：服务端存下来的值要写回控件（以前填 500 页面上会一直显示 500）
   const maxNode = document.querySelector('#cfg-sticker-max');
   maxNode.value = '500';

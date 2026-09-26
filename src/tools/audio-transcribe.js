@@ -2,12 +2,28 @@
 // 聊天模型无关：任何模型都消费转写文本，音频理解不依赖多模态。
 import { spawn } from 'node:child_process';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
-import { seedAsrTranscribe } from '../llm/seed-asr.mjs';
+import { seedAsrTranscribe } from '../llm/seed-asr.js';
+import { asrMaxPerHour, getConfig } from '../core/config.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
-// ponytail: PCM 全量进内存，1h≈1.9GB 会 OOM 小内存 VPS——先压到 15 分钟（≈576MB），
-// 更长音频再改边转边喂（流式给 Seed-ASR）。
+// PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
+// 更要防的是"群友连发长语音刷账单"，所以再加一道每小时次数闸门（asr.maxPerHour）。
 const ASR_MAX_PCM_SECONDS = 60 * 15;
+
+// 跨会话共享的小时窗口计数器（进程内）。restart 归零对"按量计费"这个目的够用：
+// 它防的是同一个群里连着刷，不是精确计费对账。
+const asrQuota = { hour: -1, used: 0 };
+/** 取一次转写配额；额度用尽返回 false。导出仅供测试。 */
+export function consumeAsrQuota(now = Date.now(), cfg = getConfig()) {
+  const hour = Math.floor(now / 3600000);
+  if (asrQuota.hour !== hour) { asrQuota.hour = hour; asrQuota.used = 0; }
+  const limit = asrMaxPerHour(cfg);
+  if (asrQuota.used >= limit) return false;
+  asrQuota.used += 1;
+  return true;
+}
+/** 测试用：重置窗口。 */
+export function resetAsrQuota() { asrQuota.hour = -1; asrQuota.used = 0; }
 
 /** ffmpeg 转 16k mono s16le PCM（文件路径输入，导出仅供测试）。 */
 export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = {}) {
@@ -100,6 +116,11 @@ export async function transcribeMessageAudio(ctx, entry) {
   try {
     if (!target.url) {
       return { ok: false, error: `文件「${target.name || '未知'}」拿不到下载地址（协议端未提供 URL），暂无法转写` };
+    }
+    // 配额在"确定要下载+转码"这一步才扣：调错消息（没有音频/拿不到地址）不该消耗额度，
+    // 但下载与转码本身就占资源，所以在下载前扣。按量计费的服务，这道闸门是真金白银。
+    if (!consumeAsrQuota()) {
+      return { ok: false, error: `本小时的语音转写次数已用完（上限 ${asrMaxPerHour(getConfig())} 次/小时，可在控制台「语音转文字」里调整），稍后再试` };
     }
     let buffer;
     try {

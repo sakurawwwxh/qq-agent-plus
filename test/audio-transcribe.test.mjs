@@ -10,8 +10,9 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-audio-transcribe-'));
 process.env.QQ_AGENT_DATA_DIR = dir;
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
-const { currentMessageAudioUrl, ffmpegToPcm } = await import('../src/tools/audio-transcribe.js');
+const { currentMessageAudioUrl, ffmpegToPcm, consumeAsrQuota, resetAsrQuota } = await import('../src/tools/audio-transcribe.js');
 const { extractMediaFromSegments } = await import('../src/onebot/onebot.js');
+const { asrAvailable, asrMaxPerHour, DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
 
 it('extractMediaFromSegments 提取 record/video/音频文件段为 audio', () => {
   const media = extractMediaFromSegments([
@@ -75,4 +76,46 @@ it('ffmpegToPcm 无效输入报错而不是挂起', async () => {
   const bad = path.join(dir, 'not-audio.bin');
   fs.writeFileSync(bad, Buffer.from('this is not audio content at all'));
   await assert.rejects(() => ffmpegToPcm(bad, { timeoutMs: 15000 }), /音频转换失败/);
+});
+
+// ── 合并后的跟进（2026-09-26 审查）──
+
+it('ASR 的可用条件与「联网搜索」开关解耦', () => {
+  const withKey = structuredClone(DEFAULT_CONFIG);
+  withKey.webSearch.doubao.apiKey = 'test-key';
+  assert.equal(asrAvailable(withKey), true, '有 key + 开关默认开 → 可用');
+  const searchOff = structuredClone(withKey);
+  searchOff.webSearch.enabled = false;
+  assert.equal(asrAvailable(searchOff), true, '关掉联网搜索不该顺带关掉语音转写');
+  const asrOff = structuredClone(withKey);
+  asrOff.asr.enabled = false;
+  assert.equal(asrAvailable(asrOff), false, '自己的开关关掉就不可用');
+  const noKey = structuredClone(DEFAULT_CONFIG);
+  assert.equal(asrAvailable(noKey), false, '没配 key 不注入工具（调用必失败，也防意外计费）');
+});
+
+it('每小时转写次数闸门：到上限就拒绝，跨小时自动重置', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.asr.maxPerHour = 3;
+  setRuntimeConfig(cfg);
+  assert.equal(asrMaxPerHour(cfg), 3);
+  resetAsrQuota();
+  const base = 1_790_000_000_000; // 固定时刻，避免跨真实小时边界
+  assert.deepEqual(
+    [consumeAsrQuota(base, cfg), consumeAsrQuota(base, cfg), consumeAsrQuota(base, cfg), consumeAsrQuota(base, cfg)],
+    [true, true, true, false],
+    '第 4 次应被拒'
+  );
+  assert.equal(consumeAsrQuota(base + 3600_000, cfg), true, '下一个小时恢复额度');
+  resetAsrQuota();
+});
+
+it('坏值兜底：maxPerHour 非正数/离谱值都收敛到 12 / 200 上限', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.asr.maxPerHour = 0;
+  assert.equal(asrMaxPerHour(cfg), 12);
+  cfg.asr.maxPerHour = -5;
+  assert.equal(asrMaxPerHour(cfg), 12);
+  cfg.asr.maxPerHour = 9999;
+  assert.equal(asrMaxPerHour(cfg), 200);
 });

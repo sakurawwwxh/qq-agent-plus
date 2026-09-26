@@ -682,6 +682,41 @@ describe('Orchestrator', () => {
     assert.equal([...system.matchAll(/stickerId：/g)].length, 10, '条数按配置取满');
   });
 
+  it('get_message_audio 只在 ASR 开关打开且配了 key 时注入（与搜索开关解耦）', async (t) => {
+    const { cfg, runner, append } = fixture(t);
+    const bodies = [];
+    globalThis.fetch = async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+    const hasAudioTool = (body) => body.tools.some((tool) => tool.function.name === 'get_message_audio');
+    // 1) 没配 key：不注入（调用必失败，也防意外计费）
+    append(1, '在吗', '42');
+    await runner.wake('group:1');
+    assert.equal(hasAudioTool(bodies.at(-1)), false, '没 key 不该注入 ASR 工具');
+    // 2) 有 key 且开关默认打开：注入，提示词同步换成"可以转文字"的口径
+    cfg.webSearch.doubao.apiKey = 'test-key';
+    setRuntimeConfig(cfg);
+    append(2, '在吗', '42');
+    await runner.wake('group:1');
+    assert.equal(hasAudioTool(bodies.at(-1)), true, '配了 key 应注入');
+    assert.match(bodies.at(-1).messages[0].content, /get_message_audio/);
+    // 3) 关掉联网搜索但 ASR 开关仍开着：语音转写不该跟着消失（审查意见）
+    cfg.webSearch.enabled = false;
+    setRuntimeConfig(cfg);
+    append(3, '在吗', '42');
+    await runner.wake('group:1');
+    assert.equal(hasAudioTool(bodies.at(-1)), true, '关搜索不该顺带关掉语音转写');
+    // 4) ASR 自己的开关关掉：工具与提示词引导一起消失
+    cfg.asr.enabled = false;
+    setRuntimeConfig(cfg);
+    append(4, '在吗', '42');
+    await runner.wake('group:1');
+    assert.equal(hasAudioTool(bodies.at(-1)), false);
+    assert.doesNotMatch(bodies.at(-1).messages[0].content, /get_message_audio/);
+    assert.match(bodies.at(-1).messages[0].content, /无法处理语音\/视频\/音频文件/);
+  });
+
   it('keeps slang injection retired even with legacy config and slang assets', async (t) => {
     // 黑话研究已下线（stable-feature-policy: slangPilot=false）：即使旧配置里
     // enabled=true、磁盘上还有 slang.json，提示词也不应再注入任何黑话段落，

@@ -138,6 +138,21 @@ export function incidentPilotEnabled() {
   return true;
 }
 
+/**
+ * 语音转文字（ASR）是否可用：自己的开关打开，且配了 key（复用豆包 Agent Plan 的 key）。
+ * 与「联网搜索」开关**相互独立** —— 关掉搜索不该顺带把语音转写一起关掉，反之亦然。
+ * 这个条件有两处用（工具注入、提示词口径），收敛在这里，别各写一份。
+ */
+export function asrAvailable(cfg = getConfig()) {
+  return cfg?.asr?.enabled !== false && String(cfg?.webSearch?.doubao?.apiKey || '').trim() !== '';
+}
+
+/** 每小时最多转写几次（按量计费服务的硬闸门）。 */
+export function asrMaxPerHour(cfg = getConfig()) {
+  const n = Number(cfg?.asr?.maxPerHour);
+  return Number.isFinite(n) && n > 0 ? Math.min(200, Math.round(n)) : 12;
+}
+
 export function updateConfig(patch) {
   const current = stabilize(legacy.getConfig());
   const rawPatch = structuredClone(

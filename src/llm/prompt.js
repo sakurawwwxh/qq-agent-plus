@@ -10,7 +10,7 @@
 // 行为规则全部移植自 qq-bridge 的二代仿真 preset（qq-chat-v2），去掉了
 // 沉睡/唤醒/等待机制（由编排器的"已读/未读驱动"取代）。
 
-import { getConfig } from '../core/config.js';
+import { asrAvailable, getConfig } from '../core/config.js';
 import { cappedByTokenSaver, tokenSaverCapsOf } from '../core/token-saver.js';
 // 滑条换算放在独立模块（零依赖），避免 config.js ↔ prompt.js 循环依赖。
 // 这里 re-export 是为了让已经从 prompt.js 引用的代码不受影响。
@@ -255,13 +255,14 @@ function qqSceneRules(grounded = false) {
   } else {
     lines.push('- 你没有联网能力：遇到不了解的新梗/实时话题，坦白说不知道或含糊带过，不要编造。');
   }
-  const asr = String(cfg.webSearch?.doubao?.apiKey || '').trim() !== '' && cfg.webSearch?.enabled !== false;
+  // 与「联网搜索」开关解耦：ASR 有自己的开关（asr.enabled），条件收敛在 config.asrAvailable
+  const asr = asrAvailable(cfg);
   if (asr) {
     lines.push('- 消息里的 [语音] [视频] [文件…m4a|mp3|mp4 等音视频文件] 可以用 get_message_audio + 那条消息前的 #数字 转成文字（自动语音识别，视频只取音轨）；转写失败就老实说处理不了，不要编造音频内容。');
   } else {
-    lines.push('- 你无法处理语音/视频/音频文件：消息里的 [语音] [视频] 只是占位提示，如实话一句"这边听不了语音"即可，不要编造音频内容。');
+    lines.push('- 你无法处理语音/视频/音频文件：消息里的 [语音] [视频] [文件…m4a|mp3|mp4 等] 只是占位提示，如实话一句"这边听不了语音"即可，不要编造音频内容。');
   }
-  lines.push('[卡片消息] 是占位符无法查看；[合并转发聊天记录] / [转发消息 …] 用 read_forward 工具 + 那条消息前的 #数字 展开看全文。');
+  lines.push('- [卡片消息] 是占位符无法查看；[合并转发聊天记录] / [转发消息 …] 用 read_forward 工具 + 那条消息前的 #数字 展开看全文。');
   return lines.join('\n');
 }
 
