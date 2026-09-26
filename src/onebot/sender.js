@@ -75,9 +75,10 @@ export class SendQueue {
         const shut = Number(info?.shut_up_timestamp || 0);
         if (shut > now / 1000) { entry.muted = true; entry.untilTs = shut * 1000; }
       } else {
-        // 拿不到自身 uin 时退查全员禁言标志
+        // 拿不到自身 uin 时退查全员禁言标志：group_all_shut 同样是禁言截止的 epoch 秒（0 = 未禁言）
         const info = await this.onebot.getGroupInfo(groupId);
-        if (Number(info?.group_all_shut || 0) > 0) entry.muted = true;
+        const shut = Number(info?.group_all_shut || 0);
+        if (shut > now / 1000) { entry.muted = true; entry.untilTs = shut * 1000; }
       }
     } catch { /* 查询失败不能阻塞正常发送 */ }
     this.#muteCache.set(chatKey, entry);
