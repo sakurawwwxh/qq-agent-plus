@@ -23,6 +23,15 @@ jobs:
       - name: 安装依赖
         run: npm ci --no-audit --no-fund
 
+      # runner 镜像里没有 ffmpeg，而 GIF 帧条与语音转码的用例依赖它：缺了会被显式跳过，
+      # 于是"CI 绿"覆盖不到这两条链路（2026-09-26 实测：新用例在缺 ffmpeg 时断言失败）。
+      # 装发行版包（不引第三方 action），顺便多验证一个 ffmpeg 版本（生产是 4.4.2）。
+      - name: 安装 ffmpeg（GIF 帧条 / 音频转码用例依赖）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -n 1
+
       - name: 语法检查（src / scripts / test / ui，递归）
         run: |
           set -e

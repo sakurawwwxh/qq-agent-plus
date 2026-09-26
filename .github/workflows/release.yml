@@ -24,6 +24,12 @@ jobs:
 
       # 发布前再跑一遍与 CI 相同的检查，任何一步失败都不会出 Release
       - run: npm ci
+      # 与 ci.yml 同步：runner 没有 ffmpeg，缺了会让 GIF 帧条与语音转码的用例静默跳过
+      - name: 安装 ffmpeg（GIF 帧条 / 音频转码用例依赖）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -n 1
       - name: 语法检查（src / scripts / test / ui，递归）
         run: |
           set -e
