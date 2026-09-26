@@ -6569,6 +6569,10 @@ function renderAsrSection(c) {
   const keyReady = c.asr?.hasApiKey === true;
   const openaiReady = String(c.asr?.baseUrl || '').trim() !== '' && String(c.asr?.model || '').trim() !== '';
   const localReady = Boolean(String(c.asr?.localModel || '').trim());
+  // "装好了没"用服务端校验过的字段；没有该字段（老载荷/渲染测试）时退回"两个路径都解析出来了"
+  const localInstalled = typeof c.asr?.localInstalled === 'boolean'
+    ? c.asr.localInstalled
+    : (Boolean(c.asr?.localBinResolved) && Boolean(c.asr?.localModelResolved));
   const ready = typeof c.asr?.available === 'boolean'
     ? c.asr.available                                   // 服务端权威结论：开关 + 配齐，两者都算
     : (c.asr?.enabled !== false
@@ -6609,18 +6613,20 @@ function renderAsrSection(c) {
     <h3 id="settings-asr">语音转文字</h3>
     <div class="hint" style="margin-bottom:10px">
       把消息里的语音、音频文件、视频音轨转成文字再交给聊天模型 —— 与模型是否多模态无关。
-      识别服务与「搜索服务」<strong>各自独立</strong>，不必是同一家、也不必是同一个账号。
+      两种用法二选一：<strong>免费的本机转写</strong>（在这台机器上跑，零 Key、音频不出机器，
+      点下面的按钮就能装）或<strong>用 API Key 的托管服务</strong>（更快，按量计费）。
+      识别服务与「搜索服务」各自独立，不必是同一家、也不必是同一个账号。
     </div>
 
     <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
       <label for="cfg-asr">启用语音转文字</label></div>
 
     <div class="field">
-      <label for="cfg-asr-provider">识别服务</label>
+      <label for="cfg-asr-provider">用哪种方式</label>
       <select id="cfg-asr-provider">
-        <option value="volc" ${provider === 'volc' ? 'selected' : ''}>火山引擎 · 大模型录音识别（Seed-ASR，按量计费）</option>
-        <option value="openai" ${provider === 'openai' ? 'selected' : ''}>OpenAI 兼容服务（Groq / 硅基流动 / 自建…）</option>
-        <option value="local" ${provider === 'local' ? 'selected' : ''}>本机 whisper.cpp（不联网、不要 Key）</option>
+        <option value="local" ${provider === 'local' ? 'selected' : ''}>免费 · 本机转写（whisper.cpp，不联网、不要 Key）</option>
+        <option value="volc" ${provider === 'volc' ? 'selected' : ''}>API Key · 火山引擎大模型录音识别（Seed-ASR，按量计费）</option>
+        <option value="openai" ${provider === 'openai' ? 'selected' : ''}>API Key · OpenAI 兼容服务（Groq / 硅基流动 / 自建…）</option>
       </select>
       <div class="hint" id="cfg-asr-provider-hint">${providerHint}</div>
     </div>
@@ -6646,6 +6652,13 @@ function renderAsrSection(c) {
     <div class="hint" id="cfg-asr-local-resolved">
       当前会自动用：<code>${esc(c.asr?.localBinResolved || '（还没找到可执行文件）')}</code>
       ＋ <code>${esc(c.asr?.localModelResolved || '（还没找到模型文件）')}</code>
+    </div>
+    <div class="field" id="asr-install-field">
+      <button class="btn btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
+      <span id="asr-install-hint" class="muted">${localInstalled
+        ? '已装好，无需再装。换模型可以重跑安装并选 tiny / base / small。'
+        : '约 466MB（small 模型）+ 几分钟构建；装完自动生效，不用重启。也可以改用上面两种 API Key 服务。'}</span>
+      <div id="asr-install-progress" class="hint" style="display:none"></div>
     </div>
 
     <div class="field" id="asr-key-field" style="${provider === 'local' ? 'display:none' : ''}">
@@ -9205,6 +9218,49 @@ function bindSettingsEvents(c) {
     };
     if (provSel) provSel.addEventListener('change', syncAsrFields);
     syncAsrFields();
+    // 「安装本机转写」：POST 起安装，然后轮询状态把进度写到那块 hint 里
+    const installBtn = $('#asr-install-btn');
+    if (installBtn) installBtn.addEventListener('click', async () => {
+      const box = $('#asr-install-progress');
+      const hint = $('#asr-install-hint');
+      const paint = (st) => {
+        if (!box) return;
+        box.style.display = '';
+        if (st.running) {
+          const pct = st.percent != null ? ` ${st.percent}%` : '';
+          box.textContent = `安装中：${st.phase || '准备中'}${pct}…（日志在下面，装完自动生效）`;
+        }
+      };
+      installBtn.disabled = true;
+      if (hint) hint.textContent = '正在启动安装…';
+      try {
+        await api('/api/asr/install', { method: 'POST' });
+        // 轮询到结束（最多 35 分钟；构建 + 466MB 下载都算上）
+        const deadline = Date.now() + 35 * 60 * 1000;
+        for (;;) {
+          const st = await api('/api/asr/install-status');
+          paint(st);
+          if (!st.running) {
+            if (st.ok) {
+              if (box) box.innerHTML = `安装完成 ✓ 已生效。<br><span class="muted">${esc((st.log || []).slice(-3).join(' / '))}</span>`;
+              if (hint) hint.textContent = '';
+              loadSettings().catch(() => {});   // 重新拉配置：装完的路径要立刻显示出来
+              renderSettings();
+            } else if (box) {
+              box.innerHTML = `安装失败：${esc(st.error || '看上面的输出')}<br><span class="muted">${esc((st.log || []).slice(-4).join(' / '))}</span>`;
+            }
+            break;
+          }
+          if (Date.now() > deadline) { if (box) box.textContent = '等待超时，可刷新页面看最新状态。'; break; }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      } catch (error) {
+        if (box) { box.style.display = ''; box.textContent = `启动失败：${String(error?.message ?? error)}`; }
+      } finally {
+        installBtn.disabled = false;
+      }
+    });
+
     // 选预设 = 帮你把地址与模型填好（仍可手改；改了就显示"自定义"）
     const presetSel = $('#cfg-asr-preset');
     if (presetSel) presetSel.addEventListener('change', () => {

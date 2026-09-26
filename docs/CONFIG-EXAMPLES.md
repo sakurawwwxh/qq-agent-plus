@@ -116,7 +116,7 @@
 
   | provider | 说明 | 需要什么 |
   | --- | --- | --- |
-  | `local`（**默认**） | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 跑一次 `node scripts/install-asr-local.mjs`（自动构建 + 下模型，默认落 `<数据目录>/asr/` 并写回配置），**之后重启一次服务**（或加 `--restart` 让脚本代办）—— 配置只在启动时读一次 |
+  | `local`（**默认**） | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 控制台「设置 → 语音转文字」点「安装本机转写」（推荐，带进度、装完自动生效）；或在服务器上跑 `node scripts/install-asr-local.mjs`，后者**要重启一次服务**（配置只在启动时读一次） |
   | `volc` | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
   | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
 

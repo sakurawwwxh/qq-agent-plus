@@ -898,7 +898,7 @@ try {
     && /<option value="local" selected>/.test(asrSectionHtml)
     && /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
     && /<option value="12" selected>/.test(asrSectionHtml)
-    && asrSectionHtml.includes('识别服务与「搜索服务」<strong>各自独立</strong>')
+    && asrSectionHtml.includes('识别服务与「搜索服务」各自独立')
     && asrSectionHtml.includes('不必是同一家');
   asrDefaultOk ? pass++ : fail++;
   console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
@@ -909,7 +909,7 @@ try {
   const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
   const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
     && noKeyHtml.includes('也不会产生任何调用与费用')
-    && noKeyHtml.includes('与「搜索服务」<strong>各自独立</strong>')
+    && noKeyHtml.includes('识别服务与「搜索服务」各自独立')
     && keyedHtml.includes('已配置好，这项在生效')
     && !keyedHtml.includes('这项不会生效');
   asrKeyStateOk ? pass++ : fail++;
@@ -976,6 +976,21 @@ try {
     && availableHtml.includes('已配置好，这项在生效');
   switchOk ? pass++ : fail++;
   console.log('  ' + (switchOk ? 'OK   ' : 'FAIL ') + '设置页：开关关着时显示"配置齐但不生效"，打开才说在生效');
+
+  // 免费 / API Key 二选一：文案要讲清两种用法，且给出"点一下就装"的入口
+  const notInstalledHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local' } });
+  const installedHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'local', localBinResolved: '/x/whisper-cli', localModelResolved: '/x/ggml-small.bin' }
+  });
+  const choiceOk = notInstalledHtml.includes('两种用法二选一')
+    && notInstalledHtml.includes('免费 · 本机转写') && notInstalledHtml.includes('API Key · 火山引擎')
+    && /id="asr-install-btn"[^>]*>安装本机转写（免费）</.test(notInstalledHtml)
+    && notInstalledHtml.includes('也可以改用上面两种 API Key 服务')
+    // 已装好时按钮改成"重新安装 / 修复"，并说明无需再装
+    && /id="asr-install-btn"[^>]*>重新安装 \/ 修复</.test(installedHtml)
+    && installedHtml.includes('已装好，无需再装');
+  choiceOk ? pass++ : fail++;
+  console.log('  ' + (choiceOk ? 'OK   ' : 'FAIL ') + '设置页：免费/API Key 二选一 + 一键安装入口（已装则显示修复）');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
     && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
     && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');

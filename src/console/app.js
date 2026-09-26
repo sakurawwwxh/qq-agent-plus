@@ -3,9 +3,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
+import { asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
 import { customSearch } from '../llm/web-search.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
@@ -156,10 +157,106 @@ function modelPricesPayload(modelOverride = null) {
   };
 }
 
-export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
+export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstaller = null } = {}) {
   const cfg = getConfig();
   const bus = createEventBus();
   const sseClients = new Set();
+
+  // ── 本机语音转写的安装（控制台里点一下就能装，不用 SSH）────────────────
+  // 状态只留最近一次；日志留尾部若干行给界面显示。装完**在进程内重读配置**——
+  // 配置只在启动时读一次（没有文件监听），不重读的话"装完了却还没生效"。
+  const asrInstall = { running: false, startedAt: 0, finishedAt: 0, ok: false, phase: '', percent: null, log: [], error: '' };
+  const ASR_LOG_MAX = 40;
+  let asrChild = null;
+
+  function asrInstallSnapshot() {
+    return {
+      running: asrInstall.running,
+      installed: Boolean(findWhisperBinSync(getConfig())) && String(asrLocalModel(getConfig())) !== ''
+        && (() => { try { return fs.existsSync(asrLocalModel(getConfig())); } catch { return false; } })(),
+      phase: asrInstall.phase,
+      percent: asrInstall.percent,
+      ok: asrInstall.ok,
+      error: asrInstall.error,
+      startedAt: asrInstall.startedAt || null,
+      finishedAt: asrInstall.finishedAt || null,
+      log: asrInstall.log.slice(-ASR_LOG_MAX),
+      resolved: { bin: asrLocalBin(getConfig()), model: asrLocalModel(getConfig()) }
+    };
+  }
+
+  function startAsrInstall() {
+    if (asrInstall.running) throw new Error('已经有一个安装在进行中，等它跑完再点');
+    const script = asrInstaller || path.join(ROOT, 'scripts', 'install-asr-local.mjs');
+    if (!fs.existsSync(script)) throw new Error(`找不到安装脚本：${script}`);
+    Object.assign(asrInstall, { running: true, startedAt: Date.now(), finishedAt: 0, ok: false, phase: '启动中', percent: null, log: [], error: '' });
+
+    // --no-write-config：写回由控制台自己做（能顺带刷新进程内配置），避免两边各写一次
+    const child = spawn(process.execPath, [script, '--data-dir', DATA_DIR, '--no-write-config'], {
+      cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: true
+    });
+    asrChild = child;
+    // 进度行以回车刷新：拆行用的分隔集合在运行时构造，避免字面量转义被工具链改写
+    const ASR_LINE_SEP = new RegExp('[' + String.fromCharCode(13, 10) + ']+');
+    const pushLine = (line) => {
+      const text = String(line || '').trim();
+      if (!text) return;
+      asrInstall.log.push(text);
+      if (asrInstall.log.length > 200) asrInstall.log.shift();
+      if (/拉取|构建|下载模型|源码已在|二进制已存在/.test(text)) asrInstall.phase = text.replace(/^[· ]+/, '').slice(0, 60);
+      const pct = /([0-9]+(?:\.[0-9]+)?)%/.exec(text);
+      if (pct) asrInstall.percent = Number(pct[1]);
+    };
+    const onData = (buf) => {
+      // 进度行用回车刷新，先按回车/换行拆开再逐行记（分隔符运行时构造，避免字面量里的转义被工具链吞掉）
+      for (const line of String(buf).split(ASR_LINE_SEP)) pushLine(line);
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    const finish = (ok, error) => {
+      // 必须是"这一轮"的 child 才能改状态：被超时杀掉的包装进程，它 spawnSync 出来的
+      // git/cmake 还活着并握着管道，旧 child 的 close 可能晚到很久（甚至等到下一轮已经开始），
+      // 那时清 running 就会把新一轮的守卫抹掉 → 允许并发安装、界面误报失败（2026-09-26 审查）。
+      if (child !== asrChild) return;
+      if (!asrInstall.running) return;
+      asrInstall.running = false;
+      asrInstall.finishedAt = Date.now();
+      asrInstall.ok = ok;
+      asrInstall.error = ok ? '' : String(error || '安装失败，看上面的输出').slice(0, 500);
+      asrInstall.phase = ok ? '完成' : '失败';
+      asrChild = null;
+      if (ok) {
+        // 装完把解析出来的路径写进配置（同时刷新进程内配置，不用重启）
+        try {
+          updateConfig({ asr: { enabled: getConfig().asr?.enabled !== false, provider: 'local', localBin: asrLocalBin(getConfig()), localModel: asrLocalModel(getConfig()) } });
+          emit('chat-update', '*');
+        } catch (e) {
+          // 写配置失败就**不能**报成功：界面会说"已生效"，而实际 available 仍是 false
+          asrInstall.ok = false;
+          asrInstall.phase = '失败';
+          asrInstall.error = `安装成功但写配置失败：${String(e?.message ?? e)}`;
+        }
+      }
+    };
+    const killTree = () => {
+      // detached 起的新进程组：连 cmake/make 一起杀，别留下占着管道与构建目录的孤儿
+      try { process.kill(-child.pid, 'SIGKILL'); return; } catch { /* 平台不支持按组杀（如 Windows） */ }
+      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+    };
+    const timer = setTimeout(() => {
+      killTree();
+      pushLine('安装超时（30 分钟），已中止');
+      finish(false, '安装超时');
+    }, 30 * 60 * 1000);
+    timer.unref?.();
+    child.on('error', (e) => { clearTimeout(timer); finish(false, `启动安装脚本失败：${e.message}`); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) finish(true);
+      else finish(false, `安装脚本退出码 ${code}`);
+    });
+    return asrInstallSnapshot();
+  }
 
   const emit = (type, payload) => {
     bus.emit(type, payload);
@@ -1784,6 +1881,20 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
         return json(res, 200, { apiKey: String(getConfig().webSearch?.[field]?.apiKey || '') });
       }
 
+      // 本机语音转写：状态查询与"点一下安装"（只有控制台来源放行；不擅自重启服务）
+      if (pathname === '/api/asr/install-status' && method === 'GET') {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
+        return json(res, 200, asrInstallSnapshot());
+      }
+      if (pathname === '/api/asr/install' && method === 'POST') {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
+        try {
+          return json(res, 202, startAsrInstall());
+        } catch (error) {
+          return json(res, 409, { error: String(error?.message ?? error) });
+        }
+      }
+
       // 语音转写的 Key 明文回读：与 /api/search-key 同款（只有控制台来源放行）。
       if (pathname === '/api/asr-key' && method === 'GET') {
         if (!keyEndpointAllowed(req)) {
@@ -2057,7 +2168,12 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
           keyProvider: String(cfgNow.asr?.apiKeyProvider || ''),
           // 本机转写用哪个二进制/模型（配置>环境变量>自动找到）——让"装没装、会用哪个"看得见
           localBinResolved: asrLocalBin(cfgNow),
-          localModelResolved: asrLocalModel(cfgNow)
+          localModelResolved: asrLocalModel(cfgNow),
+          // "装好了没"要真去验：配置里写得再像也不等于文件在（审查意见）。
+          // 界面拿这个决定按钮文案，跟 asrAvailable() 的口径保持一致。
+          localInstalled: Boolean(findWhisperBinSync(cfgNow))
+            && String(asrLocalModel(cfgNow)) !== ''
+            && (() => { try { return fs.existsSync(asrLocalModel(cfgNow)); } catch { return false; } })()
         };
         return json(res, 200, safe);
       }
@@ -3211,6 +3327,9 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
   }
 
   async function stop() {
+    // 安装脚本别被落下：进程重启/停服时它是孤儿进程，会一直占着构建目录
+    try { asrChild?.kill('SIGKILL'); } catch { /* 已退出 */ }
+    asrChild = null;
     clearTimeout(timeControlTimer);
     releaseTimeControl();
     dailyMoments.stop();

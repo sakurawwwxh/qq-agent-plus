@@ -35,7 +35,8 @@ QQ Agent Plus 是面向 Linux 服务器的 QQ 群聊 Agent。它连接外部 One
   间隔护栏，跳过原因日志，重启后补齐漏收消息。
 - **模型接入**：按用途控制思考模式，服务商审核拦截重试，兜底模型切换。
 - **语音转文字**：语音/音频文件/视频音轨转成文字再交给聊天模型（与模型是否多模态无关）。
-  默认走**本机 whisper.cpp**（零 Key、离线、免费，一条命令装好：`node scripts/install-asr-local.mjs`，装完重启一次服务），
+  默认走**本机 whisper.cpp**（零 Key、离线、免费；控制台里点一下就能装，或跑
+  `node scripts/install-asr-local.mjs`），
   想更快或机器太弱可切到火山 Seed-ASR / 任意 OpenAI 兼容服务（含免费额度的几家），Key 与搜索的分开配。
   带每小时次数闸门。群禁言时会直接报因、不再硬发。
 
