@@ -931,7 +931,7 @@ try {
     && /<option value="siliconflow"/.test(apiModeHtml) && /<option value="groq"/.test(apiModeHtml)
     && /<option value="openai"/.test(apiModeHtml) && /<option value="custom"/.test(apiModeHtml)
     && apiModeHtml.includes('id="asr-fetch-models-btn"') && apiModeHtml.includes('从服务商官网拉')
-    && /id="asr-openai-fields" style=""/.test(apiModeHtml)          // OpenAI 兼容：显示地址与模型
+    && /id="asr-openai-fields" style="align-items:start"/.test(apiModeHtml) // OpenAI 兼容：显示地址与模型（顶端对齐，见下）
     && /id="asr-openai-fields" style="display:none"/.test(volcModeHtml)  // 火山：走自己的协议，不显示
     && apiModeHtml.includes('id="cfg-asr-model-pick"');
   serviceOk ? pass++ : fail++;
@@ -957,8 +957,10 @@ try {
     && iflytekHtml.includes('APISecret（讯飞）')
     && /id="asr-key-field" style=""/.test(baiduHtml) && /id="asr-secretkey-field" style=""/.test(baiduHtml)
     && baiduHtml.includes('Secret Key（百度老式鉴权才需要）')
-    // 阿里：要地址与模型（有默认值），所以模型行与拉取按钮在
-    && /id="asr-openai-fields" style=""/.test(aliyunHtml) && /id="asr-fetch-models-btn"/.test(aliyunHtml)
+    // 阿里：要地址与模型（有默认值），所以模型行与拉取按钮在。
+    // align-items:start 是必须的：.field-row 默认 end（底部对齐），模型格拉出列表后
+    // 会把左边的服务地址框一起压下去（用户 2026-09-26 反馈的"选模型时地址框往下移"）。
+    && /id="asr-openai-fields" style="align-items:start"/.test(aliyunHtml) && /id="asr-fetch-models-btn"/.test(aliyunHtml)
     // 讯飞/腾讯/百度没有地址与模型
     && /id="asr-openai-fields" style="display:none"/.test(iflytekHtml)
     && /id="asr-openai-fields" style="display:none"/.test(tencentHtml)

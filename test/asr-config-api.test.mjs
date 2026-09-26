@@ -186,3 +186,53 @@ test('这家全是 LLM 时退回全量并说明（不让人以为"拉不到"）'
   assert.equal(body.speechOnly, false);
   assert.deepEqual(body.models, ['deepseek-chat', 'gpt-4o-mini'], '认不出语音模型时退回全量');
 });
+
+test('语音模型筛选：名字里没有 asr 的转写模型也要留下，TTS 排除并如实回报', async (t) => {
+  // 用户 2026-09-26 反馈"硅基流动明明有 8 个语音模型，列表只给 5 个"：
+  // 漏掉的是 XingChenGSR（语音识别，名字里没有 asr），另外 2 个是文字转语音（不该进转写列表）。
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    // 照硅基流动当天的真实数据来：98 个模型里语音相关正好 8 个（6 个转写 + 2 个语音合成）
+    res.end(JSON.stringify({ data: [
+      { id: 'deepseek-ai/DeepSeek-V3' },
+      { id: 'FunAudioLLM/SenseVoiceSmall' },
+      { id: 'Qwen/Qwen3-ASR-1.7B' },
+      { id: 'XingChenAGI/XingChenASR-V3.2' },
+      { id: 'XingChenAGI/XingChenASR-V3.2-Ultra' },
+      { id: 'XingChenAGI/XingChenASR-Diarize-V3.0' },
+      { id: 'XingChenAGI/XingChenGSR-V1.0' },
+      { id: 'FunAudioLLM/CosyVoice2-0.5B' },
+      { id: 'fnlp/MOSS-TTSD-v0.5' },
+      { id: 'zai-org/GLM-5.3' }
+    ] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const providerPort = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'observe';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  cfg.asr = { ...cfg.asr, provider: 'openai', baseUrl: `http://127.0.0.1:${providerPort}/v1`, apiKey: 'k', apiKeyProvider: 'openai' };
+  updateConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await app.start();
+  const response = await fetch(`http://127.0.0.1:${port}/api/asr/models`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({})
+  });
+  const body = await response.json();
+  assert.equal(body.speechOnly, true);
+  assert.ok(body.models.includes('XingChenAGI/XingChenGSR-V1.0'), 'GSR 是语音识别，不该因为名字里没有 asr 就漏掉');
+  assert.equal(body.models.includes('FunAudioLLM/CosyVoice2-0.5B'), false, 'TTS 不该进转写列表');
+  assert.equal(body.speechCount, 6, '6 个转写类都要在（含名字里没有 asr 的那一个）');
+  assert.equal(body.ttsCount, 2, '被排除的 TTS 要如实回报，界面才能解释"少的是哪几个"');
+  assert.deepEqual([...body.ttsSample].sort(), ['FunAudioLLM/CosyVoice2-0.5B', 'fnlp/MOSS-TTSD-v0.5']);
+  assert.equal(body.total, 10);
+});

@@ -2011,10 +2011,14 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
           const all = await fetchModelsFrom(baseUrl, apiKey);
           // 用户要求：只取语音模型。列表里通常混着几百个 LLM，全给出来等于找不到东西。
           // 正向：转写类（whisper / sensevoice / ASR / speech-to-text / 转写…）。
+          //   ⚠️ 关键词表必然不完备：硅基流动的 XingChenGSR 是语音识别，名字里却没有 asr
+          //   （用户 2026-09-26 反馈"明明有 8 个只给 5 个"）。所以除了补关键词，
+          //   还要把"被排除的 TTS"如实回报给界面 —— 用户能看出少的是哪几个、为什么少。
+          const isAsrModel = (id) => /whisper|sensevoice|teleasr|funaudio|asr|gsr|paraformer|transcri|transcribe|audio.?to.?text|speech.?to.?text|recogni|stt|speech/i.test(id);
           // 反向：TTS（文字转语音）不是我们要的 —— 把 CosyVoice、tts-1、voice-clone 之类列进来只会误导。
-          const isAsrModel = (id) => /whisper|sensevoice|teleasr|funaudio|asr|transcri|transcribe|speech.?to.?text|stt|speech/i.test(id);
           const isTtsModel = (id) => /tts|text.?to.?speech|cosyvoice|voice.?clone|voice.?design|speech.?synth|music|sing/i.test(id);
           const speech = all.filter((id) => isAsrModel(id) && !isTtsModel(id)).sort((a, b) => a.localeCompare(b));
+          const tts = all.filter((id) => isTtsModel(id)).sort((a, b) => a.localeCompare(b));
           // 一家都没认出来时退回全量（宁可给多，也别让人以为"拉不到"），并如实说明
           const models = speech.length ? speech : [...all].sort((a, b) => a.localeCompare(b));
           return json(res, 200, {
@@ -2022,6 +2026,9 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
             models,
             speechOnly: speech.length > 0,
             speechCount: speech.length,
+            // 被排除的语音合成模型：界面据此说明"少的那几个是什么"（只给前 3 个名字，别把提示撑满）
+            ttsCount: tts.length,
+            ttsSample: tts.slice(0, 3),
             total: all.length
           });
         } catch (error) {

@@ -6673,7 +6673,7 @@ function renderAsrSection(c) {
           免费的推荐硅基流动（国内可直连）或 Groq（有免费额度）；火山走它自己的协议。
         </div>
       </div>
-      <div class="field-row" id="asr-openai-fields" style="${needsBaseUrl ? '' : 'display:none'}">
+      <div class="field-row" id="asr-openai-fields" style="${needsBaseUrl ? 'align-items:start' : 'display:none'}">
         <div class="field"><label for="cfg-asr-baseurl">服务地址（到 /v1 那层）</label>
           <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.siliconflow.cn/v1" /></div>
         <div class="field"><label for="cfg-asr-model">模型</label>
@@ -9373,8 +9373,12 @@ function bindSettingsEvents(c) {
           pick.onchange = () => { const field = $('#cfg-asr-model'); if (field && pick.value) field.value = pick.value; };
         }
         if (hintEl) {
+          // 被排除的语音合成（TTS）要说出来：否则用户对着官网的"语音"分类数数，会觉得我们漏了
+          const ttsNote = res.ttsCount
+            ? ` 另有 ${res.ttsCount} 个是文字转语音的（${(res.ttsSample || []).join('、')}${res.ttsCount > (res.ttsSample || []).length ? ' 等' : ''}）—— 它们不能转写，已排除。`
+            : '';
           hintEl.textContent = res.speechOnly
-            ? `这家有 ${res.speechCount} 个语音模型（共 ${res.total} 个模型）：${models.slice(0, 8).join('、')}${models.length > 8 ? ' …' : ''}。选一个即填入上面的模型框。`
+            ? `这家有 ${res.speechCount} 个可转写的语音模型（共 ${res.total} 个模型）：${models.slice(0, 8).join('、')}${models.length > 8 ? ' …' : ''}。选一个即填入上面的模型框。${ttsNote}`
             : `这家没认出语音模型（共 ${res.total} 个），已把全部列出来；挑一个能转写的填进去，或直接手填模型名。`;
         }
       } catch (error) {
