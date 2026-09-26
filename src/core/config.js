@@ -139,12 +139,21 @@ export function incidentPilotEnabled() {
 }
 
 /**
- * 语音转文字（ASR）是否可用：自己的开关打开，且配了 key（复用豆包 Agent Plan 的 key）。
- * 与「联网搜索」开关**相互独立** —— 关掉搜索不该顺带把语音转写一起关掉，反之亦然。
+ * 语音转文字用的 API Key：只认自己的（`asr.apiKey`，留空回退环境变量 ASR_API_KEY）。
+ * ⚠️ 故意**不**回退到「搜索服务」的豆包 Key：搜索走方舟、转写走 openspeech，
+ * 是两套服务，耦合会让"配没配搜索 Key"决定"能不能转写"（用户明确要求分开）。
+ */
+export function asrApiKey(cfg = getConfig()) {
+  return String(cfg?.asr?.apiKey || '').trim() || String(process.env.ASR_API_KEY || '').trim();
+}
+
+/**
+ * 语音转文字（ASR）是否可用：自己的开关打开，且配了自己的 Key。
+ * 与「联网搜索」开关**相互独立** —— 关掉搜索不该把语音转写一起关掉，反之亦然。
  * 这个条件有两处用（工具注入、提示词口径），收敛在这里，别各写一份。
  */
 export function asrAvailable(cfg = getConfig()) {
-  return cfg?.asr?.enabled !== false && String(cfg?.webSearch?.doubao?.apiKey || '').trim() !== '';
+  return cfg?.asr?.enabled !== false && asrApiKey(cfg) !== '';
 }
 
 /** 每小时最多转写几次（按量计费服务的硬闸门）。 */

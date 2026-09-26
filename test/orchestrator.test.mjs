@@ -695,7 +695,7 @@ describe('Orchestrator', () => {
     await runner.wake('group:1');
     assert.equal(hasAudioTool(bodies.at(-1)), false, '没 key 不该注入 ASR 工具');
     // 2) 有 key 且开关默认打开：注入，提示词同步换成"可以转文字"的口径
-    cfg.webSearch.doubao.apiKey = 'test-key';
+    cfg.asr.apiKey = 'test-asr-key';
     setRuntimeConfig(cfg);
     append(2, '在吗', '42');
     await runner.wake('group:1');

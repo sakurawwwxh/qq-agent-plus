@@ -84,18 +84,25 @@ it('ffmpegToPcm 无效输入报错而不是挂起', { skip: FFMPEG_SKIP }, async
 
 // ── 合并后的跟进（2026-09-26 审查）──
 
-it('ASR 的可用条件与「联网搜索」开关解耦', () => {
+it('ASR 用自己的 Key，且与「联网搜索」开关解耦', () => {
   const withKey = structuredClone(DEFAULT_CONFIG);
-  withKey.webSearch.doubao.apiKey = 'test-key';
-  assert.equal(asrAvailable(withKey), true, '有 key + 开关默认开 → 可用');
+  withKey.asr.apiKey = 'test-asr-key';
+  assert.equal(asrAvailable(withKey), true, '自己的 Key + 开关默认开 → 可用');
   const searchOff = structuredClone(withKey);
   searchOff.webSearch.enabled = false;
   assert.equal(asrAvailable(searchOff), true, '关掉联网搜索不该顺带关掉语音转写');
   const asrOff = structuredClone(withKey);
   asrOff.asr.enabled = false;
   assert.equal(asrAvailable(asrOff), false, '自己的开关关掉就不可用');
-  const noKey = structuredClone(DEFAULT_CONFIG);
-  assert.equal(asrAvailable(noKey), false, '没配 key 不注入工具（调用必失败，也防意外计费）');
+  assert.equal(asrAvailable(structuredClone(DEFAULT_CONFIG)), false, '没配 Key 不注入工具（调用必失败，也防意外计费）');
+  // 关键回归：只配了搜索 Key 不该开启语音转写（两套服务，不复用）
+  const searchKeyOnly = structuredClone(DEFAULT_CONFIG);
+  searchKeyOnly.webSearch.doubao.apiKey = 'search-key';
+  assert.equal(asrAvailable(searchKeyOnly), false, '搜索 Key 不能当 ASR Key 用');
+  const searchOffOnly = structuredClone(DEFAULT_CONFIG);
+  searchOffOnly.webSearch.doubao.apiKey = 'search-key';
+  searchOffOnly.asr.apiKey = 'asr-key';
+  assert.equal(asrAvailable(searchOffOnly), true, 'ASR 有自己的 Key 时不受搜索 Key 影响');
 });
 
 it('每小时转写次数闸门：到上限就拒绝，跨小时自动重置', () => {

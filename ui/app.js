@@ -8706,14 +8706,25 @@ return `
     <div class="checkbox-row"><input type="checkbox" id="cfg-asr" ${c.asr?.enabled !== false ? 'checked' : ''} />
       <label for="cfg-asr">启用语音转文字（语音/视频里的音轨 → 文字）</label></div>
     <div class="field">
+      <label for="cfg-asr-key">语音识别 API Key（留空用环境变量 ASR_API_KEY）</label>
+      <div style="display:flex;gap:8px">
+        <input type="password" id="cfg-asr-key" value="${esc(c.asr?.hasApiKey ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
+        <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
+      </div>
+      <div class="hint">
+        ${c.asr?.hasApiKey
+          ? 'Key 已配置。'
+          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。'}
+        这是<strong>语音识别服务</strong>（火山引擎语音技术的大模型录音识别 / Seed-ASR）的 Key，
+        与「搜索服务」里那个<strong>分开配置</strong>：只配搜索 Key 不会开启这项，反之亦然。
+        音频会上传到火山做识别，群友发来的语音因此会离开本机，按量计费。
+      </div>
+    </div>
+    <div class="field">
       <label for="cfg-asr-max">每小时最多转写</label>
       <select id="cfg-asr-max">${asrMaxSelectOptions(c.asr?.maxPerHour)}</select>
       <div class="hint">
-        ${c.webSearch?.doubao?.hasApiKey
-          ? 'Key 已配置（复用「搜索服务 → 豆包」的，火山方舟 Agent Plan，<strong>按量计费</strong>）。'
-          : '<strong>当前没有可用的 Key，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用 —— 表现与没开这项时一样（提示词会照旧说"听不了语音"）。Key 复用「搜索服务 → 豆包」那个，填在那里即可；现在也不必特意把上面的勾去掉。'}
-        音频会上传到火山做识别，群友发来的语音因此会离开本机。这一项与「联网搜索」开关相互独立：
-        关掉搜索不影响语音转写，反之亦然。
+        按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）。这一项与「联网搜索」开关也相互独立。
       </div>
     </div>
 
@@ -9528,7 +9539,8 @@ function bindSettingsEvents(c) {
     ['cfg-bocha-key-toggle', 'cfg-bocha-key'],
     ['cfg-baidu-key-toggle', 'cfg-baidu-key'],
     ['cfg-metaso-key-toggle', 'cfg-metaso-key'],
-    ['cfg-doubao-key-toggle', 'cfg-doubao-key']
+    ['cfg-doubao-key-toggle', 'cfg-doubao-key'],
+    ['cfg-asr-key-toggle', 'cfg-asr-key']
   ];
   for (const [btnId, inputId] of pwdToggles) {
     const btn = $(`#${btnId}`);
@@ -10932,11 +10944,14 @@ async function saveConfig({ quiet = false } = {}) {
       // 下拉只提供 1~60 内的档位；这里的 clampInt 是防手工改 DOM 的兜底（服务端也会再夹一次）
       promptMaxStickers: clampInt(val('#cfg-sticker-max', c.sticker?.promptMaxStickers), 1, 60, 10)
     };
+    // ASR 的 Key 单独配置（不复用搜索那个）：****** = 保持原 Key 不变，明文/新输入才更新
+    const enteredAsrKey = val('#cfg-asr-key', '').trim();
     patch.asr = {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
       // 下拉只提供档位；clampInt 是防手工改 DOM 的兜底（后端 config.asrMaxPerHour 还会再夹一次）
-      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12)
+      maxPerHour: clampInt(val('#cfg-asr-max', c.asr?.maxPerHour), 1, 200, 12),
+      ...(enteredAsrKey && enteredAsrKey !== '******' ? { apiKey: enteredAsrKey } : {})
     };
     // 读取历史档位（替代原来的「最多条数 + 字符预算」两个固定值）
     patch.store = {

@@ -132,11 +132,13 @@ export const DEFAULT_CONFIG = {
     }
   },
   // 语音转文字（ASR，可选）：把语音/视频里的音轨转成文字，任何聊天模型都能用。
-  // key 复用 webSearch.doubao.apiKey（同一个火山方舟 Agent Plan key，按量计费）；
-  // 开关与「联网搜索」相互独立 —— 关搜索不该顺带关掉它，反之亦然。
+  // 走火山语音技术的大模型录音识别（Seed-ASR），**自己的 Key 独立配置**：
+  // 不复用「搜索服务」里那个（搜索走方舟、转写走 openspeech，是两套服务），
+  // 免得"有没有搜索 Key"决定"能不能转写"。留空可回退环境变量 ASR_API_KEY。
   asr: {
     enabled: true,
-    maxPerHour: 12            // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
+    maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
+    apiKey: ''                // 火山语音技术（大模型录音识别）的 API Key
   },
   // 安全例外（默认全部关闭）
   security: {

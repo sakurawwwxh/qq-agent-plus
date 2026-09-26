@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.js';
-import { asrMaxPerHour, getConfig } from '../core/config.js';
+import { asrApiKey, asrMaxPerHour, getConfig } from '../core/config.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -71,12 +71,10 @@ export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = 
 }
 
 function asrKeyOf() {
-  // key 来源：config.webSearch.doubao.apiKey（同一个 ARK Agent Plan key）
-  // config.js 的 getConfig() 是运行时单例，动态 import 拿最新配置
-  return import('../core/config.js').then((m) => {
-    const cfg = m.getConfig();
-    return String(cfg?.webSearch?.doubao?.apiKey || '').trim();
-  }).catch(() => '');
+  // 自己的 Key（asr.apiKey，留空回退 ASR_API_KEY）—— 不再复用「搜索服务」那个：
+  // 搜索走方舟、转写走 openspeech，是两套服务。取配置走 config.js 的共享 helper，
+  // 免得这里和工具注入闸门（asrAvailable）各判一套。
+  return asrApiKey();
 }
 
 /**
@@ -149,7 +147,7 @@ export async function transcribeMessageAudio(ctx, entry) {
     }
     const apiKey = await asrKeyOf();
     if (!apiKey) {
-      return { ok: false, error: '未配置语音识别服务（缺少 ASR API Key），无法转写音频。请管理员在配置中补充 webSearch.doubao.apiKey 或等价 ASR key' };
+      return { ok: false, error: '未配置语音识别服务（缺少 ASR API Key），无法转写音频。请管理员在控制台「聊天设置 → 语音转文字」里填 Key，或设环境变量 ASR_API_KEY' };
     }
     try {
       const text = await seedAsrTranscribe(pcm, { apiKey, signal: ctx.signal });
