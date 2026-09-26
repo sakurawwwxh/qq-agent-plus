@@ -1961,11 +1961,22 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
           const apiKey = (submitted && submitted !== '******')
             ? submitted
             : (target && target === knownBase ? asrApiKey(cfgNow) : '');
-          const models = await fetchModelsFrom(baseUrl, apiKey);
-          // 语音/转写相关的排前面（列表里通常混着几十个 LLM，用户要的是能转写的那些）
-          const isAsr = (id) => /whisper|sensevoice|asr|audio|transcri|speech|teleasr|funaudio/i.test(id);
-          const sorted = [...models].sort((a, b) => (isAsr(b) ? 1 : 0) - (isAsr(a) ? 1 : 0) || a.localeCompare(b));
-          return json(res, 200, { ok: true, models: sorted, asrLikely: sorted.filter(isAsr) });
+          const all = await fetchModelsFrom(baseUrl, apiKey);
+          // 用户要求：只取语音模型。列表里通常混着几百个 LLM，全给出来等于找不到东西。
+          // 正向：转写类（whisper / sensevoice / ASR / speech-to-text / 转写…）。
+          // 反向：TTS（文字转语音）不是我们要的 —— 把 CosyVoice、tts-1、voice-clone 之类列进来只会误导。
+          const isAsrModel = (id) => /whisper|sensevoice|teleasr|funaudio|asr|transcri|transcribe|speech.?to.?text|stt|speech/i.test(id);
+          const isTtsModel = (id) => /tts|text.?to.?speech|cosyvoice|voice.?clone|voice.?design|speech.?synth|music|sing/i.test(id);
+          const speech = all.filter((id) => isAsrModel(id) && !isTtsModel(id)).sort((a, b) => a.localeCompare(b));
+          // 一家都没认出来时退回全量（宁可给多，也别让人以为"拉不到"），并如实说明
+          const models = speech.length ? speech : [...all].sort((a, b) => a.localeCompare(b));
+          return json(res, 200, {
+            ok: true,
+            models,
+            speechOnly: speech.length > 0,
+            speechCount: speech.length,
+            total: all.length
+          });
         } catch (error) {
           return json(res, 502, { ok: false, error: String(error?.message ?? error) });
         }

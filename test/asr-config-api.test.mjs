@@ -103,7 +103,11 @@ test('模型列表从服务商官网拉，且保存的 Key 只发给配置里的
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     return { port: server.address().port, close: () => new Promise((r) => server.close(r)) };
   };
-  const known = await makeProvider(['FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B', 'deepseek-chat']);
+  // 故意混入 TTS 与通用 LLM：只应列出能转写的那些
+  const known = await makeProvider([
+    'FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B', 'deepseek-chat',
+    'FunAudioLLM/CosyVoice2-0.5B', 'tts-1', 'gpt-4o-mini'
+  ]);
   const stranger = await makeProvider(['whisper-large-v3-turbo']);
   t.after(async () => { await known.close(); await stranger.close(); });
 
@@ -131,13 +135,14 @@ test('模型列表从服务商官网拉，且保存的 Key 只发给配置里的
     return { status: response.status, body: await response.json() };
   };
 
-  // ① 已知地址 + 不传 Key → 用保存的 Key；转写相关的模型排前面
+  // ① 已知地址 + 不传 Key → 用保存的 Key；**只返回语音模型**（用户要求：列表里混着几百个 LLM 等于找不到）
   const first = await post({ baseUrl: `http://127.0.0.1:${known.port}/v1` });
   assert.equal(first.status, 200);
   assert.equal(seen[0].auth, 'Bearer saved-asr-key', '已知地址才用保存的 Key');
-  assert.deepEqual(first.body.asrLikely.slice().sort(),
-    ['FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B'], '能转写的模型被识别出来');
-  assert.equal(first.body.models[0], 'FunAudioLLM/SenseVoiceSmall', '转写模型排最前');
+  assert.equal(first.body.speechOnly, true);
+  assert.deepEqual(first.body.models, ['FunAudioLLM/SenseVoiceSmall', 'Qwen/Qwen3-ASR-1.7B'],
+    '只列能转写的；TTS（CosyVoice2 / tts-1）与通用 LLM 都排除');
+  assert.equal(first.body.total, 6, '同时报告全量条数，便于说明"从 6 个里筛出 2 个"');
 
   // ② 陌生地址 + 不传 Key → **不能**把保存的 Key 发过去
   seen.length = 0;
@@ -149,4 +154,35 @@ test('模型列表从服务商官网拉，且保存的 Key 只发给配置里的
   seen.length = 0;
   await post({ baseUrl: `http://127.0.0.1:${stranger.port}/v1`, apiKey: 'typed-key' });
   assert.equal(seen[0].auth, 'Bearer typed-key');
+});
+
+test('这家全是 LLM 时退回全量并说明（不让人以为"拉不到"）', async (t) => {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'deepseek-chat' }, { id: 'gpt-4o-mini' }] }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const providerPort = server.address().port;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'observe';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  cfg.asr = { ...cfg.asr, provider: 'openai', baseUrl: `http://127.0.0.1:${providerPort}/v1`, apiKey: 'k', apiKeyProvider: 'openai' };
+  updateConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await app.start();
+  const response = await fetch(`http://127.0.0.1:${port}/api/asr/models`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({})
+  });
+  const body = await response.json();
+  assert.equal(body.speechOnly, false);
+  assert.deepEqual(body.models, ['deepseek-chat', 'gpt-4o-mini'], '认不出语音模型时退回全量');
 });
