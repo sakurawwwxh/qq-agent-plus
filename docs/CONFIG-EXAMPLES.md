@@ -101,11 +101,11 @@
 {
   "asr": {
     "enabled": true,
-    "provider": "volc",
-    "maxPerHour": 12,
-    "apiKey": "",
-    "baseUrl": "",
+    "provider": "openai",
+    "baseUrl": "https://api.siliconflow.cn/v1",
     "model": "",
+    "apiKey": "",
+    "maxPerHour": 12,
     "language": "",
     "localBin": "",
     "localModel": ""
@@ -117,15 +117,15 @@
   控制台「设置 → 语音转文字」有同一组开关与字段。
 - 控制台里「用哪种方式」只有两项：**API Key · 托管服务（推荐：更快、不用下模型，硅基流动/Groq 有免费额度）**
   或 **免费 · 本机安装的 Whisper（不联网、不要 Key，转写较慢）**；
-  选了后者再由「服务预设」挑具体哪家（火山引擎 / 硅基流动 / Groq / OpenAI 官方 / 自定义自建）。
+  选了前者再由「服务预设」挑具体哪家（硅基流动 / Groq / 火山引擎 / 阿里云百炼 / 讯飞 / 腾讯云 / 百度 / 自定义自建）。
   模型**从服务商官网拉**（「获取模型列表」按钮打 `{baseUrl}/models`）—— 预设里写死模型名会过时，
   比如硅基流动新上免费模型时，列表跟着官网走才看得到。与「搜索服务」完全独立，不必是同一家、同一个账号：
 
   | provider | 说明 | 需要什么 |
   | --- | --- | --- |
-  | `local`（**默认**） | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 控制台「设置 → 语音转文字」点「安装本机转写」（推荐，带进度、装完自动生效）；装好后旁边有「完全卸载（删除模型与程序）」可释放约 500MB（删托管目录 `<数据目录>/asr` 与配置里指向它的路径；你另外装的 whisper.cpp/模型不会被碰）。或在服务器上跑 `node scripts/install-asr-local.mjs`，后者**要重启一次服务**（配置只在启动时读一次） |
+  | `local` | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 控制台「设置 → 语音转文字」点「安装本机转写」（推荐，带进度、装完自动生效）；装好后旁边有「完全卸载（删除模型与程序）」可释放约 500MB（删托管目录 `<数据目录>/asr` 与配置里指向它的路径；你另外装的 whisper.cpp/模型不会被碰）。或在服务器上跑 `node scripts/install-asr-local.mjs`，后者**要重启一次服务**（配置只在启动时读一次） |
   | `volc` | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
-  | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
+  | `openai`（**默认**） | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions`；默认预置硅基流动的地址（可一键换别家） | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
   | `aliyun` | 阿里云百炼：走它的 OpenAI 兼容 chat 端点 + `input_audio`（默认模型 `qwen3-asr-flash`） | `apiKey`（百炼的 API Key）；地址/模型有默认值，可改 |
   | `baidu` | 百度短语音识别（标准版）：`POST vop.baidu.com/server_api`，JSON 带 base64 音频 | `apiKey`；老的「API Key + Secret Key」还要 `secretKey`（新的 `bce-v3/ALTAK-…` Key 只填 API Key） |
   | `tencent` | 腾讯云**一句话识别**：`POST asr.tencentcloudapi.com`，TC3-HMAC-SHA256 签名 | `secretId` + `secretKey`（访问密钥里的那对，不是 API Key）；地域默认 `ap-guangzhou` |

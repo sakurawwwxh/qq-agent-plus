@@ -151,8 +151,13 @@ export function incidentPilotEnabled() {
  *  iflytek 讯飞语音听写（AppID + APIKey + APISecret，签名 URL + WebSocket）
  */
 export const ASR_PROVIDERS = ['volc', 'openai', 'aliyun', 'baidu', 'tencent', 'iflytek', 'local'];
-/** 没配 provider 时用哪个：本机转写（不需要任何 Key，跟搜索服务的默认一样是"开箱可用"那条）。 */
-export const ASR_DEFAULT_PROVIDER = 'local';
+/**
+ * 没配 provider（或值非法）时用哪个：OpenAI 兼容的托管服务。
+ * 用户 2026-09-26 要求把"用 API Key 的方式"设为默认 —— 默认配置预置硅基流动的地址，
+ * 粘一个 Key + 拉一次模型列表就能用；本机 whisper.cpp（零 Key 但要装 466MB）仍是一等选项，
+ * 只是不再占默认位。
+ */
+export const ASR_DEFAULT_PROVIDER = 'openai';
 export function asrProvider(cfg = getConfig()) {
   const raw = String(cfg?.asr?.provider || '').trim().toLowerCase();
   return ASR_PROVIDERS.includes(raw) ? raw : ASR_DEFAULT_PROVIDER;

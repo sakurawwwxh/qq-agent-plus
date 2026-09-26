@@ -133,16 +133,17 @@ export const DEFAULT_CONFIG = {
   },
   // 语音转文字（ASR，可选）：把语音/视频里的音轨转成文字，任何聊天模型都能用。
   // 供应商可换，与「搜索服务」的 Key/服务完全无关：
-  //   volc   —— 火山引擎语音技术的大模型录音识别（Seed-ASR，走 WebSocket，按量计费）
-  //   openai —— 任意 OpenAI 兼容的转写服务（Groq / SiliconFlow / 自建 faster-whisper 网关…）：
+  //   openai —— **默认**：任意 OpenAI 兼容的转写服务（硅基流动 / Groq / 自建 faster-whisper 网关…）：
   //             填 baseUrl（到 /v1 那层）+ model 即可，不用等我们适配
+  //   volc   —— 火山引擎语音技术的大模型录音识别（Seed-ASR，走 WebSocket，按量计费）
   //   local  —— 本机 whisper.cpp：不联网、不要 Key、音频不出机器，代价是要自己装二进制与模型
   // 不同供应商的 API 不必是同一家，甚至不必是同一个账号。
   asr: {
     enabled: true,
-    // 默认本机 whisper.cpp：不需要任何 Key，装一次模型就能用（scripts/install-asr-local.mjs）。
-    // 想用托管服务把 provider 换成 volc / openai 并填各自的 Key 即可。
-    provider: 'local',
+    // 默认走"API Key 的托管服务"（用户 2026-09-26 要求）：预置推荐的免费服务（硅基流动）地址，
+    // 粘一个 Key、从官网拉一次模型列表就能用；不想注册账号可以切到 local（本机 whisper.cpp，
+    // 控制台里一键装/卸，约 466MB 模型）。地址预置只是默认值，服务预设里一键换别家。
+    provider: 'openai',
     maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
     apiKey: '',               // volc / openai / 百度(API Key) / 讯飞(APIKey) 用；留空回退环境变量 ASR_API_KEY
     apiKeyProvider: '',       // 上面这个 Key 是给哪家存的：换供应商后不再拿它发请求（避免把旧 Key 发给新服务）
@@ -153,7 +154,7 @@ export const DEFAULT_CONFIG = {
     secretIdProvider: '',     // 上面这个 SecretId 是给哪家存的（同 apiKeyProvider 的道理）
     secretKey: '',            // 百度 Secret Key / 腾讯云 SecretKey / 讯飞 APISecret
     secretKeyProvider: '',    // 上面这个 SecretKey 是给哪家存的（三个服务共用这一个字段，不记归属就会串用）
-    baseUrl: '',              // openai 兼容服务地址，例：https://api.groq.com/openai/v1
+    baseUrl: 'https://api.siliconflow.cn/v1',  // 默认预置硅基流动（免费模型，国内可直连）；可换任意兼容服务
     model: '',                // openai 兼容的模型名，例：whisper-large-v3-turbo
     language: '',             // 可选：提示语言（zh / en…），留空由服务自己判
     localBin: '',             // 本机转写可执行文件，留空按 whisper-cli → whisper-cpp → main 找

@@ -3,7 +3,8 @@
 //   node scripts/install-asr-local.mjs --model base    # 小机器/省流量可以退到 base（中文质量会差些）
 //   node scripts/install-asr-local.mjs --mirror https://huggingface.co   # 换模型源（默认国内镜像）
 //   node scripts/install-asr-local.mjs --print-only    # 只打印要做的事，不下载不构建
-// 为什么要有这个脚本：本机转写是"零 Key 的默认方案"，但模型与二进制没法塞进仓库，
+// 为什么要有这个脚本：本机转写是"零 Key 的可选方案"（默认走 API Key 的托管服务），
+// 但模型与二进制没法塞进仓库，
 // 装一次就没后面的事了（离线、无按量费用、音频不出机器）。
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';

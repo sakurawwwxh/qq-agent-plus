@@ -8536,7 +8536,7 @@ function stickerMaxSelectOptions(current) {
 // 事实核查于 2026-09-26（见 docs/CONFIG-EXAMPLES.md）：硅基流动的 SenseVoiceSmall 标"免费"、国内可直连；
 // Groq 有免费额度。这里只提供入口，实际可用模型以官网列表为准。
 const ASR_SERVICES = [
-  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', creds: ['key'], needsBaseUrl: true, note: '注册拿一个 Key 就能用，SenseVoice 等模型免费。' },
+  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', creds: ['key'], needsBaseUrl: true, note: '注册拿一个 Key 就能用；SenseVoiceSmall 此前标免费，其余模型是否免费以官网价目表为准。' },
   { id: 'aliyun', label: '阿里云百炼（qwen3-asr-flash，新用户有免费额度）', provider: 'aliyun', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', creds: ['key'], needsBaseUrl: true, note: '百炼的 API Key；模型默认 qwen3-asr-flash，可点「获取模型列表」换。' },
   { id: 'iflytek', label: '讯飞语音听写（每日 500 次免费）', provider: 'iflytek', baseUrl: '', creds: ['appId', 'key', 'secretKey'], needsBaseUrl: false, note: '讯飞控制台「语音听写」的三个值：AppID、APIKey、APISecret（APISecret 填在「APISecret」框）。' },
   { id: 'tencent', label: '腾讯云一句话识别（每月 5000 次免费）', provider: 'tencent', baseUrl: '', creds: ['secretId', 'secretKey'], needsBaseUrl: false, note: '腾讯云访问密钥里的 SecretId 与 SecretKey（不是 API Key）；地域默认广州。' },

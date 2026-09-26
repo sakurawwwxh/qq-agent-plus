@@ -1035,15 +1035,17 @@ try {
   switchOk ? pass++ : fail++;
   console.log('  ' + (switchOk ? 'OK   ' : 'FAIL ') + '设置页：开关关着时显示"配置齐但不生效"，打开才说在生效');
 
-  // 缺省那支是本机：默认开启 + 12 次/小时 + 写明与搜索解耦
+  // 缺省那支是 API Key 的托管服务（用户 2026-09-26 要求）：默认开启 + 预置硅基流动 + 12 次/小时
+  //  + 写明与搜索解耦；没填 Key 时如实说"这项不会生效"
   const asrSectionHtml = ctx.renderAsrSection(cfg);
   const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
-    && /<option value="local" selected>/.test(asrSectionHtml)
+    && /<option value="api" selected>/.test(asrSectionHtml)
+    && /<option value="siliconflow" selected>/.test(asrSectionHtml)
     && /<option value="12" selected>/.test(asrSectionHtml)
     && asrSectionHtml.includes('识别服务与「搜索服务」各自独立')
-    && asrSectionHtml.includes('当前会自动用');
+    && asrSectionHtml.includes('还没有可用的 Key，这项不会生效');
   asrDefaultOk ? pass++ : fail++;
-  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置指向免费本机（12 次/小时）且写明与搜索解耦');
+  console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置指向 API Key 的托管服务（预置硅基流动，12 次/小时）');
 
   // 没有 Key 时界面必须说清"这项不会生效"
   const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false, keyUsable: false } });

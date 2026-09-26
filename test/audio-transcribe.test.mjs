@@ -86,7 +86,7 @@ it('ffmpegToPcm 无效输入报错而不是挂起', { skip: FFMPEG_SKIP }, async
 
 it('ASR 用自己的 Key，且与「联网搜索」开关解耦', () => {
   const withKey = structuredClone(DEFAULT_CONFIG);
-  withKey.asr.provider = 'volc';            // 默认已是无需 Key 的本机转写，Key 型供应商要显式选
+  withKey.asr.provider = 'volc';            // 默认是 API Key 的托管服务（openai），这里换成火山测
   withKey.asr.apiKey = 'test-asr-key';
   assert.equal(asrAvailable(withKey), true, '火山的 Key + 开关默认开 → 可用');
   const searchOff = structuredClone(withKey);
@@ -96,7 +96,7 @@ it('ASR 用自己的 Key，且与「联网搜索」开关解耦', () => {
   asrOff.asr.enabled = false;
   assert.equal(asrAvailable(asrOff), false, '自己的开关关掉就不可用');
   assert.equal(asrAvailable(structuredClone(DEFAULT_CONFIG)), false,
-    '默认（本机转写）还没装模型时不注入工具 —— 既不会调用失败，也不会产生费用');
+    '默认（API Key 的托管服务）没填 Key 时不注入工具 —— 既不会调用失败，也不会产生费用');
   // 关键回归：只配了搜索 Key 不该开启语音转写（两套服务，不复用）
   const searchKeyOnly = structuredClone(DEFAULT_CONFIG);
   searchKeyOnly.webSearch.doubao.apiKey = 'search-key';
@@ -193,9 +193,9 @@ it('本机 whisper.cpp：参数拼装 + 缺模型时报错', async () => {
 it('供应商路由：按 asr.provider 选后端，配置齐才判定可用', async () => {
   const { asrProvider, asrConfigured, asrAvailable } = await import('../src/core/config.js');
   const base = structuredClone(DEFAULT_CONFIG);
-  assert.equal(asrProvider(base), 'local', '缺省是本机转写（零 Key 的默认可选项）');
+  assert.equal(asrProvider(base), 'openai', '缺省是 API Key 的托管服务（用户要求）');
   assert.equal(asrProvider({ asr: { provider: 'OPENAI' } }), 'openai', '大小写不敏感');
-  assert.equal(asrProvider({ asr: { provider: '乱写的' } }), 'local', '坏值回落到默认供应商');
+  assert.equal(asrProvider({ asr: { provider: '乱写的' } }), 'openai', '坏值回落到默认供应商');
   assert.equal(asrProvider({ asr: { provider: 'volc' } }), 'volc', '显式写了火山就还是火山（老配置不受影响）');
   // volc：只要 Key
   assert.equal(asrConfigured({ asr: { provider: 'volc', apiKey: '' } }), false);
@@ -256,15 +256,17 @@ it('Key 与供应商绑定：换供应商后不再拿旧 Key 去请求别家', a
   assert.equal(asrApiKey({ asr: { provider: 'openai', apiKey: 'k', apiKeyProvider: '' } }), 'k');
 });
 
-// ── 默认可选项：本机转写（零 Key）──
+// ── 默认是托管服务；本机转写（零 Key）仍是一等选项 ──
 
-it('本机转写是默认供应商，路径按"配置 > 环境变量 > 标准位置"解析', async () => {
+it('默认供应商是 API Key 的托管服务；本机转写的路径按"配置 > 环境变量 > 标准位置"解析', async () => {
   const { asrProvider, ASR_DEFAULT_PROVIDER, asrLocalModel, asrLocalBin, asrConfigured } =
     await import('../src/core/config.js');
   const { DEFAULT_CONFIG } = await import('../src/core/config.js');
-  assert.equal(ASR_DEFAULT_PROVIDER, 'local', '默认就是不需要 Key 的本机转写');
-  assert.equal(asrProvider(structuredClone(DEFAULT_CONFIG)), 'local');
-  assert.equal(asrProvider({ asr: {} }), 'local', '没写 provider 也走本机');
+  assert.equal(ASR_DEFAULT_PROVIDER, 'openai', '默认是 API Key 的托管服务（用户 2026-09-26 要求）');
+  assert.equal(asrProvider(structuredClone(DEFAULT_CONFIG)), 'openai');
+  assert.equal(asrProvider({ asr: {} }), 'openai', '没写 provider 也走托管服务');
+  // 显式选 local 时，本机那套解析规则照旧
+  assert.equal(asrProvider({ asr: { provider: 'local' } }), 'local');
 
   // 配置里的路径优先（哪怕文件不存在也按配置来：探测失败会给出可自查的报错）
   assert.equal(asrLocalModel({ asr: { localModel: '/opt/m.bin' } }), '/opt/m.bin');

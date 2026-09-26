@@ -131,7 +131,7 @@ test('控制台保存回传的运行时字段不落盘、也不改凭据归属',
   assert.equal(cfg.asr.secretKeyProvider, 'iflytek');
 });
 
-test('provider 缺失的老配置不强行补归属（别把 Key 绑到默认的本机上）', () => {
+test('provider 缺失的配置不强行补归属（别把 Key 绑到任何一家头上）', () => {
   const asr = { enabled: true, apiKey: 'just-a-key' };
   C.pinStoredAsrCredentials(asr, '');               // provider 为空 → 什么都不记
   assert.equal(asr.apiKeyProvider, undefined, 'provider 缺失时不该把 Key 绑到任何一家');
