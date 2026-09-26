@@ -6560,9 +6560,9 @@ function renderApiSection(c) {
  * 供应商可换：识别服务与「搜索服务」不必是同一家，也不必是同一个账号。
  */
 function renderAsrSection(c) {
-  const provider = ['volc', 'openai', 'local'].includes(String(c.asr?.provider || ''))
-    ? String(c.asr.provider)
-    : 'local';
+  // 不再硬编码「已知 provider」清单：加了新服务却忘了改这里，会把新服务当成"本机"
+  // （2026-09-26 就踩过：十家预设里四家渲染成了 custom）。未知值一律按"API Key 那一支"显示。
+  const provider = String(c.asr?.provider || '').trim().toLowerCase() || 'local';
   // 用户要求：只给两个选项 —— 免费的本机 Whisper，或"用 API Key 的托管服务"（具体哪家由下面的服务预设决定）
   const mode = provider === 'local' ? 'local' : 'api';
   const hide = (want) => (mode === want ? '' : 'display:none');
@@ -6582,6 +6582,14 @@ function renderAsrSection(c) {
   const localRemovable = typeof c.asr?.localManagedExists === 'boolean'
     ? c.asr.localManagedExists
     : localInstalled;
+  const service = ASR_SERVICES.find((item) => item.id === asrServiceOf(provider, c.asr?.baseUrl)) || ASR_SERVICES[ASR_SERVICES.length - 1];
+  const serviceNote = service?.note || '';
+  const needsBaseUrl = service?.needsBaseUrl === true;
+  const wants = (kind) => ((service?.creds || []).includes(kind) ? '' : 'display:none');
+  const hasSecretId = c.asr?.hasSecretId === true;
+  const hasSecretKey = c.asr?.hasSecretKey === true;
+  const secretKeyLabel = provider === 'baidu' ? 'Secret Key（百度老式鉴权才需要）'
+    : (provider === 'iflytek' ? 'APISecret（讯飞）' : 'SecretKey（腾讯云）');
   const wrongProviderKey = c.asr?.hasApiKey === true && String(c.asr?.keyProvider || '')
     && String(c.asr.keyProvider).toLowerCase() !== provider;
   const status = (c.asr?.enabled === false && c.asr?.configured === true)
@@ -6654,7 +6662,7 @@ function renderAsrSection(c) {
           免费的推荐硅基流动（国内可直连）或 Groq（有免费额度）；火山走它自己的协议。
         </div>
       </div>
-      <div class="field-row" id="asr-openai-fields" style="${provider === 'openai' ? '' : 'display:none'}">
+      <div class="field-row" id="asr-openai-fields" style="${needsBaseUrl ? '' : 'display:none'}">
         <div class="field"><label for="cfg-asr-baseurl">服务地址（到 /v1 那层）</label>
           <input type="text" id="cfg-asr-baseurl" value="${esc(c.asr?.baseUrl || '')}" placeholder="https://api.siliconflow.cn/v1" /></div>
         <div class="field"><label for="cfg-asr-model">模型</label>
@@ -6666,11 +6674,30 @@ function renderAsrSection(c) {
           <div class="hint" id="asr-models-hint" style="display:none"></div>
         </div>
       </div>
-      <div class="field">
+      <div class="hint" id="asr-service-note">${esc(serviceNote)}</div>
+      <div class="field" id="asr-appid-field" style="${wants('appId')}">
+        <label for="cfg-asr-appid">AppID（讯飞）</label>
+        <input type="text" id="cfg-asr-appid" value="${esc(c.asr?.appId || '')}" placeholder="讯飞控制台里那个 AppID" />
+      </div>
+      <div class="field" id="asr-key-field" style="${wants('key')}">
         <label for="cfg-asr-key">API Key（留空用环境变量 ASR_API_KEY）</label>
         <div style="display:flex;gap:8px">
           <input type="password" id="cfg-asr-key" value="${esc(keyReady ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
           <button class="btn btn-small" id="cfg-asr-key-toggle" type="button">显示</button>
+        </div>
+      </div>
+      <div class="field" id="asr-secretid-field" style="${wants('secretId')}">
+        <label for="cfg-asr-secretid">SecretId（腾讯云）</label>
+        <div style="display:flex;gap:8px">
+          <input type="password" id="cfg-asr-secretid" value="${esc(hasSecretId ? '******' : '')}" placeholder="腾讯云访问密钥的 SecretId" autocomplete="new-password" style="flex:1" />
+          <button class="btn btn-small" id="cfg-asr-secretid-toggle" type="button">显示</button>
+        </div>
+      </div>
+      <div class="field" id="asr-secretkey-field" style="${wants('secretKey')}">
+        <label for="cfg-asr-secretkey">${esc(secretKeyLabel)}</label>
+        <div style="display:flex;gap:8px">
+          <input type="password" id="cfg-asr-secretkey" value="${esc(hasSecretKey ? '******' : '')}" placeholder="输入后保存；留空保持不变" autocomplete="new-password" style="flex:1" />
+          <button class="btn btn-small" id="cfg-asr-secretkey-toggle" type="button">显示</button>
         </div>
       </div>
     </div>
@@ -8497,17 +8524,28 @@ function stickerMaxSelectOptions(current) {
 // 事实核查于 2026-09-26（见 docs/CONFIG-EXAMPLES.md）：硅基流动的 SenseVoiceSmall 标"免费"、国内可直连；
 // Groq 有免费额度。这里只提供入口，实际可用模型以官网列表为准。
 const ASR_SERVICES = [
-  { id: 'volc', label: '火山引擎 · 大模型录音识别（Seed-ASR，按量计费）', provider: 'volc', baseUrl: '' },
-  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1' },
-  { id: 'groq', label: 'Groq（有免费额度）', provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1' },
-  { id: 'openai', label: 'OpenAI 官方', provider: 'openai', baseUrl: 'https://api.openai.com/v1' },
-  { id: 'custom', label: '自定义 / 自建（OpenAI 兼容）', provider: 'openai', baseUrl: '' }
+  { id: 'siliconflow', label: '硅基流动（免费模型，国内可直连）', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', creds: ['key'], needsBaseUrl: true, note: '注册拿一个 Key 就能用，SenseVoice 等模型免费。' },
+  { id: 'aliyun', label: '阿里云百炼（qwen3-asr-flash，新用户有免费额度）', provider: 'aliyun', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', creds: ['key'], needsBaseUrl: true, note: '百炼的 API Key；模型默认 qwen3-asr-flash，可点「获取模型列表」换。' },
+  { id: 'iflytek', label: '讯飞语音听写（每日 500 次免费）', provider: 'iflytek', baseUrl: '', creds: ['appId', 'key', 'secretKey'], needsBaseUrl: false, note: '讯飞控制台「语音听写」的三个值：AppID、APIKey、APISecret（APISecret 填在「APISecret」框）。' },
+  { id: 'tencent', label: '腾讯云一句话识别（每月 5000 次免费）', provider: 'tencent', baseUrl: '', creds: ['secretId', 'secretKey'], needsBaseUrl: false, note: '腾讯云访问密钥里的 SecretId 与 SecretKey（不是 API Key）；地域默认广州。' },
+  { id: 'baidu', label: '百度短语音识别（个人 5 万次免费）', provider: 'baidu', baseUrl: '', creds: ['key', 'secretKey'], needsBaseUrl: false, note: '百度语音应用的 API Key；老的「API Key + Secret Key」还要填 Secret Key（新的 bce-v3 Key 只填 API Key）。' },
+  { id: 'volc', label: '火山引擎 · 大模型录音识别（Seed-ASR，按量计费）', provider: 'volc', baseUrl: '', creds: ['key'], needsBaseUrl: false, note: '火山语音技术的 API Key；走它自己的协议（不用选模型）。' },
+  { id: 'groq', label: 'Groq（有免费额度）', provider: 'openai', baseUrl: 'https://api.groq.com/openai/v1', creds: ['key'], needsBaseUrl: true, note: '给 whisper-large-v3-turbo 用；国内可否直连未确认。' },
+  { id: 'openai', label: 'OpenAI 官方（按量计费）', provider: 'openai', baseUrl: 'https://api.openai.com/v1', creds: ['key'], needsBaseUrl: true, note: '国内多数网络直连不通，需要中转。' },
+  { id: 'custom', label: '自定义 / 自建（OpenAI 兼容）', provider: 'openai', baseUrl: '', creds: ['key'], needsBaseUrl: true, note: '任何 OpenAI 兼容的转写服务：填地址 + 模型名即可。' }
 ];
-/** 按 provider + 地址反查当前是哪家（改过就落到"自定义"）。 */
+/** 按 provider + 地址反查当前是哪家（改过就落到「自定义」）。 */
 function asrServiceOf(provider, baseUrl) {
   const norm = (v) => String(v || '').trim().replace(/[/]+$/, '').toLowerCase();
-  if (provider === 'volc') return 'volc';
-  const hit = ASR_SERVICES.find((item) => item.provider === 'openai' && norm(item.baseUrl) && norm(item.baseUrl) === norm(baseUrl));
+  // 判据（越简单越不容易错）：一个 provider 只对应一家 → 就是它（地址填没填、填得对不对都不影响归属）；
+  // 一个 provider 对应多家（只有 openai 家族）→ 按地址区分，认不出即"自定义"。
+  // ⚠️ 之前写成「id === provider 且 baseUrl 为空」，于是 aliyun（既有 provider 又带默认地址）永远匹配不上 →
+  // 下拉显示"自定义"、保存时 provider 被改写成 openai、Key 的归属随之失效（2026-09-26 审查的 Critical）。
+  const sameProvider = ASR_SERVICES.filter((item) => item.provider === provider);
+  if (!sameProvider.length) return 'custom';
+  if (sameProvider.length === 1) return sameProvider[0].id;
+  const target = norm(baseUrl);
+  const hit = sameProvider.find((item) => item.baseUrl && norm(item.baseUrl) === target);
   return hit ? hit.id : 'custom';
 }
 function asrServiceOptions(provider, baseUrl) {
@@ -9220,18 +9258,18 @@ function bindSettingsEvents(c) {
       const apiBox = $('#asr-api-mode');
       if (localBox) localBox.style.display = mode === 'local' ? '' : 'none';
       if (apiBox) apiBox.style.display = mode === 'api' ? '' : 'none';
-      // 火山走它自己的协议：没有 /v1 地址与模型名要填
-      const prov = serviceSel?.value === 'volc' ? 'volc' : 'openai';
+      // 地址/模型行按"这家要不要地址"决定（火山/讯飞/腾讯/百度都不要），别再写死供应商名单
+      const picked = ASR_SERVICES.find((x) => x.id === (serviceSel ? serviceSel.value : ''));
       const openaiFields = $('#asr-openai-fields');
-      if (openaiFields) openaiFields.style.display = prov === 'openai' ? '' : 'none';
+      if (openaiFields) openaiFields.style.display = picked?.needsBaseUrl === false ? 'none' : '';
     };
     if (modeSel) modeSel.addEventListener('change', syncAsrFields);
     if (serviceSel) serviceSel.addEventListener('change', () => {
       const item = ASR_SERVICES.find((x) => x.id === serviceSel.value);
       const urlEl = $('#cfg-asr-baseurl');
       const modelEl = $('#cfg-asr-model');
-      if (item?.provider === 'volc') {
-        // 火山走自己的协议：地址与模型都不适用，清掉免得留下别家的旧值
+      if (item && !item.needsBaseUrl) {
+        // 这一家不用地址与模型（火山/讯飞/腾讯/百度）：清掉，免得把别家的旧值带过去
         if (urlEl) urlEl.value = '';
         if (modelEl) modelEl.value = '';
       } else if (item && urlEl) {
@@ -9245,7 +9283,24 @@ function bindSettingsEvents(c) {
       if (pick) { pick.style.display = 'none'; pick.innerHTML = ''; }
       const modelsHint = $('#asr-models-hint');
       if (modelsHint) modelsHint.style.display = 'none';
-      syncAsrFields();
+      // 字段显隐/说明按新服务整体重画：比逐个 toggle 可靠（服务多了以后容易漏）
+      // 先把当前草稿落到 state.config 上，重画才不会把它们丢回去
+      const draft = state.config || {};
+      draft.asr = {
+        ...(draft.asr || {}),
+        provider: item?.provider || 'openai',
+        baseUrl: urlEl ? urlEl.value : (draft.asr?.baseUrl || ''),
+        model: modelEl ? modelEl.value : (draft.asr?.model || ''),
+        appId: $('#cfg-asr-appid')?.value ?? draft.asr?.appId,
+        apiKey: ($('#cfg-asr-key')?.value || '') === '******' ? draft.asr?.apiKey : ($('#cfg-asr-key')?.value || draft.asr?.apiKey),
+        secretId: ($('#cfg-asr-secretid')?.value || '') === '******' ? draft.asr?.secretId : ($('#cfg-asr-secretid')?.value || draft.asr?.secretId),
+        secretKey: ($('#cfg-asr-secretkey')?.value || '') === '******' ? draft.asr?.secretKey : ($('#cfg-asr-secretkey')?.value || draft.asr?.secretKey),
+        hasApiKey: Boolean(draft.asr?.apiKey || $('#cfg-asr-key')?.value),
+        hasSecretId: Boolean(draft.asr?.secretId || $('#cfg-asr-secretid')?.value),
+        hasSecretKey: Boolean(draft.asr?.secretKey || $('#cfg-asr-secretkey')?.value)
+      };
+      state.settingsSection = 'asr';
+      renderSettings();
     });
     syncAsrFields();
 
@@ -9839,7 +9894,9 @@ function bindSettingsEvents(c) {
     ['cfg-baidu-key-toggle', 'cfg-baidu-key'],
     ['cfg-metaso-key-toggle', 'cfg-metaso-key'],
     ['cfg-doubao-key-toggle', 'cfg-doubao-key'],
-    ['cfg-asr-key-toggle', 'cfg-asr-key']
+    ['cfg-asr-key-toggle', 'cfg-asr-key'],
+    ['cfg-asr-secretid-toggle', 'cfg-asr-secretid'],
+    ['cfg-asr-secretkey-toggle', 'cfg-asr-secretkey']
   ];
   for (const [btnId, inputId] of pwdToggles) {
     const btn = $(`#${btnId}`);
@@ -9895,8 +9952,9 @@ function bindSettingsEvents(c) {
       const r = await api('/api/api-key');
       return String(r.apiKey || '');
     }
-    if (inputId === 'cfg-asr-key') {
-      const r = await api('/api/asr-key');
+    if (inputId === 'cfg-asr-key' || inputId === 'cfg-asr-secretid' || inputId === 'cfg-asr-secretkey') {
+      const field = { 'cfg-asr-key': 'apiKey', 'cfg-asr-secretid': 'secretId', 'cfg-asr-secretkey': 'secretKey' }[inputId];
+      const r = await api(`/api/asr-key?field=${encodeURIComponent(field)}`);
       return String(r.apiKey || '');
     }
     const field = SEARCH_KEY_FIELDS[inputId];
@@ -11070,14 +11128,19 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'asr') {
     // 语音识别的 Key 与搜索的 Key 各自独立：****** = 保持原 Key 不变，明文/新输入才更新
     const enteredAsrKey = val('#cfg-asr-key', '').trim();
+    const enteredAsrSecretId = val('#cfg-asr-secretid', '').trim();
+    const enteredAsrSecretKey = val('#cfg-asr-secretkey', '').trim();
     // 界面上只有两个模式 + 一个服务预设；这里把它们翻译成真实配置：
     //   免费本机 → provider=local；API Key → 火山=volc，其余=openai（地址来自预设或手填）
     const asrMode = val('#cfg-asr-mode', String(c.asr?.provider || 'local') === 'local' ? 'local' : 'api');
     const asrService = val('#cfg-asr-service', '');
-    let asrProviderNext = 'openai';
+    // provider 一律取自"当前选中的服务预设" —— 硬编码几个 id 会漏（新加的服务会静默落到 openai：
+    // 2026-09-26 审查就抓到过同类问题，那次是 apiKeyProvider 读了个不存在的元素）
+    const pickedService = ASR_SERVICES.find((item) => item.id === asrService);
+    let asrProviderNext;
     if (asrMode === 'local') asrProviderNext = 'local';
-    else if (asrService === 'volc') asrProviderNext = 'volc';
-    else if (!asrService && String(c.asr?.provider || '') === 'volc') asrProviderNext = 'volc';   // 预设控件没渲染时保留原值
+    else if (pickedService) asrProviderNext = pickedService.provider;
+    else asrProviderNext = String(c.asr?.provider || 'openai');   // 预设控件没渲染时保留原值
     patch.asr = {
       ...(c.asr || {}),
       enabled: chk('#cfg-asr', c.asr?.enabled !== false),
@@ -11089,6 +11152,10 @@ async function saveConfig({ quiet = false } = {}) {
       language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
       localBin: val('#cfg-asr-bin', c.asr?.localBin || '').trim(),
       localModel: val('#cfg-asr-localmodel', c.asr?.localModel || '').trim(),
+      // 少数几家要两个/三个凭据（百度/腾讯/讯飞）；掩码 ****** 表示保持原值不变
+      appId: val('#cfg-asr-appid', c.asr?.appId || '').trim(),
+      ...(enteredAsrSecretId && enteredAsrSecretId !== '******' ? { secretId: enteredAsrSecretId } : {}),
+      ...(enteredAsrSecretKey && enteredAsrSecretKey !== '******' ? { secretKey: enteredAsrSecretKey } : {}),
       // 新填/替换 Key 时记下它是给哪家存的：换供应商后后端不再拿旧 Key 去请求别家
       ...(enteredAsrKey && enteredAsrKey !== '******'
         ? { apiKey: enteredAsrKey, apiKeyProvider: asrProviderNext }

@@ -15,6 +15,10 @@ import {
 } from '../core/config.js';
 import { openAiCompatibleTranscribe, openAiProviderOptions, pcmToWav } from '../llm/asr-openai.js';
 import { localWhisperTranscribe, resolveWhisperBin } from '../llm/asr-local.js';
+import { dashscopeOptions, dashscopeTranscribe } from '../llm/asr-dashscope.js';
+import { baiduOptions, baiduTranscribe } from '../llm/asr-baidu.js';
+import { tencentOptions, tencentTranscribe } from '../llm/asr-tencent.js';
+import { iflytekOptions, iflytekTranscribe } from '../llm/asr-iflytek.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -114,11 +118,51 @@ export async function currentMessageAudioUrl(ctx, entry) {
  * 按配置的供应商转写：三个后端各自处理"要什么输入"的差异，主流程只管路由。
  * 火山吃裸 PCM（WS 分片），OpenAI 兼容吃带容器的文件，本机 whisper.cpp 吃文件路径。
  */
+/**
+ * 四家国内云的「短语音」接口单次都只收 ≤60 秒：更长的音频由这里切片后逐段转写再拼起来。
+ * 55 秒一段（留余量），片与片之间不做重叠 —— 切在词中间时那一处可能略糙，这是短接口的固有代价。
+ */
+export const SHORT_API_CHUNK_SECONDS = 55;
+
+/** 把 PCM 切成若干段（导出便于测试）。 */
+export function chunkPcm(pcm, seconds = SHORT_API_CHUNK_SECONDS, bytesPerSecond = 32000) {
+  const size = Math.max(1, Math.round(seconds * bytesPerSecond));
+  const out = [];
+  for (let i = 0; i < pcm.length; i += size) out.push(pcm.subarray(i, Math.min(i + size, pcm.length)));
+  return out.length ? out : [pcm];
+}
+
+/** 逐片转写后拼接（片内文本依次相连；国内这几家自带标点，拼起来通常可读）。 */
+async function transcribeInChunks(pcm, perChunk, { signal } = {}) {
+  const pieces = chunkPcm(pcm);
+  const texts = [];
+  for (const piece of pieces) {
+    signal?.throwIfAborted();
+    const text = await perChunk(piece, { signal });
+    if (text) texts.push(String(text));
+  }
+  return texts.join('');
+}
+
 export async function runProvider(cfg, pcm, { signal } = {}) {
   const provider = asrProvider(cfg);
   if (provider === 'local') return await localTranscribe(cfg, pcm, signal);
   if (provider === 'openai') {
     return await openAiCompatibleTranscribe(pcmToWav(pcm), { ...openAiProviderOptions(cfg), signal });
+  }
+  if (provider === 'aliyun') {
+    // 百炼走的是 chat 接口：单请求能吃多长没有公开上限（未实测），所以与短接口一样分片，
+    // 免得长音频整条被服务端拒掉（2026-09-26 审查意见）。
+    return await transcribeInChunks(pcm, (piece) => dashscopeTranscribe(pcmToWav(piece), { ...dashscopeOptions(cfg), signal }), { signal });
+  }
+  if (provider === 'baidu') {
+    return await transcribeInChunks(pcm, (piece) => baiduTranscribe(piece, { ...baiduOptions(cfg), signal }), { signal });
+  }
+  if (provider === 'tencent') {
+    return await transcribeInChunks(pcm, (piece) => tencentTranscribe(pcmToWav(piece), { ...tencentOptions(cfg), signal }), { signal });
+  }
+  if (provider === 'iflytek') {
+    return await transcribeInChunks(pcm, (piece) => iflytekTranscribe(piece, { ...iflytekOptions(cfg), signal }), { signal });
   }
   return await seedAsrTranscribe(pcm, { apiKey: asrApiKey(cfg), signal });
 }

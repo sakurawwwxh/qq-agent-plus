@@ -346,7 +346,9 @@ yield super this null true false async static get set import export default clas
 const KNOWN_IGNORE = [
   'Agent', 'Proxy', 'resolve', 'reject', 'task', 'fn', 'send', 'sleep', 'operation',
   'isRetryable', 'random', 'resolveAtName', 'resolveReply', 'normalizeBehaviorProfile',
-  'getConfigFn', 'allowSource', 'fetchFn'
+  'getConfigFn', 'allowSource', 'fetchFn',
+  // 可注入的实现（测试里传假实现）：WebSocketImpl=WebSocket 构造器；nowFn=时间函数；perChunk=逐片转写回调
+  'WebSocketImpl', 'nowFn', 'perChunk'
 ];
 
 const REGEX_PRECEDERS = new Set([...'(,=:[!&|?{};+-*%<>~^', '\n', '']);

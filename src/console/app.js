@@ -2008,12 +2008,16 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
         }
       }
 
-      // 语音转写的 Key 明文回读：与 /api/search-key 同款（只有控制台来源放行）。
+      // 语音转写的凭据明文回读：与 /api/search-key 同款（只有控制台来源放行）。
+      // field=apiKey|secretId|secretKey，默认 apiKey。
       if (pathname === '/api/asr-key' && method === 'GET') {
         if (!keyEndpointAllowed(req)) {
           return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
         }
-        return json(res, 200, { apiKey: String(getConfig().asr?.apiKey || '') });
+        const field = String(url.searchParams.get('field') || 'apiKey');
+        const allowed = { apiKey: 'apiKey', secretId: 'secretId', secretKey: 'secretKey' };
+        if (!allowed[field]) return json(res, 400, { error: `未知字段：${field}` });
+        return json(res, 200, { apiKey: String(getConfig().asr?.[field] || '') });
       }
 
       // 用当前 api 配置拉取模型列表（前端“获取列表”）

@@ -123,6 +123,20 @@
   | `local`（**默认**） | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 控制台「设置 → 语音转文字」点「安装本机转写」（推荐，带进度、装完自动生效）；装好后旁边有「完全卸载（删除模型与程序）」可释放约 500MB（删托管目录 `<数据目录>/asr` 与配置里指向它的路径；你另外装的 whisper.cpp/模型不会被碰）。或在服务器上跑 `node scripts/install-asr-local.mjs`，后者**要重启一次服务**（配置只在启动时读一次） |
   | `volc` | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
   | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
+  | `aliyun` | 阿里云百炼：走它的 OpenAI 兼容 chat 端点 + `input_audio`（默认模型 `qwen3-asr-flash`） | `apiKey`（百炼的 API Key）；地址/模型有默认值，可改 |
+  | `baidu` | 百度短语音识别（标准版）：`POST vop.baidu.com/server_api`，JSON 带 base64 音频 | `apiKey`；老的「API Key + Secret Key」还要 `secretKey`（新的 `bce-v3/ALTAK-…` Key 只填 API Key） |
+  | `tencent` | 腾讯云**一句话识别**：`POST asr.tencentcloudapi.com`，TC3-HMAC-SHA256 签名 | `secretId` + `secretKey`（访问密钥里的那对，不是 API Key）；地域默认 `ap-guangzhou` |
+  | `iflytek` | 讯飞**语音听写**：`wss://iat-api.xfyun.cn/v2/iat`，签名 URL + WebSocket | `appId` + `apiKey` + `secretKey`(APISecret) 三个值 |
+
+  **这四家的免费额度**（2026-09-26 查证，以各家官网当期政策为准）：
+  讯飞语音听写约 **500 次/日**（新用户默认，另有一次性免费包）；百度短语音识别个人约 **5 万次**；
+  腾讯云一句话识别约 **5000 次/月**；阿里云百炼新用户有免费额度（文生图/语音等按模型计）。
+
+  ⚠️ 这四家都**不走 OpenAI 协议**，是各自的原生适配（腾讯的 TC3 签名与官方 SDK 交叉验证过、
+  讯飞的分帧协议用本地假服务端跑通过；但**都没有用真实凭据端到端验证过**）。真机上若鉴权或参数不对，
+  各家会回明确的错误码，这里会翻译成人话（例如"签名/鉴权没通过：核对 SecretId/SecretKey 是否填反"、
+  "音频过长（超过 60 秒，需要分片）"），便于一轮定位。**超过 60 秒的音频会自动分片**（55 秒一片）
+  后逐段转写再拼接。
 
 - 本机转写的路径解析：`asr.localModel` / `asr.localBin` > 环境变量 `WHISPER_MODEL` / `WHISPER_BIN` >
   自动找（`<数据目录>/asr/`、仓库 `models/`、`~/.cache/whisper.cpp/`；二进制按 `whisper-cli` → `whisper-cpp` → `main`）。

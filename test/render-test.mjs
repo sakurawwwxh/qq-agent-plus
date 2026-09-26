@@ -937,6 +937,49 @@ try {
   serviceOk ? pass++ : fail++;
   console.log('  ' + (serviceOk ? 'OK   ' : 'FAIL ') + '设置页：服务预设含火山等多家，模型点按钮从官网拉');
 
+  // 四家国内云（讯飞/百度/腾讯/阿里）在服务预设里，且各自只显示它需要的凭据字段
+  const tencentHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'tencent' } });
+  const iflytekHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'iflytek' } });
+  const baiduHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'baidu' } });
+  const aliyunHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'aliyun' } });
+  const cnOk = apiModeHtml.includes('讯飞语音听写（每日 500 次免费）')
+    && apiModeHtml.includes('百度短语音识别（个人 5 万次免费）')
+    && apiModeHtml.includes('腾讯云一句话识别（每月 5000 次免费）')
+    && apiModeHtml.includes('阿里云百炼')
+    // 腾讯只要 SecretId/SecretKey（没有 API Key 这一栏），阿里/百度/讯飞各按需
+    && /id="asr-secretid-field" style=""/.test(tencentHtml)
+    && /id="asr-secretkey-field" style=""/.test(tencentHtml)
+    && /id="asr-key-field" style="display:none"/.test(tencentHtml)
+    && /id="asr-appid-field" style="display:none"/.test(tencentHtml)
+    && /id="asr-appid-field" style=""/.test(iflytekHtml)
+    && /id="asr-key-field" style=""/.test(iflytekHtml)
+    && /id="asr-secretkey-field" style=""/.test(iflytekHtml)
+    && iflytekHtml.includes('APISecret（讯飞）')
+    && /id="asr-key-field" style=""/.test(baiduHtml) && /id="asr-secretkey-field" style=""/.test(baiduHtml)
+    && baiduHtml.includes('Secret Key（百度老式鉴权才需要）')
+    // 阿里：要地址与模型（有默认值），所以模型行与拉取按钮在
+    && /id="asr-openai-fields" style=""/.test(aliyunHtml) && /id="asr-fetch-models-btn"/.test(aliyunHtml)
+    // 讯飞/腾讯/百度没有地址与模型
+    && /id="asr-openai-fields" style="display:none"/.test(iflytekHtml)
+    && /id="asr-openai-fields" style="display:none"/.test(tencentHtml)
+    && /id="asr-openai-fields" style="display:none"/.test(baiduHtml);
+  cnOk ? pass++ : fail++;
+  console.log('  ' + (cnOk ? 'OK   ' : 'FAIL ') + '设置页：四家国内云在预设里，各自只显示需要的凭据字段');
+
+  // 预设反查：阿里这类"既有 provider 又带默认地址"的必须能被认回来，
+  // 否则下拉显示"自定义"、保存时 provider 被改写成 openai（2026-09-26 审查的 Critical）
+  const roundTripOk = ctx.asrServiceOf('aliyun', 'https://dashscope.aliyuncs.com/compatible-mode/v1') === 'aliyun'
+    && ctx.asrServiceOf('tencent', '') === 'tencent'
+    && ctx.asrServiceOf('iflytek', '') === 'iflytek'
+    && ctx.asrServiceOf('baidu', '') === 'baidu'
+    && ctx.asrServiceOf('openai', 'https://api.siliconflow.cn/v1/') === 'siliconflow'
+    && ctx.asrServiceOf('openai', 'https://api.groq.com/openai/v1') === 'groq'
+    && ctx.asrServiceOf('openai', 'https://my-gateway.example/v1') === 'custom'
+    && ctx.asrServiceOf('volc', '') === 'volc'
+    && /<option value="aliyun" selected>/.test(aliyunHtml);
+  roundTripOk ? pass++ : fail++;
+  console.log('  ' + (roundTripOk ? 'OK   ' : 'FAIL ') + '设置页：配置回读时能认出是哪家预设（含阿里/腾讯/讯飞/百度）');
+
   // 状态以服务端判定为准，且把"换供应商要重填 Key / 缺地址模型 / Key 来自环境变量"讲清
   const needKeyHtml = ctx.renderAsrSection({
     ...cfg, asr: { ...cfg.asr, provider: 'openai', configured: false, hasApiKey: true, keyProvider: 'volc', baseUrl: '', model: '' }
@@ -995,7 +1038,11 @@ try {
     { name: 'API Key + 火山', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'volc', '#cfg-asr-baseurl': '', '#cfg-asr-model': '', '#cfg-asr-key': 'volc-key' },
       expect: { provider: 'volc', apiKey: 'volc-key', apiKeyProvider: 'volc' } },
     { name: '免费本机', values: { '#cfg-asr-mode': 'local', '#cfg-asr-service': 'siliconflow', '#cfg-asr-key': '' },
-      expect: { provider: 'local' } }
+      expect: { provider: 'local' } },
+    { name: 'API Key + 腾讯云', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'tencent', '#cfg-asr-secretid': 'AKID-x', '#cfg-asr-secretkey': 'SK-y', '#cfg-asr-key': '', '#cfg-asr-baseurl': '', '#cfg-asr-model': '' },
+      expect: { provider: 'tencent', secretId: 'AKID-x', secretKey: 'SK-y' } },
+    { name: 'API Key + 讯飞', values: { '#cfg-asr-mode': 'api', '#cfg-asr-service': 'iflytek', '#cfg-asr-appid': 'APP1', '#cfg-asr-key': 'KEY1', '#cfg-asr-secretkey': 'SEC1' },
+      expect: { provider: 'iflytek', appId: 'APP1', secretKey: 'SEC1' } }
   ];
   let mapOk = true;
   const mapNotes = [];

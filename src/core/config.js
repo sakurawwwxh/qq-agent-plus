@@ -141,8 +141,16 @@ export function incidentPilotEnabled() {
   return true;
 }
 
-/** 语音转写的供应商：'local'（本机 whisper.cpp，零 Key）/ 'volc'（火山 Seed-ASR）/ 'openai'（任意 OpenAI 兼容服务）。 */
-export const ASR_PROVIDERS = ['volc', 'openai', 'local'];
+/** 语音转写的供应商。四家国内云的转写接口都不是 OpenAI 协议，各有各的签名/换取流程，所以各是一个 provider：
+ *  local   本机 whisper.cpp（零 Key）
+ *  volc    火山 Seed-ASR（WebSocket，一个 Key）
+ *  openai  任意 OpenAI 兼容服务（Key + 地址 + 模型）
+ *  aliyun  阿里云百炼（chat + input_audio，一个 Key，地址/模型有默认值）
+ *  baidu   百度短语音识别（API Key，可选 Secret Key 换 token）
+ *  tencent 腾讯云一句话识别（SecretId + SecretKey，TC3 签名）
+ *  iflytek 讯飞语音听写（AppID + APIKey + APISecret，签名 URL + WebSocket）
+ */
+export const ASR_PROVIDERS = ['volc', 'openai', 'aliyun', 'baidu', 'tencent', 'iflytek', 'local'];
 /** 没配 provider 时用哪个：本机转写（不需要任何 Key，跟搜索服务的默认一样是"开箱可用"那条）。 */
 export const ASR_DEFAULT_PROVIDER = 'local';
 export function asrProvider(cfg = getConfig()) {
@@ -273,6 +281,15 @@ export function asrConfigured(cfg = getConfig()) {
   if (provider === 'local') {
     if (asrLocalModel(cfg) === '') return false;
     return Boolean(findWhisperBinSync(cfg));
+  }
+  if (provider === 'aliyun') return asrApiKey(cfg) !== '';                       // 地址/模型有默认值
+  if (provider === 'baidu') return asrApiKey(cfg) !== '';                        // Secret Key 可选（老式才要）
+  if (provider === 'tencent') {
+    return String(cfg?.asr?.secretId || '').trim() !== '' && String(cfg?.asr?.secretKey || '').trim() !== '';
+  }
+  if (provider === 'iflytek') {
+    return String(cfg?.asr?.appId || '').trim() !== '' && asrApiKey(cfg) !== ''
+      && String(cfg?.asr?.secretKey || '').trim() !== '';
   }
   if (provider === 'openai') {
     return asrApiKey(cfg) !== ''
