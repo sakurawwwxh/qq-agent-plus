@@ -86,21 +86,24 @@ it('ffmpegToPcm 无效输入报错而不是挂起', { skip: FFMPEG_SKIP }, async
 
 it('ASR 用自己的 Key，且与「联网搜索」开关解耦', () => {
   const withKey = structuredClone(DEFAULT_CONFIG);
+  withKey.asr.provider = 'volc';            // 默认已是无需 Key 的本机转写，Key 型供应商要显式选
   withKey.asr.apiKey = 'test-asr-key';
-  assert.equal(asrAvailable(withKey), true, '自己的 Key + 开关默认开 → 可用');
+  assert.equal(asrAvailable(withKey), true, '火山的 Key + 开关默认开 → 可用');
   const searchOff = structuredClone(withKey);
   searchOff.webSearch.enabled = false;
   assert.equal(asrAvailable(searchOff), true, '关掉联网搜索不该顺带关掉语音转写');
   const asrOff = structuredClone(withKey);
   asrOff.asr.enabled = false;
   assert.equal(asrAvailable(asrOff), false, '自己的开关关掉就不可用');
-  assert.equal(asrAvailable(structuredClone(DEFAULT_CONFIG)), false, '没配 Key 不注入工具（调用必失败，也防意外计费）');
+  assert.equal(asrAvailable(structuredClone(DEFAULT_CONFIG)), false,
+    '默认（本机转写）还没装模型时不注入工具 —— 既不会调用失败，也不会产生费用');
   // 关键回归：只配了搜索 Key 不该开启语音转写（两套服务，不复用）
   const searchKeyOnly = structuredClone(DEFAULT_CONFIG);
   searchKeyOnly.webSearch.doubao.apiKey = 'search-key';
   assert.equal(asrAvailable(searchKeyOnly), false, '搜索 Key 不能当 ASR Key 用');
   const searchOffOnly = structuredClone(DEFAULT_CONFIG);
   searchOffOnly.webSearch.doubao.apiKey = 'search-key';
+  searchOffOnly.asr.provider = 'volc';      // 用 Key 的那家要显式选
   searchOffOnly.asr.apiKey = 'asr-key';
   assert.equal(asrAvailable(searchOffOnly), true, 'ASR 有自己的 Key 时不受搜索 Key 影响');
 });
@@ -178,7 +181,8 @@ it('OpenAI 兼容转写：拼端点、带 Bearer、解析 text（含错误路径
 });
 
 it('本机 whisper.cpp：参数拼装 + 缺模型时报错', async () => {
-  const { whisperArgs, localWhisperTranscribe, WHISPER_BIN_CANDIDATES } = await import('../src/llm/asr-local.js');
+  const { whisperArgs, localWhisperTranscribe } = await import('../src/llm/asr-local.js');
+  const { WHISPER_BIN_CANDIDATES } = await import('../src/core/config.js');
   assert.deepEqual(WHISPER_BIN_CANDIDATES, ['whisper-cli', 'whisper-cpp', 'main']);
   const args = whisperArgs({ model: '/m/ggml-base.bin', wavPath: '/tmp/a.wav', outPrefix: '/tmp/a.out', language: 'zh' });
   assert.deepEqual(args, ['-m', '/m/ggml-base.bin', '-f', '/tmp/a.wav', '-otxt', '-of', '/tmp/a.out', '-np', '-l', 'zh']);
@@ -189,9 +193,10 @@ it('本机 whisper.cpp：参数拼装 + 缺模型时报错', async () => {
 it('供应商路由：按 asr.provider 选后端，配置齐才判定可用', async () => {
   const { asrProvider, asrConfigured, asrAvailable } = await import('../src/core/config.js');
   const base = structuredClone(DEFAULT_CONFIG);
-  assert.equal(asrProvider(base), 'volc', '缺省仍是火山');
+  assert.equal(asrProvider(base), 'local', '缺省是本机转写（零 Key 的默认可选项）');
   assert.equal(asrProvider({ asr: { provider: 'OPENAI' } }), 'openai', '大小写不敏感');
-  assert.equal(asrProvider({ asr: { provider: '乱写的' } }), 'volc', '坏值回落到默认供应商');
+  assert.equal(asrProvider({ asr: { provider: '乱写的' } }), 'local', '坏值回落到默认供应商');
+  assert.equal(asrProvider({ asr: { provider: 'volc' } }), 'volc', '显式写了火山就还是火山（老配置不受影响）');
   // volc：只要 Key
   assert.equal(asrConfigured({ asr: { provider: 'volc', apiKey: '' } }), false);
   assert.equal(asrConfigured({ asr: { provider: 'volc', apiKey: 'k' } }), true);
@@ -200,8 +205,9 @@ it('供应商路由：按 asr.provider 选后端，配置齐才判定可用', as
   assert.equal(asrConfigured({ asr: { provider: 'openai', apiKey: 'k', baseUrl: 'https://x/v1', model: 'm' } }), true);
   // local：不要 Key，但要模型文件
   assert.equal(asrConfigured({ asr: { provider: 'local', localModel: '' } }), false);
-  assert.equal(asrAvailable({ asr: { enabled: true, provider: 'local', localModel: '/m.bin' } }), true);
-  assert.equal(asrAvailable({ asr: { enabled: false, provider: 'local', localModel: '/m.bin' } }), false);
+  // 本机要"模型 + 能跑的二进制"两样齐（用 node 自己当二进制替身）
+  assert.equal(asrAvailable({ asr: { enabled: true, provider: 'local', localModel: '/m.bin', localBin: process.execPath } }), true);
+  assert.equal(asrAvailable({ asr: { enabled: false, provider: 'local', localModel: '/m.bin', localBin: process.execPath } }), false);
 });
 
 // ── 审查跟进（2026-09-26）：本机转写"失败要 reject，不能挂死" + Key 与供应商绑定 ──
@@ -248,4 +254,138 @@ it('Key 与供应商绑定：换供应商后不再拿旧 Key 去请求别家', a
   assert.equal(asrConfigured(switched), false, '因此被判成没配齐（工具不注入）');
   // 老配置没记 provider（升级上来的）：按原样使用，不做断供
   assert.equal(asrApiKey({ asr: { provider: 'openai', apiKey: 'k', apiKeyProvider: '' } }), 'k');
+});
+
+// ── 默认可选项：本机转写（零 Key）──
+
+it('本机转写是默认供应商，路径按"配置 > 环境变量 > 标准位置"解析', async () => {
+  const { asrProvider, ASR_DEFAULT_PROVIDER, asrLocalModel, asrLocalBin, asrConfigured } =
+    await import('../src/core/config.js');
+  const { DEFAULT_CONFIG } = await import('../src/core/config.js');
+  assert.equal(ASR_DEFAULT_PROVIDER, 'local', '默认就是不需要 Key 的本机转写');
+  assert.equal(asrProvider(structuredClone(DEFAULT_CONFIG)), 'local');
+  assert.equal(asrProvider({ asr: {} }), 'local', '没写 provider 也走本机');
+
+  // 配置里的路径优先（哪怕文件不存在也按配置来：探测失败会给出可自查的报错）
+  assert.equal(asrLocalModel({ asr: { localModel: '/opt/m.bin' } }), '/opt/m.bin');
+  assert.equal(asrLocalBin({ asr: { localBin: '/opt/whisper-cli' } }), '/opt/whisper-cli');
+
+  // 环境变量次之
+  process.env.WHISPER_MODEL = '/env/m.bin';
+  process.env.WHISPER_BIN = '/env/bin';
+  assert.equal(asrLocalModel({ asr: {} }), '/env/m.bin');
+  assert.equal(asrLocalBin({ asr: {} }), '/env/bin');
+  delete process.env.WHISPER_MODEL;
+  delete process.env.WHISPER_BIN;
+
+  // 都没有 → 自动找 <数据目录>/asr/ 下的 ggml-*.bin（偏好 small → base → tiny），二进制回落到候选名
+  const asrDir = path.join(dir, 'asr');
+  fs.mkdirSync(asrDir, { recursive: true });
+  fs.writeFileSync(path.join(asrDir, 'ggml-tiny.bin'), 'x');
+  fs.writeFileSync(path.join(asrDir, 'ggml-base.bin'), 'x');
+  fs.writeFileSync(path.join(asrDir, 'notes.txt'), 'x');           // 非模型文件要忽略
+  assert.equal(asrLocalModel({ asr: {} }), path.join(asrDir, 'ggml-base.bin'), '有 base 就优先 base（比 tiny 好）');
+  assert.equal(asrConfigured({ asr: { provider: 'local', localBin: process.execPath } }), true,
+    '自动找到模型 + 给了可用的二进制 → 算配齐');
+  // 候选链：PATH 里真有 whisper-cpp（不是首选名）时也要能找到它 —— 早先这里恒返回
+  // 'whisper-cli'，把"显式指定"和"默认候选"混为一谈，导致回退链成了死代码（审查抓到）。
+  const fakeBinDir = path.join(dir, 'bin');
+  fs.mkdirSync(fakeBinDir, { recursive: true });
+  const fakeName = process.platform === 'win32' ? 'whisper-cpp.exe' : 'whisper-cpp';
+  fs.writeFileSync(path.join(fakeBinDir, fakeName), 'x');
+  const savedPath = process.env.PATH;
+  process.env.PATH = fakeBinDir;
+  try {
+    // Windows 上会带 .exe（spawn 也能吃不带后缀的，但显式更稳）
+    assert.match(asrLocalBin({ asr: {} }), /^whisper-cpp(\.exe)?$/, '按候选名依次找，命中 whisper-cpp');
+    assert.equal(asrLocalBin({ asr: { localBin: '/opt/my-cli' } }), '/opt/my-cli', '配置优先于探测');
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(fakeBinDir, { recursive: true, force: true });
+  }
+  fs.rmSync(asrDir, { recursive: true, force: true });
+});
+
+it('本机转写超时按音频长度放大（固定 10 分钟会把长音频一律掐成超时）', async () => {
+  const { localTimeoutMs } = await import('../src/tools/audio-transcribe.js');
+  assert.equal(localTimeoutMs(0), 68 * 1000, '空输入也留 60 秒底');
+  assert.equal(localTimeoutMs(30 * 32000), 300 * 1000, '30 秒音频 → 约 5 分钟');
+  assert.equal(localTimeoutMs(900 * 32000), 30 * 60 * 1000, '15 分钟音频 → 封顶 30 分钟');
+});
+
+it('二进制探测：显式指定却跑不起来要如实返回 null（不偷偷换别的）', async () => {
+  const { resolveWhisperBin } = await import('../src/llm/asr-local.js');
+  assert.equal(await resolveWhisperBin('definitely-not-a-real-binary-xyz'), null);
+  // node 自己能跑 --help（退出 0），用它当"存在的二进制"验证探测正向路径
+  assert.equal(await resolveWhisperBin(process.execPath), process.execPath);
+});
+
+it('安装脚本：参数解析与模型地址（坏参数要报清楚）', async () => {
+  const { parseArgs, modelUrl, MODEL_CHOICES, MODEL_MIRRORS } = await import('../scripts/install-asr-local.mjs');
+  const def = parseArgs([]);
+  assert.equal(def.model, 'small');
+  assert.equal(def.writeConfig, true);
+  assert.deepEqual(MODEL_MIRRORS, ['https://hf-mirror.com', 'https://huggingface.co'], '默认先试国内镜像');
+  assert.equal(modelUrl('https://hf-mirror.com/', 'base'),
+    'https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-base.bin');
+  assert.equal(MODEL_CHOICES.small.file, 'ggml-small.bin');
+  assert.equal(parseArgs(['--model', 'base', '--no-write-config', '--mirror', 'https://x']).writeConfig, false);
+  assert.throws(() => parseArgs(['--model', 'huge']), /不认识的模型/);
+  assert.throws(() => parseArgs(['--bogus']), /未知参数/);
+  assert.throws(() => parseArgs(['--model']), /缺少取值/);
+});
+
+// ── 审查跟进（第二轮）：回退链、判定连二进制、原子写配置 ──
+
+it('没找到二进制时 asrLocalBin 返回空（候选链才会真正生效）', async () => {
+  const { asrLocalBin, findWhisperBinSync, WHISPER_BIN_CANDIDATES } = await import('../src/core/config.js');
+  // 审查抓到的 Critical：早先 asrLocalBin 兜底返回 'whisper-cli'，而 resolveWhisperBin 把"非空"
+  // 当成用户显式指定 → 探测失败直接 return null，whisper-cpp / main 这两条回退永远轮不到。
+  const env = process.env.PATH;
+  process.env.PATH = dir;                       // 空前缀下没有任何候选名
+  try {
+    assert.equal(findWhisperBinSync(), null);
+    assert.equal(asrLocalBin({ asr: {} }), '', '找不到就如实返回空');
+    // 配置/环境变量给了值就照样返回（那是用户显式指定的）
+    assert.equal(asrLocalBin({ asr: { localBin: '/opt/bin' } }), '/opt/bin');
+    process.env.WHISPER_BIN = '/env/bin';
+    assert.equal(asrLocalBin({ asr: {} }), '/env/bin');
+  } finally {
+    delete process.env.WHISPER_BIN;
+    process.env.PATH = env;
+  }
+  assert.ok(WHISPER_BIN_CANDIDATES.includes('whisper-cpp'), '候选链里保留 whisper-cpp');
+});
+
+it('本机转写要"模型 + 能跑的二进制"两样齐才算可用', async () => {
+  const { asrConfigured, asrAvailable } = await import('../src/core/config.js');
+  const model = path.join(dir, 'asr', 'ggml-tiny.bin');
+  fs.mkdirSync(path.dirname(model), { recursive: true });
+  fs.writeFileSync(model, 'x');
+  // 有模型、但 PATH 里找不到任何 whisper 二进制 → 仍判不可用（否则工具注入了、调用必失败）
+  const env = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    assert.equal(asrConfigured({ asr: { provider: 'local' } }), false);
+    assert.equal(asrAvailable({ asr: { provider: 'local' } }), false);
+    // 配置里给了可用的二进制（用 node 自己当替身）→ 判可用
+    assert.equal(asrConfigured({ asr: { provider: 'local', localBin: process.execPath } }), true);
+  } finally {
+    process.env.PATH = env;
+  }
+  fs.rmSync(path.dirname(model), { recursive: true, force: true });
+});
+
+it('安装脚本写配置是原子的：写完不留 .tmp，内容包含新指针', async () => {
+  const { writeConfigPointers } = await import('../scripts/install-asr-local.mjs');
+  const cfgFile = path.join(dir, 'config.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ api: { apiKey: 'keep-me' }, asr: { enabled: true } }, null, 2));
+  writeConfigPointers(cfgFile, '/opt/whisper-cli', '/opt/ggml-small.bin');
+  const parsed = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  assert.equal(parsed.asr.localBin, '/opt/whisper-cli');
+  assert.equal(parsed.asr.localModel, '/opt/ggml-small.bin');
+  assert.equal(parsed.asr.provider, 'local');
+  assert.equal(parsed.api.apiKey, 'keep-me', '别的字段原样保留');
+  assert.equal(fs.existsSync(`${cfgFile}.${process.pid}.tmp`), false, '不留临时文件');
+  fs.rmSync(cfgFile, { force: true });
 });

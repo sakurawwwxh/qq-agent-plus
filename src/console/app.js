@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-import { asrAvailable, asrConfigured, asrKeySource, conversationConfigForChat, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
+import { asrAvailable, asrConfigured, asrKeySource, asrLocalBin, asrLocalModel, conversationConfigForChat, getConfig, identityPilotEnabled, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
 import { customSearch } from '../llm/web-search.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
@@ -2054,7 +2054,10 @@ export function createApp({ log = console.log, autoUpdateOptions = {} } = {}) {
           configured: asrConfigured(cfgNow),
           available: asrAvailable(cfgNow),
           keySource: asrKeySource(cfgNow),
-          keyProvider: String(cfgNow.asr?.apiKeyProvider || '')
+          keyProvider: String(cfgNow.asr?.apiKeyProvider || ''),
+          // 本机转写用哪个二进制/模型（配置>环境变量>自动找到）——让"装没装、会用哪个"看得见
+          localBinResolved: asrLocalBin(cfgNow),
+          localModelResolved: asrLocalModel(cfgNow)
         };
         return json(res, 200, safe);
       }

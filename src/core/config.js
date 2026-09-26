@@ -5,6 +5,9 @@
 // production invariants: promoted capabilities are not user-switchable,
 // automated slang research is retired, and admin.ownerUin is the sole
 // administrator configuration source.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import * as legacy from './config-legacy.js';
 import {
   applyStableFeaturePolicy,
@@ -138,11 +141,100 @@ export function incidentPilotEnabled() {
   return true;
 }
 
-/** 语音转写的供应商：'volc'（火山 Seed-ASR）/ 'openai'（任意 OpenAI 兼容服务）/ 'local'（本机 whisper.cpp）。 */
+/** 语音转写的供应商：'local'（本机 whisper.cpp，零 Key）/ 'volc'（火山 Seed-ASR）/ 'openai'（任意 OpenAI 兼容服务）。 */
 export const ASR_PROVIDERS = ['volc', 'openai', 'local'];
+/** 没配 provider 时用哪个：本机转写（不需要任何 Key，跟搜索服务的默认一样是"开箱可用"那条）。 */
+export const ASR_DEFAULT_PROVIDER = 'local';
 export function asrProvider(cfg = getConfig()) {
   const raw = String(cfg?.asr?.provider || '').trim().toLowerCase();
-  return ASR_PROVIDERS.includes(raw) ? raw : 'volc';
+  return ASR_PROVIDERS.includes(raw) ? raw : ASR_DEFAULT_PROVIDER;
+}
+
+/** PATH 里按顺序尝试的候选名（安装脚本构建出来的名字是 whisper-cli）。 */
+export const WHISPER_BIN_CANDIDATES = ['whisper-cli', 'whisper-cpp', 'main'];
+
+/**
+ * 本机转写的模型文件：配置 > 环境变量 WHISPER_MODEL > 标准位置里第一个 ggml-*.bin。
+ * 标准位置按"越可能被安装到"的顺序找：<数据目录>/asr/（安装脚本的默认落点）、仓库 models/、
+ * ~/.cache/whisper.cpp/。同名偏好 small → base → tiny → 其它，保证同一台机器上结果确定。
+ */
+export function asrLocalModel(cfg = getConfig()) {
+  const configured = String(cfg?.asr?.localModel || '').trim();
+  if (configured) return configured;
+  const fromEnv = String(process.env.WHISPER_MODEL || '').trim();
+  if (fromEnv) return fromEnv;
+  const dirs = [
+    path.join(legacy.DATA_DIR, 'asr'),
+    path.join(legacy.ROOT, 'models'),
+    path.join(os.homedir(), '.cache', 'whisper.cpp')
+  ];
+  const prefer = ['ggml-small.bin', 'ggml-base.bin', 'ggml-tiny.bin'];
+  const found = [];
+  for (const dir of dirs) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) {
+      if (!/^ggml-.+\.bin$/i.test(name)) continue;
+      found.push(path.join(dir, name));
+    }
+  }
+  if (!found.length) return '';
+  const rank = (file) => {
+    const base = path.basename(file).toLowerCase();
+    const hit = prefer.indexOf(base);
+    return hit === -1 ? prefer.length : hit;
+  };
+  return found.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))[0];
+}
+
+/**
+ * 本机转写的可执行文件：配置 > 环境变量 WHISPER_BIN > 安装脚本的构建产物 > PATH 候选名。
+ * 返回"打算用的那个"，真能不能跑由探测决定（见 asr-local.js 的 resolveWhisperBin）。
+ */
+export function asrLocalBin(cfg = getConfig()) {
+  // "会用哪个"：配置/环境变量给了就用它（哪怕文件不在——这样用户能看见自己填错的那条路径）；
+  // 否则找构建产物 / PATH 候选名。真要判定"能不能跑"用 findWhisperBinSync()（它做存在性检查）。
+  const configured = String(cfg?.asr?.localBin || '').trim();
+  if (configured) return configured;
+  const fromEnv = String(process.env.WHISPER_BIN || '').trim();
+  if (fromEnv) return fromEnv;
+  return findWhisperBinSync(cfg) || '';
+}
+
+/** Windows 上要试 .exe 后缀；其它平台直接按名字找。 */
+function binNamesOnPlatform() {
+  const names = [...WHISPER_BIN_CANDIDATES];
+  if (process.platform === 'win32') return [...names.map((n) => `${n}.exe`), ...names];
+  return names;
+}
+
+/**
+ * 同步找一遍可用的 whisper 二进制（配置里的路径 → 安装脚本的构建产物 → PATH 候选名）。
+ * 只做存在性检查，够"要不要把工具注入给模型"用；真能不能跑由 asr-local.js 的异步探测定案。
+ * 为什么要有这个：可用性判定若只认模型文件，会出现"工具注入了、提示词也说能转，
+ * 但真调起来必失败"的矛盾（2026-09-26 审查）。
+ */
+export function findWhisperBinSync(cfg = getConfig()) {
+  const configured = String(cfg?.asr?.localBin || '').trim() || String(process.env.WHISPER_BIN || '').trim();
+  const built = path.join(legacy.DATA_DIR, 'asr', 'whisper.cpp', 'build', 'bin', 'whisper-cli');
+  const seen = new Set();
+  for (const candidate of [configured, built, ...binNamesOnPlatform()]) {
+    if (!candidate) continue;
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      if (candidate.includes(path.sep) || candidate.includes('/')) {
+        if (fs.existsSync(candidate)) return candidate;
+        continue;
+      }
+      const dirs = String(process.env.PATH || '').split(path.delimiter).filter(Boolean);
+      for (const dir of dirs) {
+        const full = path.join(dir, candidate);
+        if (fs.existsSync(full)) return candidate;   // 交给子进程按 PATH 解析，避免拼出别的平台路径
+      }
+    } catch { /* 单个目录出问题就当没找到 */ }
+  }
+  return null;
 }
 
 /**
@@ -177,7 +269,11 @@ export function asrKeySource(cfg = getConfig()) {
  */
 export function asrConfigured(cfg = getConfig()) {
   const provider = asrProvider(cfg);
-  if (provider === 'local') return String(cfg?.asr?.localModel || '').trim() !== '';
+  // 本机转写要两样都齐：模型文件 + 能跑的二进制。只看模型会出现"注入了必失败"（2026-09-26 审查）。
+  if (provider === 'local') {
+    if (asrLocalModel(cfg) === '') return false;
+    return Boolean(findWhisperBinSync(cfg));
+  }
   if (provider === 'openai') {
     return asrApiKey(cfg) !== ''
       && String(cfg?.asr?.baseUrl || '').trim() !== ''

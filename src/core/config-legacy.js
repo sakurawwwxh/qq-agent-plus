@@ -140,7 +140,9 @@ export const DEFAULT_CONFIG = {
   // 不同供应商的 API 不必是同一家，甚至不必是同一个账号。
   asr: {
     enabled: true,
-    provider: 'volc',
+    // 默认本机 whisper.cpp：不需要任何 Key，装一次模型就能用（scripts/install-asr-local.mjs）。
+    // 想用托管服务把 provider 换成 volc / openai 并填各自的 Key 即可。
+    provider: 'local',
     maxPerHour: 12,           // 按量计费服务的硬闸门：每小时最多转写几次（跨会话共享）
     apiKey: '',               // volc / openai 用；留空回退环境变量 ASR_API_KEY
     apiKeyProvider: '',       // 上面这个 Key 是给哪家存的：换供应商后不再拿它发请求（避免把旧 Key 发给新服务）

@@ -116,10 +116,13 @@
 
   | provider | 说明 | 需要什么 |
   | --- | --- | --- |
-  | `volc`（默认） | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
+  | `local`（**默认**） | 本机 **whisper.cpp**：不联网、不要 Key、无按量费用、音频不出机器 | 跑一次 `node scripts/install-asr-local.mjs`（自动构建 + 下模型，默认落 `<数据目录>/asr/` 并写回配置） |
+  | `volc` | 火山引擎语音技术的**大模型录音识别（Seed-ASR）**，WebSocket，按量计费 | `apiKey`（语音技术控制台创建；也可用环境变量 `ASR_API_KEY`） |
   | `openai` | **任意 OpenAI 兼容**的转写服务：`POST {baseUrl}/audio/transcriptions` | `apiKey` + `baseUrl`（到 `/v1` 那层）+ `model` |
-  | `local` | 本机 **whisper.cpp**：不联网、不要 Key、音频不出机器、无按量费用 | 装好二进制与模型，填 `localModel`（`localBin` 可留空，按 `whisper-cli` → `whisper-cpp` → `main` 找） |
 
+- 本机转写的路径解析：`asr.localModel` / `asr.localBin` > 环境变量 `WHISPER_MODEL` / `WHISPER_BIN` >
+  自动找（`<数据目录>/asr/`、仓库 `models/`、`~/.cache/whisper.cpp/`；二进制按 `whisper-cli` → `whisper-cpp` → `main`）。
+  所以装完脚本后**什么都不用填**，控制台里也会显示"当前会自动用哪两个路径"。
 - **免费选项**（都走 `openai` 那支；控制台里选一下「服务预设」就会把地址与模型填好，你只需粘一个该服务的 Key。
   免费政策是会变的，下面的事实核查于 2026-09-26，用之前建议看一眼各家价目表）：
 

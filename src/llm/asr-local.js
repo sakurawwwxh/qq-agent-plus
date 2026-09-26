@@ -3,9 +3,7 @@
 // 只依赖一个可执行文件，不引 python 运行时；参数按 whisper.cpp 现役 CLI（whisper-cli）写。
 import { spawn } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
-
-/** whisper.cpp 的检测名（不同发行版/包管理器给的名字不一样，按顺序找）。 */
-export const WHISPER_BIN_CANDIDATES = ['whisper-cli', 'whisper-cpp', 'main'];
+import { WHISPER_BIN_CANDIDATES } from '../core/config.js';
 
 /** 拼 whisper.cpp 参数（导出仅供测试：命令行别在别处再抄一份）。 */
 export function whisperArgs({ model, wavPath, outPrefix, language = 'zh', threads = 0 } = {}) {
@@ -14,6 +12,42 @@ export function whisperArgs({ model, wavPath, outPrefix, language = 'zh', thread
   const n = Number(threads) || 0;
   if (n > 0) args.push('-t', String(n));
   return args;
+}
+
+// 二进制探测（进程内缓存失败结果 10 分钟）：安装脚本可能把二进制放在 <data>/asr 下，
+// 也可能在 PATH 里；"配置里写了一个跑不起来的路径"要能给出可自查的错，而不是每次都白等超时。
+const binProbe = { path: null, at: 0 };
+const PROBE_TTL_MS = 10 * 60 * 1000;
+
+async function probeBinOnce(bin) {
+  return await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(bin, ['--help'], { stdio: 'ignore', windowsHide: true });
+    } catch { return resolve(false); }
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* 已退出 */ }
+      resolve(false);
+    }, 5000);
+    timer.unref?.();
+    child.on('error', () => { clearTimeout(timer); resolve(false); });
+    child.on('exit', (code) => { clearTimeout(timer); resolve(code === 0 || code === 1); });  // 0=正常，1=参数不对但二进制在
+  });
+}
+
+/** 挑一个真能跑的本机转写二进制；都不行就返回 null（调用方给"装好 whisper.cpp"的指引）。 */
+export async function resolveWhisperBin(preferred = '') {
+  const first = String(preferred || '').trim();
+  if (first && await probeBinOnce(first)) { binProbe.path = first; binProbe.at = Date.now(); return first; }
+  if (first) return null;   // 显式指定了却跑不起来：如实报错，别偷偷换别的
+  if (binProbe.path && Date.now() - binProbe.at < PROBE_TTL_MS) return binProbe.path;
+  if (Date.now() - binProbe.at < PROBE_TTL_MS && !binProbe.path) return null;
+  binProbe.at = Date.now();
+  for (const candidate of WHISPER_BIN_CANDIDATES) {
+    if (await probeBinOnce(candidate)) { binProbe.path = candidate; return candidate; }
+  }
+  binProbe.path = null;
+  return null;
 }
 
 /**

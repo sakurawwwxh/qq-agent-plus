@@ -6569,30 +6569,36 @@ function renderAsrSection(c) {
   const keyReady = c.asr?.hasApiKey === true;
   const openaiReady = String(c.asr?.baseUrl || '').trim() !== '' && String(c.asr?.model || '').trim() !== '';
   const localReady = Boolean(String(c.asr?.localModel || '').trim());
-  const ready = typeof c.asr?.configured === 'boolean'
-    ? c.asr.configured
-    : (provider === 'local' ? localReady : (provider === 'openai' ? (keyReady && openaiReady) : keyReady));
+  const ready = typeof c.asr?.available === 'boolean'
+    ? c.asr.available                                   // 服务端权威结论：开关 + 配齐，两者都算
+    : (c.asr?.enabled !== false
+      && (typeof c.asr?.configured === 'boolean'
+        ? c.asr.configured
+        : (provider === 'local' ? localReady : (provider === 'openai' ? (keyReady && openaiReady) : keyReady))));
   const providerHint = {
     volc: '火山引擎语音技术的<strong>大模型录音识别（Seed-ASR）</strong>，按量计费；音频会上传到火山做识别。',
     openai: '任何 <strong>OpenAI 兼容</strong>的转写服务都行 —— 下面选一个预设就自动填好地址与模型，'
       + '再粘一个该服务的 Key 即可。免费的推荐<b>硅基流动</b>（<code>FunAudioLLM/SenseVoiceSmall</code>，'
       + '官方价目表标"免费"、国内可直连）；<b>Groq</b> 有免费额度（约每天 2000 次 / 8 小时音频，单文件 25MB）。'
       + '也可以填自建的 faster-whisper 网关。按各家当期政策计费。',
-    local: '本机 <strong>whisper.cpp</strong>：不联网、不需要 Key、没有按量费用，音频不出机器。'
-      + '代价是要自己装一次可执行文件与模型（<code>ggml-small.bin</code> 约 466MB，中文建议从这个起步；'
-      + '<code>ggml-large-v3</code> 准但慢得多）。CPU 转写大约 1.5~2 倍实时（2 核机器上 30 秒语音约 15~25 秒），'
-      + '长音频会慢到不实用 —— 那种情况建议用托管服务。'
+    local: '<strong>默认方案：本机 whisper.cpp</strong> —— 不联网、不需要任何 Key、没有按量费用，音频不出机器。'
+      + '装一次就好：在服务器上跑 <code>node scripts/install-asr-local.mjs</code>'
+      + '（自动构建 + 从国内镜像下模型，默认 small 约 466MB；小机器可加 <code>--model base</code>）。'
+      + 'CPU 转写约 1.5~2 倍实时（2 核上 30 秒语音约 15~25 秒），长音频较慢 —— 想更快就切到下面两家托管服务。'
   }[provider];
   // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
   // Key 换供应商后要重填：配置里的 Key 与"存它时的供应商"绑定，后端不会再拿它去请求别家
   const wrongProviderKey = c.asr?.hasApiKey === true && String(c.asr?.keyProvider || '')
     && String(c.asr.keyProvider).toLowerCase() !== provider;
-  const status = ready
+  const status = (c.asr?.enabled === false && c.asr?.configured === true)
+    ? '<strong>配置是齐的，但上面的开关关着，所以不生效</strong>：勾上即用。'
+    : ready
     ? (c.asr?.keySource === 'env'
       ? '<strong>已配置好，这项在生效</strong>（Key 来自环境变量 <code>ASR_API_KEY</code>，此处留空即可）。'
       : '<strong>已配置好，这项在生效。</strong>')
     : (provider === 'local'
-      ? '<strong>还没填模型文件路径，这项不会生效</strong>：工具不会注入给模型，也不会产生任何调用与费用。'
+      ? '<strong>本机转写还没装好，这项暂不生效</strong>（不会产生任何调用与费用）：在服务器上跑一次 '
+        + '<code>node scripts/install-asr-local.mjs</code> 即可；也可以直接把「识别服务」换成火山或 OpenAI 兼容服务。'
       : (wrongProviderKey
         ? '<strong>换了识别服务，请重新填一次 Key，否则这项不会生效</strong>：配置里的 Key 与存它时的服务绑定，后端不会把它发到别家。'
         : (provider === 'openai' && keyReady && !openaiReady
@@ -6632,9 +6638,13 @@ function renderAsrSection(c) {
 
     <div class="field-row" id="asr-local-fields" style="${hide('local')}">
       <div class="field"><label for="cfg-asr-bin">whisper.cpp 可执行文件</label>
-        <input type="text" id="cfg-asr-bin" value="${esc(c.asr?.localBin || '')}" placeholder="留空自动找 whisper-cli / whisper-cpp / main" /></div>
+        <input type="text" id="cfg-asr-bin" value="${esc(c.asr?.localBin || '')}" placeholder="留空自动找：安装脚本产物 → whisper-cli / whisper-cpp / main" /></div>
       <div class="field"><label for="cfg-asr-localmodel">模型文件路径</label>
-        <input type="text" id="cfg-asr-localmodel" value="${esc(c.asr?.localModel || '')}" placeholder="/path/to/ggml-base.bin" /></div>
+        <input type="text" id="cfg-asr-localmodel" value="${esc(c.asr?.localModel || '')}" placeholder="留空自动找 &lt;数据目录&gt;/asr/ggml-*.bin" /></div>
+    </div>
+    <div class="hint" id="cfg-asr-local-resolved">
+      当前会自动用：<code>${esc(c.asr?.localBinResolved || '（还没找到可执行文件）')}</code>
+      ＋ <code>${esc(c.asr?.localModelResolved || '（还没找到模型文件）')}</code>
     </div>
 
     <div class="field" id="asr-key-field" style="${provider === 'local' ? 'display:none' : ''}">

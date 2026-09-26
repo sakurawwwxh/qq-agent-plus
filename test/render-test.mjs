@@ -893,7 +893,10 @@ try {
   asrOffOk ? pass++ : fail++;
   console.log('  ' + (asrOffOk ? 'OK   ' : 'FAIL ') + '设置页：语音转文字开关可关、上限档位保留存量值');
   const asrSectionHtml = ctx.renderAsrSection(cfg);
-  const asrDefaultOk = /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
+  const asrDefaultOk = asrSectionHtml.includes('默认方案：本机 whisper.cpp')
+    && asrSectionHtml.includes('当前会自动用')
+    && /<option value="local" selected>/.test(asrSectionHtml)
+    && /id="cfg-asr"[^>]*checked/.test(asrSectionHtml)
     && /<option value="12" selected>/.test(asrSectionHtml)
     && asrSectionHtml.includes('识别服务与「搜索服务」<strong>各自独立</strong>')
     && asrSectionHtml.includes('不必是同一家');
@@ -901,8 +904,9 @@ try {
   console.log('  ' + (asrDefaultOk ? 'OK   ' : 'FAIL ') + '设置页：缺省配置下语音转文字默认开启（12 次/小时）且写明与搜索解耦');
 
   // 没有 Key 时界面必须说清"这项不会生效"，别让人以为默认勾上就在跑；有 Key 才显示"已配置"
-  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: false } });
-  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, hasApiKey: true } });
+  // 讲 Key 的情形都固定用 volc（Key 是那一家的东西；本机那支不需要 Key，单独有断言）
+  const noKeyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: false } });
+  const keyedHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc', hasApiKey: true } });
   const asrKeyStateOk = noKeyHtml.includes('还没有可用的 Key，这项不会生效')
     && noKeyHtml.includes('也不会产生任何调用与费用')
     && noKeyHtml.includes('与「搜索服务」<strong>各自独立</strong>')
@@ -915,11 +919,12 @@ try {
   const localHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '' } });
   const localReadyHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'local', localModel: '/opt/ggml-base.bin' } });
   const openaiHtml = ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'openai' } });
-  const providerOk = /<option value="volc" selected>/.test(ctx.renderAsrSection(cfg))
+  const providerOk = /<option value="volc" selected>/.test(ctx.renderAsrSection({ ...cfg, asr: { ...cfg.asr, provider: 'volc' } }))
     && /<option value="openai" selected>/.test(openaiHtml)
     && /<option value="local" selected>/.test(localHtml)
     // 本地：不要求 Key，缺模型路径时明说不会生效；填了就显示已配置
-    && localHtml.includes('还没填模型文件路径，这项不会生效')
+    && localHtml.includes('本机转写还没装好，这项暂不生效')
+    && localHtml.includes('install-asr-local.mjs')
     && localReadyHtml.includes('已配置好，这项在生效')
     // 本地隐藏 Key 字段（不需要 Key），OpenAI 兼容则显示；地址/模型字段只在该 provider 下显示
     && /id="asr-key-field" style="display:none"/.test(localHtml)
@@ -958,6 +963,19 @@ try {
     && !needAddrHtml.includes('已配置好');
   statusOk ? pass++ : fail++;
   console.log('  ' + (statusOk ? 'OK   ' : 'FAIL ') + '设置页：状态按服务端判定，并区分换服务/缺地址/环境变量三种情形');
+
+  // 开关关着时不能说"在生效"：ready 必须用服务端的 available，而不是 configured（审查抓到过）
+  const disabledHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'volc', enabled: false, configured: true, available: false, hasApiKey: true }
+  });
+  const availableHtml = ctx.renderAsrSection({
+    ...cfg, asr: { ...cfg.asr, provider: 'volc', enabled: true, configured: true, available: true, hasApiKey: true }
+  });
+  const switchOk = disabledHtml.includes('上面的开关关着，所以不生效')
+    && !disabledHtml.includes('在生效</strong>')
+    && availableHtml.includes('已配置好，这项在生效');
+  switchOk ? pass++ : fail++;
+  console.log('  ' + (switchOk ? 'OK   ' : 'FAIL ') + '设置页：开关关着时显示"配置齐但不生效"，打开才说在生效');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')
     && chatHtml.includes('cfg-proactive') && chatHtml.includes('cfg-sticker')
     && ctx.renderAsrSection(cfg).includes('id="cfg-asr"');

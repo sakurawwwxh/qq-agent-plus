@@ -10,9 +10,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.js';
-import { asrApiKey, asrConfigured, asrMaxPerHour, asrProvider, getConfig } from '../core/config.js';
+import {
+  asrApiKey, asrConfigured, asrLocalBin, asrLocalModel, asrMaxPerHour, asrProvider, getConfig
+} from '../core/config.js';
 import { openAiCompatibleTranscribe, openAiProviderOptions, pcmToWav } from '../llm/asr-openai.js';
-import { localWhisperTranscribe, WHISPER_BIN_CANDIDATES } from '../llm/asr-local.js';
+import { localWhisperTranscribe, resolveWhisperBin } from '../llm/asr-local.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -121,15 +123,30 @@ export async function runProvider(cfg, pcm, { signal } = {}) {
   return await seedAsrTranscribe(pcm, { apiKey: asrApiKey(cfg), signal });
 }
 
+/**
+ * 本机转写的超时：按音频长度放大（CPU 约 1.5~2 倍实时，2 核小机器上 15 分钟音频要跑很久）。
+ * 60 秒起步，约 8 倍音频时长封顶 30 分钟 —— 固定 10 分钟会把长音频一律掐成"超时"。
+ */
+export function localTimeoutMs(pcmBytes) {
+  const seconds = Math.max(1, Math.round(Number(pcmBytes || 0) / 32000));   // 16k 单声道 s16 = 32KB/s
+  return Math.min(30 * 60 * 1000, 60 * 1000 + seconds * 8 * 1000);
+}
+
 /** 本机转写：whisper.cpp 只吃文件，所以把 PCM 套 WAV 头落盘再调用（fs/path/os 都在文件顶层 import）。 */
 async function localTranscribe(cfg, pcm, signal) {
+  const bin = await resolveWhisperBin(asrLocalBin(cfg));
+  if (!bin) {
+    throw new Error('本机转写没装好（找不到 whisper.cpp 可执行文件）：在服务器上跑一次 '
+      + '`node scripts/install-asr-local.mjs` 即可；也可以把「识别服务」换成火山或 OpenAI 兼容服务');
+  }
   const wavPath = join(tmpdir(), `qa-asr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
   writeFileSync(wavPath, pcmToWav(pcm));
   try {
     return await localWhisperTranscribe(wavPath, {
-      bin: String(cfg?.asr?.localBin || '').trim() || WHISPER_BIN_CANDIDATES[0],
-      model: String(cfg?.asr?.localModel || '').trim(),
+      bin,
+      model: asrLocalModel(cfg),
       language: String(cfg?.asr?.language || 'zh').trim(),
+      timeoutMs: localTimeoutMs(pcm.length),
       signal
     });
   } finally {
