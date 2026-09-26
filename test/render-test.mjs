@@ -991,7 +991,11 @@ try {
     && notInstalledHtml.includes('也可以改用上面两种 API Key 服务')
     // 已装好时按钮改成"重新安装 / 修复"，并说明无需再装
     && /id="asr-install-btn"[^>]*>重新安装 \/ 修复</.test(installedHtml)
-    && installedHtml.includes('已装好，无需再装');
+    && installedHtml.includes('已装好，无需再装')
+    // 删除按钮只在"已装好"时出现，且是危险色（删的是模型与构建产物）
+    && /type="button">删除本机转写</.test(installedHtml)
+    && /class="btn btn-small btn-danger" id="asr-uninstall-btn"/.test(installedHtml)
+    && !notInstalledHtml.includes('asr-uninstall-btn');
   choiceOk ? pass++ : fail++;
   console.log('  ' + (choiceOk ? 'OK   ' : 'FAIL ') + '设置页：免费/API Key 二选一 + 一键安装入口（已装则显示修复）');
   const asrMovedOk = !chatHtml.includes('cfg-asr') && !defaultHtml.includes('cfg-asr')

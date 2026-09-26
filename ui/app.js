@@ -6573,6 +6573,10 @@ function renderAsrSection(c) {
   const localInstalled = typeof c.asr?.localInstalled === 'boolean'
     ? c.asr.localInstalled
     : (Boolean(c.asr?.localBinResolved) && Boolean(c.asr?.localModelResolved));
+  // 删除按钮只在"托管目录里真有东西"时显示：没有可删的就别给按钮（免得点了什么也没发生）
+  const localRemovable = typeof c.asr?.localManagedExists === 'boolean'
+    ? c.asr.localManagedExists
+    : localInstalled;
   const ready = typeof c.asr?.available === 'boolean'
     ? c.asr.available                                   // 服务端权威结论：开关 + 配齐，两者都算
     : (c.asr?.enabled !== false
@@ -6655,6 +6659,7 @@ function renderAsrSection(c) {
     </div>
     <div class="field" id="asr-install-field" style="${hide('local')}">
       <button class="btn btn-primary btn-small" id="asr-install-btn" type="button">${localInstalled ? '重新安装 / 修复' : '安装本机转写（免费）'}</button>
+      ${localRemovable ? '<button class="btn btn-small btn-danger" id="asr-uninstall-btn" type="button">删除本机转写</button>' : ''}
       <span id="asr-install-hint" class="muted">${localInstalled
         ? '已装好，无需再装。换模型可以重跑安装并选 tiny / base / small。'
         : '约 466MB（small 模型）+ 几分钟构建；装完自动生效，不用重启。也可以改用上面两种 API Key 服务。'}</span>
@@ -9245,10 +9250,13 @@ function bindSettingsEvents(c) {
           paint(st);
           if (!st.running) {
             if (st.ok) {
-              if (box) box.innerHTML = `安装完成 ✓ 已生效。<br><span class="muted">${esc((st.log || []).slice(-3).join(' / '))}</span>`;
+              const msg = `安装完成 ✓ 已生效。<br><span class="muted">${esc((st.log || []).slice(-3).join(' / '))}</span>`;
               if (hint) hint.textContent = '';
-              loadSettings().catch(() => {});   // 重新拉配置：装完的路径要立刻显示出来
+              await loadSettings().catch(() => {});   // 重新拉配置：装完的路径要立刻显示出来
               renderSettings();
+              // 重画会把上面那块提示连同节点一起换掉 —— 重画后再写一次（同「保存设置」提示的处理）
+              const after = $('#asr-install-progress');
+              if (after) { after.style.display = ''; after.innerHTML = msg; }
             } else if (box) {
               box.innerHTML = `安装失败：${esc(st.error || '看上面的输出')}<br><span class="muted">${esc((st.log || []).slice(-4).join(' / '))}</span>`;
             }
@@ -9261,6 +9269,36 @@ function bindSettingsEvents(c) {
         if (box) { box.style.display = ''; box.textContent = `启动失败：${String(error?.message ?? error)}`; }
       } finally {
         installBtn.disabled = false;
+      }
+    });
+
+    // 「删除本机转写」：删的是托管目录（模型 + 构建产物），删前先确认
+    const uninstallBtn = $('#asr-uninstall-btn');
+    if (uninstallBtn) uninstallBtn.addEventListener('click', async () => {
+      const box = $('#asr-install-progress');
+      const ok = await askForConfirmation(`删除本机转写会移除已下载的模型与构建产物（约 500MB），配置里的路径也会清空。
+之后语音消息会退回「听不了语音」，随时可以重新安装。
+
+注意：只有安装脚本放在 <数据目录>/asr 里的文件会被删；你自己另外装的 whisper.cpp 或模型不会被碰。`
+      );
+      if (!ok) return;
+      uninstallBtn.disabled = true;
+      if (box) { box.style.display = ''; box.textContent = '正在删除…'; }
+      try {
+        const res = await api('/api/asr/uninstall', { method: 'POST' });
+        const mb = res?.freedBytes ? `，释放 ${(res.freedBytes / 1048576).toFixed(0)}MB` : '';
+        const kept = (res?.keptOutside || []).length
+          ? `<br><span class="muted">这些不在托管目录里，没有删除：${esc((res.keptOutside || []).join(' / '))}</span>`
+          : '';
+        const msg = `已删除本机转写${mb}。${kept}`;
+        await loadSettings().catch(() => {});
+        renderSettings();
+        const after = $('#asr-install-progress');
+        if (after) { after.style.display = ''; after.innerHTML = msg; }
+      } catch (error) {
+        if (box) box.textContent = `删除失败：${String(error?.message ?? error)}`;
+      } finally {
+        uninstallBtn.disabled = false;
       }
     });
 

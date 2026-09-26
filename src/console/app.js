@@ -174,6 +174,7 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
       running: asrInstall.running,
       installed: Boolean(findWhisperBinSync(getConfig())) && String(asrLocalModel(getConfig())) !== ''
         && (() => { try { return fs.existsSync(asrLocalModel(getConfig())); } catch { return false; } })(),
+      managedExists: managedAsrExists(),
       phase: asrInstall.phase,
       percent: asrInstall.percent,
       ok: asrInstall.ok,
@@ -183,6 +184,70 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
       log: asrInstall.log.slice(-ASR_LOG_MAX),
       resolved: { bin: asrLocalBin(getConfig()), model: asrLocalModel(getConfig()) }
     };
+  }
+
+  /** 托管目录（<数据目录>/asr）里还有没有东西 —— 决定界面给不给"删除"按钮。 */
+  function managedAsrExists() {
+    try { return fs.existsSync(path.resolve(DATA_DIR, 'asr')); } catch { return false; }
+  }
+
+  /** 目录体积（只用于告诉用户释放了多少，算不出来就算了）。 */
+  function dirSizeBytes(dir) {
+    let total = 0;
+    const walk = (target) => {
+      let stat = null;
+      try { stat = fs.lstatSync(target); } catch { return; }
+      // 不跟软链接：rmSync 也只删链接本身；跟进去遇到环会 RangeError，
+      // 而那一步跑在 rmSync 之前 —— 一次算错就变成"永远删不掉"（审查抓到）。
+      if (stat.isSymbolicLink()) return;
+      if (stat.isDirectory()) {
+        let names = [];
+        try { names = fs.readdirSync(target); } catch { return; }
+        for (const name of names) walk(path.join(target, name));
+        return;
+      }
+      total += stat.size;
+    };
+    walk(dir);
+    return total;
+  }
+
+  /**
+   * 删除本机转写的文件：只动托管目录 <数据目录>/asr（安装脚本的落点）。
+   * 配置里若指到别处（用户自己的 whisper.cpp 或模型），**不删**，只在结果里说明 ——
+   * 那些文件不归这个功能管，删掉别人自己的东西是不可接受的。
+   */
+  function removeLocalAsrFiles() {
+    // 必须 resolve：DATA_DIR 可能是相对路径（QQ_AGENT_DATA_DIR 允许相对），而配置里存的是绝对路径 ——
+    // 不 resolve 就会"文件删了、却判成不在托管目录、配置没清"（审查抓到）。
+    const managed = path.resolve(DATA_DIR, 'asr');
+    // Windows/macOS 的文件系统大小写不敏感：同一个目录换个大小写写法还是它，比较前统一折叠
+    const fold = (value) => (process.platform === 'win32' || process.platform === 'darwin'
+      ? value.toLowerCase()
+      : value);
+    const inside = (target) => {
+      try {
+        const resolved = fold(path.resolve(target));
+        const base = fold(managed);
+        return resolved === base || resolved.startsWith(base + path.sep);
+      } catch { return false; }
+    };
+    const cfgNow = getConfig();
+    const bin = String(cfgNow.asr?.localBin || '').trim();
+    const model = String(cfgNow.asr?.localModel || '').trim();
+    const keptOutside = [bin, model].filter((item) => item && !inside(item));
+    const freedBytes = dirSizeBytes(managed);
+    fs.rmSync(managed, { recursive: true, force: true });
+    // 指向托管目录的路径要清掉（不清就会留一条指向已删文件的配置）；
+    // 指向别处的原样保留，由界面提示"未删除"。
+    const patch = {};
+    if (bin && inside(bin)) patch.localBin = '';
+    if (model && inside(model)) patch.localModel = '';
+    if (Object.keys(patch).length) {
+      updateConfig({ asr: patch });
+      emit('chat-update', '*');
+    }
+    return { managedDir: managed, freedBytes, keptOutside };
   }
 
   function startAsrInstall() {
@@ -1886,6 +1951,16 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
         if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
         return json(res, 200, asrInstallSnapshot());
       }
+      if (pathname === '/api/asr/uninstall' && method === 'POST') {
+        if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
+        if (asrInstall.running) return json(res, 409, { error: '安装还在进行中，等它跑完再删' });
+        try {
+          const removed = removeLocalAsrFiles();
+          return json(res, 200, { ok: true, ...removed, status: asrInstallSnapshot() });
+        } catch (error) {
+          return json(res, 500, { error: `删除失败：${String(error?.message ?? error)}` });
+        }
+      }
       if (pathname === '/api/asr/install' && method === 'POST') {
         if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
         try {
@@ -2169,6 +2244,9 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
           // 本机转写用哪个二进制/模型（配置>环境变量>自动找到）——让"装没装、会用哪个"看得见
           localBinResolved: asrLocalBin(cfgNow),
           localModelResolved: asrLocalModel(cfgNow),
+          // 托管目录里还有东西吗？删除按钮只看这个 —— 避免"本机可用但没有任何托管文件"
+          // （例如 whisper-cli 装在 PATH 里）时按钮点了什么也没删、还退不出去（审查意见）
+          localManagedExists: managedAsrExists(),
           // "装好了没"要真去验：配置里写得再像也不等于文件在（审查意见）。
           // 界面拿这个决定按钮文案，跟 asrAvailable() 的口径保持一致。
           localInstalled: Boolean(findWhisperBinSync(cfgNow))

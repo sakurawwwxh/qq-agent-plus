@@ -122,3 +122,90 @@ test('停服时不留孤儿安装进程（重启后不会出现两个并行的�
   fs.rmSync(marker, { force: true });
   fs.rmSync(slow, { force: true });
 });
+
+test('删除本机转写：只删托管目录，配置里指向别处的文件不碰', async (t) => {
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'observe';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'ws://127.0.0.1:1';
+  cfg.asr = { ...cfg.asr, provider: 'local', enabled: true, localBin: '', localModel: '' };
+  updateConfig(cfg);
+  const installer = path.join(root, 'fake-installer2.cjs');
+  writeFakeInstaller(installer);
+  const app = createApp({ log: () => {}, asrInstaller: installer });
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  await app.start();
+  const request = async (route, { method = 'GET', body } = {}) => {
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  };
+
+  await request('/api/asr/install', { method: 'POST' });
+  for (let i = 0; i < 100; i += 1) {
+    if (!(await request('/api/asr/install-status')).body.running) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const managed = path.join(root, 'asr');
+  assert.equal(fs.existsSync(managed), true, '假安装器应在托管目录里留下东西');
+  // 额外塞一个"用户自己的"模型在托管目录外，确保删除不会连它一起删
+  const outside = path.join(root, 'my-own-model.bin');
+  fs.writeFileSync(outside, 'mine');
+  await request('/api/config', { method: 'POST', body: { asr: { localModel: outside } } });
+
+  const removed = await request('/api/asr/uninstall', { method: 'POST' });
+  assert.equal(removed.status, 200);
+  assert.equal(fs.existsSync(managed), false, '托管目录应被删掉');
+  assert.equal(fs.existsSync(outside), true, '托管目录外的文件不能删');
+  assert.ok(removed.body.freedBytes > 0, '应报告释放了多少');
+  assert.deepEqual(removed.body.keptOutside, [outside], '并说明哪些没删');
+
+  const live = getConfig();
+  assert.equal(String(live.asr.localModel), outside, '指向别处的配置原样保留');
+  // 判"不可用"前先把 PATH 清空：开发机上可能真装着 whisper-cli，那会让 available 保持 true
+  // （这不是代码错，是环境噪声 —— 用固定的查找环境来断言，测试才与环境无关）
+  const savedPath = process.env.PATH;
+  process.env.PATH = path.join(root, 'no-such-bin-dir');   // 一个不存在的目录 → 找不到任何候选二进制
+  try {
+    const status = await request('/api/config');
+    assert.equal(status.body.asr.available, false, '托管文件删掉、又没有别的二进制时就不该再算"可用"');
+    assert.equal(status.body.asr.localInstalled, false);
+    assert.equal(status.body.asr.localManagedExists, false, '托管目录已不存在 → 界面不再给删除按钮');
+  } finally {
+    process.env.PATH = savedPath;
+  }
+});
+
+test('安装进行中不许删除（会被构建写回去，白白浪费一次构建）', async (t) => {
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'observe';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  updateConfig(cfg);
+  const slow = path.join(root, 'slow-installer3.cjs');
+  fs.writeFileSync(slow, 'setTimeout(() => {}, 4000);');
+  const app = createApp({ log: () => {}, asrInstaller: slow });
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(slow, { force: true });
+  });
+  await app.start();
+  const post = async (route) => {
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST' });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await post('/api/asr/install')).status, 202);
+  const refused = await post('/api/asr/uninstall');
+  assert.equal(refused.status, 409);
+  assert.match(refused.body.error, /安装还在进行中/);
+});
