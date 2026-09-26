@@ -19,6 +19,7 @@ import { dashscopeOptions, dashscopeTranscribe } from '../llm/asr-dashscope.js';
 import { baiduOptions, baiduTranscribe } from '../llm/asr-baidu.js';
 import { tencentOptions, tencentTranscribe } from '../llm/asr-tencent.js';
 import { iflytekOptions, iflytekTranscribe } from '../llm/asr-iflytek.js';
+import { looksLikeSilk, silkToPcm } from '../llm/silk.js';
 
 const AUDIO_MAX_BYTES = 200 * 1024 * 1024; // 200MB：QQ 文件上限内
 // PCM 全量进内存：16kHz 单声道 s16 = 32KB/s，15 分钟约 28.8MB（上限按这个算）。
@@ -254,12 +255,38 @@ async function localTranscribe(cfg, pcm, signal) {
   }
 }
 
+/**
+ * 下载到的音频字节 → 16k 单声道 s16le PCM。
+ * 两条路：QQ 语音是 SILK（ffmpeg 解不了，见 src/llm/silk.js），其余走 ffmpeg 转码。
+ * m4a/mp4 的 moov atom 常在尾部，ffmpeg 管道输入无法 seek —— 所以必须落盘成临时文件。
+ */
+export async function audioBufferToPcm(buffer, { name = '', signal } = {}) {
+  if (looksLikeSilk(buffer)) {
+    const { pcm, durationMs } = await silkToPcm(buffer);
+    if (durationMs > 0) {
+      // 一致性自检：SILK 头里的时长与解出来的字节数应当对得上（差太多说明解码中途出错了）
+      const expected = Math.round(durationMs / 1000 * 32000);
+      if (Math.abs(pcm.length - expected) > Math.max(3200, expected * 0.05)) {
+        throw new Error(`SILK 解码结果与时长不符（${pcm.length} 字节 vs 约 ${expected} 字节），这条语音可能损坏`);
+      }
+    }
+    return pcm;
+  }
+  const ext = /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm|silk)$/i.exec(String(name || ''))?.[1] || 'bin';
+  const tmpFile = join(tmpdir(), `qa-audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
+  writeFileSync(tmpFile, buffer);
+  try {
+    return await ffmpegToPcm(tmpFile, { signal });
+  } finally {
+    try { rmSync(tmpFile, { force: true }); } catch { /* 清理失败无害 */ }
+  }
+}
+
 /** 主入口：给 tools-core 的 get_message_audio 工具用，返回转写文本。 */
 export async function transcribeMessageAudio(ctx, entry) {
   const target = await currentMessageAudioUrl(ctx, entry);
   if (!target) return { ok: false, error: '这条消息里没有可识别的音频/视频内容' };
-  let tmpFile = null;
-  try {
+  {
     if (!target.url) {
       return { ok: false, error: `文件「${target.name || '未知'}」拿不到下载地址（协议端未提供 URL），暂无法转写` };
     }
@@ -279,18 +306,11 @@ export async function transcribeMessageAudio(ctx, entry) {
     } catch (e) {
       return { ok: false, error: `音频下载失败：${String(e?.message ?? e)}` };
     }
-    // m4a/mp4 的 moov atom 常在尾部，ffmpeg 管道输入无法 seek——必须落盘成临时文件
-    const ext = /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm)$/i.exec(target.name || '')?.[1] || 'bin';
-    tmpFile = join(tmpdir(), `qa-audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
-    writeFileSync(tmpFile, buffer);
     let pcm;
     try {
-      pcm = await ffmpegToPcm(tmpFile, { signal: ctx.signal });
+      pcm = await audioBufferToPcm(buffer, { name: target.name, signal: ctx.signal });
     } catch (e) {
       return { ok: false, error: String(e?.message ?? e) };
-    } finally {
-      try { rmSync(tmpFile, { force: true }); } catch { /* 清理失败无害 */ }
-      tmpFile = null;
     }
     const cfg = getConfig();
     if (!asrConfigured(cfg)) {
@@ -311,7 +331,5 @@ export async function transcribeMessageAudio(ctx, entry) {
     } catch (e) {
       return { ok: false, error: `语音识别失败：${String(e?.message ?? e)}` };
     }
-  } finally {
-    if (tmpFile) { try { rmSync(tmpFile, { force: true }); } catch { /* noop */ } }
   }
 }
