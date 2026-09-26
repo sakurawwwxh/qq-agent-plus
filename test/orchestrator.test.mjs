@@ -741,6 +741,8 @@ describe('Orchestrator', () => {
     await runner.wake('group:1');
     assert.equal(hasAudioTool(bodies.at(-1)), true, '配了 key 应注入');
     assert.match(bodies.at(-1).messages[0].content, /get_message_audio/);
+    // 视频要两样都说清：画面（get_message_images 帧条）+ 声音（转写），否则模型会以为只能听
+    assert.match(bodies.at(-1).messages[0].content, /别人发视频时两样都能拿到/);
     // 3) 关掉联网搜索但 ASR 开关仍开着：语音转写不该跟着消失（审查意见）
     cfg.webSearch.enabled = false;
     setRuntimeConfig(cfg);
@@ -754,7 +756,11 @@ describe('Orchestrator', () => {
     await runner.wake('group:1');
     assert.equal(hasAudioTool(bodies.at(-1)), false);
     assert.doesNotMatch(bodies.at(-1).messages[0].content, /get_message_audio/);
-    assert.match(bodies.at(-1).messages[0].content, /无法处理语音\/视频\/音频文件/);
+    const offPrompt = bodies.at(-1).messages[0].content;
+    assert.match(offPrompt, /听不了语音/);
+    // 但视频的"画面"不归 ASR 管：关掉 ASR 也该能看帧条（2026-09-26 用户反馈"发视频只会说听声音"）
+    assert.match(offPrompt, /get_message_images/);
+    assert.match(offPrompt, /画面/);
   });
 
   it('keeps slang injection retired even with legacy config and slang assets', async (t) => {

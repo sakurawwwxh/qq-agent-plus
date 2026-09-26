@@ -38,7 +38,8 @@ QQ Agent Plus 是面向 Linux 服务器的 QQ 群聊 Agent。它连接外部 One
   **默认走 API Key 的托管服务**（预置硅基流动的地址：粘一个 Key、从官网拉一次模型列表就能用；
   也可一键换成 Groq / 火山 Seed-ASR / 阿里云百炼 / 讯飞 / 腾讯云 / 百度 / 自建，各家对新用户多有免费额度）；
   也支持**零 Key 的本机 whisper.cpp**（离线、免费，控制台里点一下就能装、也能完整卸载，或跑
-  `node scripts/install-asr-local.mjs`）。QQ 语音（SILK）与视频音轨都能吃（SILK 本地解码，不需要协议端转码）。
+  `node scripts/install-asr-local.mjs`）。QQ 语音（SILK）与视频音轨都能吃（SILK 本地解码，不需要协议端转码）；
+  视频还能"看画面"：抽 4 帧拼成 2×2 帧条交给视觉模型（另有音轨转写），看到也能听到。
   Key 与搜索的分开配。
   带每小时次数闸门。群禁言时会直接报因、不再硬发。
 

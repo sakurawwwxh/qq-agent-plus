@@ -74,7 +74,7 @@ import { validateImageUrl, safeFetchBinary } from '../llm/safe-fetch.js';
 import { webSearch, webFetch } from '../llm/web-search.js';
 import { expandForwardNodes, extractMediaFromSegments } from '../onebot/onebot.js';
 import { readForwardMessages } from '../onebot/forward-reader.js';
-import { convertGifToStillStrip, fetchOversizedImageAsJpeg } from './image-downsample.js';
+import { convertGifToStillStrip, convertVideoToFrameStrip, fetchOversizedImageAsJpeg } from './image-downsample.js';
 import { transcribeMessageAudio } from './audio-transcribe.js';
 
 
@@ -117,6 +117,21 @@ export async function downloadImageAsDataUrl(url, signal) {
   if (!buffer || !buffer.length) throw new Error('图片内容为空');
   const mime = detectMime(buffer) || String(contentType || 'image/jpeg').split(';')[0];
   return toVisionDataUrl(buffer, mime, signal);
+}
+
+/**
+ * 视频 → 视觉模型能看的 data URL（2×2 帧条）。
+ * 视频没有"图片"那种直传路径：先把整段下下来（沿用图片通道的体积上限与内网限制），
+ * 再按总时长抽 4 帧拼成一张 JPEG。抽帧失败时抛错（让模型知道看不到画面，而不是当成静默空图）。
+ */
+export async function downloadVideoAsFrameStrip(url, signal) {
+  signal?.throwIfAborted();
+  const safeUrl = await validateImageUrl(url);
+  const { buffer } = await safeFetchBinary(safeUrl, 96 * 1024 * 1024, signal);
+  if (!buffer?.length) throw new Error('视频内容为空');
+  const strip = await convertVideoToFrameStrip(buffer, signal);
+  if (!strip?.length) throw new Error('视频抽帧失败（服务器上需要可用的 ffmpeg/ffprobe）');
+  return `data:image/jpeg;base64,${strip.toString('base64')}`;
 }
 
 function detectMime(buf) {
@@ -227,6 +242,10 @@ function messageTargetError(ctx, { replyToMessageId, atUserId }) {
   return '';
 }
 
+/**
+ * 这条消息里"能看的画面"：图片（含 GIF 帧条）与视频（抽帧条）。
+ * 返回描述符数组（{kind, url}），由调用方按 kind 选下载方式。最多 4 个。
+ */
 async function currentMessageImageUrls(ctx, entry) {
   let media = entry.media || [];
   if (entry.mid != null && typeof ctx.onebot?.getMsg === 'function') {
@@ -234,7 +253,7 @@ async function currentMessageImageUrls(ctx, entry) {
       const data = await ctx.onebot.getMsg(entry.mid);
       const segments = Array.isArray(data?.message) ? data.message : [];
       const fresh = extractMediaFromSegments(segments)
-        .filter((item) => item.kind === 'image' && (item.url || item.file));
+        .filter((item) => (item.kind === 'image' || item.kind === 'video') && (item.url || item.file));
       if (fresh.length) {
         media = fresh;
         ctx.store?.updateByMid?.(ctx.chatKey, entry.mid, { appendMedia: fresh });
@@ -244,9 +263,9 @@ async function currentMessageImageUrls(ctx, entry) {
     }
   }
   return media
-    .filter((item) => item.kind === 'image')
-    .map((item) => String(item.url || item.file || '').trim())
-    .filter(Boolean)
+    .filter((item) => item.kind === 'image' || item.kind === 'video')
+    .map((item) => ({ kind: item.kind, url: String(item.url || item.file || '').trim() }))
+    .filter((item) => item.url)
     .slice(0, 4);
 }
 
@@ -624,7 +643,7 @@ export function buildToolDefs() {
     },
     {
       name: 'get_message_images',
-      description: '查看某条消息里的图片/表情（视觉模型可以直接看懂）。消息文本出现 [图片] / [表情包] 时可用。id 用聊天记录里每条消息前的 #数字。',
+      description: '查看某条消息里的图片/表情/**视频画面**（视觉模型可以直接看懂）。消息文本出现 [图片] / [表情包] / [视频] 时可用；视频会抽 4 帧拼成 2×2 帧条，配 get_message_audio 听声音就能把视频"看+听"齐。id 用聊天记录里每条消息前的 #数字。',
       parameters: {
         type: 'object',
         properties: { messageId: { type: ['integer', 'string'], description: 'QQ 消息 id（聊天记录里的 #数字，可能为负数）' } },
@@ -634,13 +653,21 @@ export function buildToolDefs() {
         try {
           const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
           if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
-          const urls = await currentMessageImageUrls(ctx, entry);
-          if (!urls.length) return ok(`消息 ${args.messageId} 没有可查看的图片`);
+          const viewables = await currentMessageImageUrls(ctx, entry);
+          if (!viewables.length) return ok(`消息 ${args.messageId} 没有可查看的图片`);
           const dataUrls = [];
           const failed = [];
-          for (const url of urls) {
+          let videoCount = 0;
+          for (const item of viewables) {
             ctx.signal?.throwIfAborted();
-            try { dataUrls.push(await downloadImageAsDataUrl(url, ctx.signal)); } catch (e) { failed.push(String(e?.message ?? e)); }
+            try {
+              if (item.kind === 'video') {
+                dataUrls.push(await downloadVideoAsFrameStrip(item.url, ctx.signal));
+                videoCount += 1;
+              } else {
+                dataUrls.push(await downloadImageAsDataUrl(item.url, ctx.signal));
+              }
+            } catch (e) { failed.push(String(e?.message ?? e)); }
           }
           if (!dataUrls.length) return err(`图片获取失败：${failed.join('；')}`);
           const note = failed.length ? `（另有 ${failed.length} 张获取失败）` : '';
@@ -662,7 +689,10 @@ export function buildToolDefs() {
           const knownHint = known.length
             ? `（这张你之前看过并记过：「${known.join('」「')}」——按这个理解回，别再描述画面）`
             : '';
-          return { content: imageParts(`消息 ${args.messageId} 的图片内容${note}${knownHint}（若是 2×2 四宫格：那是动图 GIF 按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容。先判断它想表达的情绪/态度：无语呆滞、嘲讽、卖萌、赞同、挑衅、摆烂、委屈…再针对态度回话，不要复述画面）：`, dataUrls) };
+          const kindHint = videoCount
+            ? `其中 ${videoCount} 条是视频：2×2 四宫格按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容。要听视频里说了什么再调 get_message_audio。`
+            : '若是 2×2 四宫格：那是动图 GIF 按时间顺序抽的 4 帧，阅读顺序左上→右上→左下→右下，黑格是填充不是画面内容。先判断它想表达的情绪/态度：无语呆滞、嘲讽、卖萌、赞同、挑衅、摆烂、委屈…再针对态度回话，不要复述画面。';
+          return { content: imageParts(`消息 ${args.messageId} 的图片内容${note}${knownHint}（${kindHint}）：`, dataUrls) };
         } catch (error) {
           return err(error?.message ?? error);
         }

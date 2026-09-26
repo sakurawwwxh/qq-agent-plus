@@ -235,6 +235,58 @@ function gifStripVf(frameCount) {
  * （gifStripVf）；透明背景按 ffmpeg 默认合成（黑底）。
  * 返回 JPEG Buffer；ffmpeg 缺失或转换失败返回 null，由调用方回退原始 GIF。
  */
+/**
+ * 视频时长（秒）：ffprobe 拿不到就按 10 秒估 —— 只影响抽帧间隔，不影响"能不能看"。
+ * ffprobe 与 ffmpeg 同目录（resolveFfmpeg 返回的路径直接换名字）。
+ */
+async function probeVideoSeconds(ffmpegPath, buffer, signal) {
+  // ffprobe 与 ffmpeg 同目录；resolveFfmpeg 可能给裸名字（靠 PATH 找），dirname 之后仍是裸名字 ✓
+  const probePath = path.join(path.dirname(String(ffmpegPath) || ''), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-ffprobe-'));
+  const inputPath = path.join(workDir, 'input');
+  try {
+    fs.writeFileSync(inputPath, buffer);
+    const out = await new Promise((resolve) => {
+      const child = spawn(probePath, [
+        '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', inputPath
+      ], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      let text = '';
+      const timer = setTimeout(() => { try { child.kill(); } catch { /* 已退出 */ } resolve(''); }, 8000);
+      signal?.addEventListener('abort', () => { try { child.kill(); } catch { /* 已退出 */ } resolve(''); }, { once: true });
+      child.stdout.on('data', (c) => { text = (text + c).slice(-200); });
+      child.on('error', () => { clearTimeout(timer); resolve(''); });
+      child.on('close', () => { clearTimeout(timer); resolve(text); });
+    });
+    const seconds = Number(String(out).trim());
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  } catch {
+    return 0;
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
+  }
+}
+
+/**
+ * 视频 → JPEG 帧条（2×2 四宫格，与 GIF 同一口径）。
+ * 为什么要有它：视频给模型的默认只有音轨（get_message_audio 转写），画面本身它看不到 ——
+ * 用户 2026-09-26 反馈"发视频它只回一句视频只能听声"。做法：按总时长均匀抽 4 帧拼一张 JPEG
+ * （fps=4/时长 + tile=2x2），时长未知时按 10 秒估。返回 JPEG Buffer；ffmpeg 缺失/转换失败返回 null。
+ */
+export async function convertVideoToFrameStrip(buffer, signal) {
+  const ffmpegPath = await resolveFfmpeg();
+  if (!ffmpegPath) return null;
+  try {
+    const probed = await probeVideoSeconds(ffmpegPath, buffer, signal);
+    const seconds = probed > 0 ? probed : 10;
+    const rate = 4 / Math.max(1, Math.min(600, seconds));   // 整段均匀 4 帧；超长视频也只看开头这段里的 4 帧
+    const vf = `fps=${rate.toFixed(6)},scale=320:-2,tile=2x2`;
+    const jpeg = await runFfmpeg(ffmpegPath, buffer, vf, signal);
+    return jpeg?.length ? jpeg : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function convertGifToStillStrip(buffer, signal) {
   const ffmpegPath = await resolveFfmpeg();
   if (!ffmpegPath) return null;

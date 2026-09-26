@@ -398,3 +398,41 @@ it('安装脚本：--restart 选项与默认值（装完要能重启让配置生
   assert.equal(parseArgs(['--restart']).restart, true);
   assert.equal(parseArgs(['--print-only']).printOnly, true);
 });
+
+
+// ── 媒体定位：文件段换地址 / 协议端只给文件名时的说明（2026-09-26 视频反馈跟进）──
+
+it('文件段只有 file_id 时用 get_group_file_url / get_private_file_url 换地址', async () => {
+  const { resolveFileSegmentUrl } = await import('../src/tools/audio-transcribe.js');
+  const calls = [];
+  const onebot = { call: async (action, params) => { calls.push({ action, params }); return { url: 'https://cdn.example.com/x.mp4' }; } };
+  assert.equal(await resolveFileSegmentUrl({ chatKey: 'group:123', onebot }, { fileSegId: 'F1' }),
+    'https://cdn.example.com/x.mp4');
+  assert.deepEqual(calls[0], { action: 'get_group_file_url', params: { group_id: 123, file_id: 'F1' } });
+
+  assert.equal(await resolveFileSegmentUrl({ chatKey: 'private:456', onebot }, { fileSegId: 'F2' }),
+    'https://cdn.example.com/x.mp4');
+  assert.deepEqual(calls[1], { action: 'get_private_file_url', params: { user_id: 456, file_id: 'F2' } });
+
+  // 没有 file_id / 协议端报错 / 返回的不是 http 地址 → 都返回空串，由上层给准确说明
+  assert.equal(await resolveFileSegmentUrl({ chatKey: 'group:1', onebot }, { fileSegId: '' }), '');
+  assert.equal(await resolveFileSegmentUrl({ chatKey: 'group:1', onebot: { call: async () => { throw new Error('boom'); } } }, { fileSegId: 'F3' }), '');
+  assert.equal(await resolveFileSegmentUrl({ chatKey: 'group:1', onebot: { call: async () => ({ url: 'file:///tmp/x.mp4' }) } }, { fileSegId: 'F4' }), '');
+});
+
+it('协议端只给文件名（没有 URL）时说清楚，不再去请求一个文件名', async () => {
+  const { currentMessageAudioUrl, transcribeMessageAudio } = await import('../src/tools/audio-transcribe.js');
+  const ctx = {
+    chatKey: 'group:1',
+    signal: AbortSignal.timeout(5000),
+    onebot: { getMsg: async () => ({ message: [{ type: 'video', data: { file: 'abc.mp4' } }] }) }
+  };
+  const target = await currentMessageAudioUrl(ctx, { mid: 'v1' });
+  assert.equal(target.url, '', '没给 URL 就不该把文件名当 URL');
+  assert.equal(target.localOnly, true);
+  assert.equal(target.name, 'abc.mp4');
+  const out = await transcribeMessageAudio(ctx, { mid: 'v1' });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /拿不到下载地址/);
+  assert.match(out.error, /发送文件/, '要给出可照做的替代做法');
+});

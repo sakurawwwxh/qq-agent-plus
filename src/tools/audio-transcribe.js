@@ -84,8 +84,11 @@ export function ffmpegToPcm(inputPath, { timeoutMs = 10 * 60 * 1000, signal } = 
  * 从消息 entry 提取可转写的音频 URL。
  * 优先 getMsg 现取（URL 短期有效），退到 entry.media 存档。
  */
+/** 只有 http(s) 才是能下载的地址；协议端有时只给本地文件名/路径，那种要去换地址。 */
+const isFetchableUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
+
 export async function currentMessageAudioUrl(ctx, entry) {
-  let media = entry.media || [];
+  const media = entry.media || [];
   if (entry.mid != null && typeof ctx.onebot?.getMsg === 'function') {
     try {
       const data = await ctx.onebot.getMsg(entry.mid);
@@ -93,26 +96,62 @@ export async function currentMessageAudioUrl(ctx, entry) {
       const fresh = [];
       for (const seg of segments) {
         const d = seg?.data ?? {};
-        if (seg?.type === 'record' || seg?.type === 'voice') fresh.push({ kind: 'audio', url: String(d.url || d.file || '') });
-        else if (seg?.type === 'video') fresh.push({ kind: 'audio', url: String(d.url || d.file || '') });
-        else if (seg?.type === 'file') {
+        // 记录/视频段：只认能下载的 http(s) 地址。NapCat 在"视频只存在本地缓存"时只给
+        // 文件名（没有 url），把它当 URL 去请求只会得到一句"URL 无效"（2026-09-26 实测）。
+        if (seg?.type === 'record' || seg?.type === 'voice' || seg?.type === 'video') {
+          const url = String(d.url || '');
+          const name = String(d.file || d.name || '');
+          if (isFetchableUrl(url)) fresh.push({ kind: 'audio', url, name, segment: seg.type });
+          else if (name || url) fresh.push({ kind: 'audio', url: '', localOnly: true, name: name || url, segment: seg.type });
+        } else if (seg?.type === 'file') {
           const name = String(d.name || d.file || '');
-          if (/\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm)$/i.test(name)) {
-            fresh.push({ kind: 'audio', url: String(d.url || ''), name });
+          const url = String(d.url || '');
+          if (/\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm|silk)$/i.test(name)) {
+            fresh.push({
+              kind: 'audio', url: isFetchableUrl(url) ? url : '', name,
+              fileSegId: String(d.file_id || d.id || ''), segment: 'file'
+            });
           }
         }
       }
-      const usable = fresh.filter((x) => x.url);
-      if (usable.length) return usable[0];
-      // file 段的 url 可能为空：OneBot 侧已有 file_id 缓存，可通过 get_file/get_*_file_url 换取
+      const usable = fresh.find((x) => x.url) || fresh[0];
+      if (usable) return usable;
+      // 兜底：任意 file 段（名字认不出扩展名也想试试，反正有 file_id 能换地址）
       const fileSeg = segments.find((s) => s?.type === 'file');
       if (fileSeg) {
-        return { kind: 'audio', url: '', fileSegId: String(fileSeg.data?.file_id || fileSeg.data?.id || ''), name: String(fileSeg.data?.name || '') };
+        return {
+          kind: 'audio', url: '',
+          fileSegId: String(fileSeg.data?.file_id || fileSeg.data?.id || ''),
+          name: String(fileSeg.data?.name || fileSeg.data?.file || '')
+        };
       }
     } catch { /* 源消息过期时退到存档 */ }
   }
   const archived = media.find((m) => m?.kind === 'audio' && m.url);
   return archived ? { kind: 'audio', url: String(archived.url), name: String(archived.name || '') } : null;
+}
+
+/**
+ * file 段没带 url 时，用 OneBot 的取地址接口换一个（群文件 / 私聊文件两套参数）。
+ * 这是"别人发视频文件"那条路的关键一步：段里只有 file_id，没有可下载地址。
+ */
+export async function resolveFileSegmentUrl(ctx, { fileSegId }, { signal } = {}) {
+  const id = String(fileSegId || '').trim();
+  if (!id) return '';
+  const chatKey = String(ctx?.chatKey || '');
+  const [kind, rawId] = chatKey.split(':');
+  if (!rawId || typeof ctx?.onebot?.call !== 'function') return '';
+  const action = kind === 'private' ? 'get_private_file_url' : 'get_group_file_url';
+  const params = kind === 'private'
+    ? { user_id: Number(rawId), file_id: id }
+    : { group_id: Number(rawId), file_id: id };
+  try {
+    const data = await ctx.onebot.call(action, params, 15000, signal);
+    const url = String(data?.url || data?.data?.url || '');
+    return isFetchableUrl(url) ? url : '';
+  } catch {
+    return '';   // 取不到就交给上层给准确说明，不在这里抛
+  }
 }
 
 /**
@@ -287,8 +326,20 @@ export async function transcribeMessageAudio(ctx, entry) {
   const target = await currentMessageAudioUrl(ctx, entry);
   if (!target) return { ok: false, error: '这条消息里没有可识别的音频/视频内容' };
   {
+    if (!target.url && target.fileSegId) {
+      // 群文件/私聊文件的段里常常只有 file_id：用 OneBot 的取地址接口换一个
+      // （这是"别人发视频文件/音频文件"那条路的关键一步）
+      const resolved = await resolveFileSegmentUrl(ctx, target, { signal: ctx.signal });
+      if (resolved) target.url = resolved;
+    }
     if (!target.url) {
-      return { ok: false, error: `文件「${target.name || '未知'}」拿不到下载地址（协议端未提供 URL），暂无法转写` };
+      const what = target.segment === 'file' ? '文件' : '这条视频/语音';
+      return {
+        ok: false,
+        error: `${what}「${target.name || '未知'}」拿不到下载地址：协议端只给了文件名、没给可下载的 URL`
+          + '（NapCat 在视频只存在本地缓存时就是这样，且没有取视频地址的接口）。'
+          + '可以让对方把这段视频/音频用「发送文件」的方式再发一次（本工具支持 .mp4/.mov/.m4a 等文件）。'
+      };
     }
     // "压根没配好"要在扣配额/下载之前就判掉：否则用户白扣一次额度、白下载转码一遍，
     // 最后才看到"还没配好"（2026-09-26 审查）。

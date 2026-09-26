@@ -492,9 +492,16 @@ export function extractMediaFromSegments(segments) {
     } else if (seg.type === 'record' || seg.type === 'voice') {
       media.push({ kind: 'audio', file: String(d.file ?? ''), url: String(d.url ?? '') });
     } else if (seg.type === 'video') {
+      // 视频留两条：音轨给 get_message_audio 转文字，画面给 get_message_images 抽帧条（用户 2026-09-26 反馈
+      // "发视频它只会说听声音"——因为之前只采了音轨，模型根本没有画面可看）。
       media.push({ kind: 'audio', file: String(d.file ?? ''), url: String(d.url ?? '') });
+      media.push({ kind: 'video', file: String(d.file ?? ''), url: String(d.url ?? '') });
     } else if (seg.type === 'file' && /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm)$/i.test(String(d.name ?? d.file ?? ''))) {
       media.push({ kind: 'audio', file: String(d.name ?? d.file ?? ''), url: String(d.url ?? '') });
+      // 视频类文件同样留一条"画面"（群文件发的视频也能看帧条）
+      if (/\.(mp4|mov|avi|mkv|webm)$/i.test(String(d.name ?? d.file ?? ''))) {
+        media.push({ kind: 'video', file: String(d.name ?? d.file ?? ''), url: String(d.url ?? '') });
+      }
     }
   }
   return media;
