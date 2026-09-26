@@ -1981,6 +1981,8 @@ export function createApp({ log = console.log, autoUpdateOptions = {}, asrInstal
         if (asrInstall.running) return json(res, 409, { error: '安装还在进行中，等它跑完再删' });
         try {
           const removed = removeLocalAsrFiles();
+          // 破坏性操作留一行日志：以后能查"什么时候、删了哪个目录、放了多少空间"
+          log(`[asr] 已完整卸载本机转写：${removed.managedDir}（释放 ${Math.round((removed.freedBytes || 0) / 1048576)}MB）`);
           return json(res, 200, { ok: true, ...removed, status: asrInstallSnapshot() });
         } catch (error) {
           return json(res, 500, { error: `删除失败：${String(error?.message ?? error)}` });
