@@ -31,7 +31,7 @@ export function modelUrl(mirror, model) {
 
 /** 解析命令行（导出仅供测试）：坏参数要报清楚，别默默用默认值。 */
 export function parseArgs(argv = []) {
-  const out = { model: 'small', mirror: '', dataDir: process.env.QQ_AGENT_DATA_DIR || path.join(ROOT, 'data'), writeConfig: true, printOnly: false };
+  const out = { model: 'small', mirror: '', dataDir: process.env.QQ_AGENT_DATA_DIR || path.join(ROOT, 'data'), writeConfig: true, printOnly: false, restart: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => {
@@ -46,6 +46,7 @@ export function parseArgs(argv = []) {
     else if (arg === '--write-config') out.writeConfig = true;
     else if (arg === '--no-write-config') out.writeConfig = false;
     else if (arg === '--print-only') out.printOnly = true;
+    else if (arg === '--restart') out.restart = true;
     else if (arg === '-h' || arg === '--help') out.help = true;
     else throw new Error(`未知参数：${arg}`);
   }
@@ -119,7 +120,7 @@ export function writeConfigPointers(configFile, bin, model) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log('用法：node scripts/install-asr-local.mjs [--model tiny|base|small] [--mirror <url>] [--data-dir <dir>] [--no-write-config] [--print-only]');
+    console.log('用法：node scripts/install-asr-local.mjs [--model tiny|base|small] [--mirror <url>] [--data-dir <dir>] [--no-write-config] [--print-only] [--restart]');
     return;
   }
   const target = path.join(opts.dataDir, 'asr');
@@ -196,7 +197,22 @@ async function main() {
     console.log(`   可执行文件：${binPath}`);
     console.log(`   模型文件：  ${modelPath}`);
   }
-  console.log('· 装好了。控制台「设置 → 语音转文字」里识别服务选「本机 whisper.cpp」即生效（不用重启）。');
+  // 配置只在进程启动时读一次（没有文件监听），所以外部改完必须让服务重读一遍：
+  // 这是"装完了却还没生效"最常见的坑。检测到受管安装就明确告知，--restart 时直接代办。
+  const deployed = fs.existsSync(path.join(ROOT, '.deployment.json'));
+  if (!opts.writeConfig) {
+    console.log('· 装好了。把上面两个路径填进控制台「设置 → 语音转文字」后保存即可生效。');
+  } else if (!deployed) {
+    console.log('· 装好了。重启服务（或在控制台保存一次设置）后生效。');
+  } else if (opts.restart) {
+    console.log('· 重启服务让新配置生效…');
+    run('./manage.sh', ['restart'], { cwd: ROOT, allowFail: true });
+    console.log('· 完成。');
+  } else {
+    console.log('· 装好了。运行中的服务需要重启才会读到新配置：');
+    console.log(`    cd ${ROOT} && ./manage.sh restart`);
+    console.log('  （或重跑本脚本并加 --restart 让它代办。）');
+  }
 }
 
 // 只在直接运行时执行（被测试 import 时不跑）

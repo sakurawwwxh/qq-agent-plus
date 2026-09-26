@@ -389,3 +389,10 @@ it('安装脚本写配置是原子的：写完不留 .tmp，内容包含新指�
   assert.equal(fs.existsSync(`${cfgFile}.${process.pid}.tmp`), false, '不留临时文件');
   fs.rmSync(cfgFile, { force: true });
 });
+
+it('安装脚本：--restart 选项与默认值（装完要能重启让配置生效）', async () => {
+  const { parseArgs } = await import('../scripts/install-asr-local.mjs');
+  assert.equal(parseArgs([]).restart, false, '默认不擅自重启服务');
+  assert.equal(parseArgs(['--restart']).restart, true);
+  assert.equal(parseArgs(['--print-only']).printOnly, true);
+});

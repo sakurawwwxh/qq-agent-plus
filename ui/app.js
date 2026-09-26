@@ -6583,7 +6583,8 @@ function renderAsrSection(c) {
       + '也可以填自建的 faster-whisper 网关。按各家当期政策计费。',
     local: '<strong>默认方案：本机 whisper.cpp</strong> —— 不联网、不需要任何 Key、没有按量费用，音频不出机器。'
       + '装一次就好：在服务器上跑 <code>node scripts/install-asr-local.mjs</code>'
-      + '（自动构建 + 从国内镜像下模型，默认 small 约 466MB；小机器可加 <code>--model base</code>）。'
+      + '（自动构建 + 从国内镜像下模型，默认 small 约 466MB；小机器可加 <code>--model base</code>。）'
+      + '装完记得重启一次服务，运行中的进程才会读到新配置。'
       + 'CPU 转写约 1.5~2 倍实时（2 核上 30 秒语音约 15~25 秒），长音频较慢 —— 想更快就切到下面两家托管服务。'
   }[provider];
   // 具体到"能不能用"的一句话：没配好就明说，别让人以为勾上就在跑
