@@ -1,6 +1,12 @@
 // 语音/视频转文字：取文件 URL → ffmpeg 转 16k PCM → Seed-ASR (Agent Plan)。
 // 聊天模型无关：任何模型都消费转写文本，音频理解不依赖多模态。
 import { spawn } from 'node:child_process';
+// fs/path/os 用顶层静态 import：函数体里的 `const { x } = await import(...)`
+// 在 ops scan --strict 里会被判成"调用点有、定义没有"（CI 硬门禁），
+// 而且这里也没有延迟加载的必要。
+import { rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { seedAsrTranscribe } from '../llm/seed-asr.js';
 import { asrMaxPerHour, getConfig } from '../core/config.js';
@@ -129,9 +135,6 @@ export async function transcribeMessageAudio(ctx, entry) {
       return { ok: false, error: `音频下载失败：${String(e?.message ?? e)}` };
     }
     // m4a/mp4 的 moov atom 常在尾部，ffmpeg 管道输入无法 seek——必须落盘成临时文件
-    const { writeFileSync, rmSync } = await import('node:fs');
-    const { join } = await import('node:path');
-    const { tmpdir } = await import('node:os');
     const ext = /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm)$/i.exec(target.name || '')?.[1] || 'bin';
     tmpFile = join(tmpdir(), `qa-audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
     writeFileSync(tmpFile, buffer);
