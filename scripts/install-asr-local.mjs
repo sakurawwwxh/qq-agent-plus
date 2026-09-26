@@ -84,10 +84,13 @@ export async function download(url, dest, { idleMs = 60000, fetchFn = fetch } = 
   let file = null;
   const controller = new AbortController();
   let idleTimer = null;
+  let iterator = null;
+  // 空闲计时器**不能** unref：等待下载时进程就该被它撑着 —— unref 掉之后，若此时没有别的
+  // 句柄，事件循环会提前排空，调用方拿到的是一句"Promise resolution is still pending"
+  // 而不是"下载卡住"（2026-09-26 CI 实测：Linux 上这两条用例挂了，Windows 本地恰好没暴露）。
   const armIdle = (fail) => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => { fail(new Error(`下载卡住超过 ${Math.round(idleMs / 1000)} 秒，换下一个镜像`)); }, idleMs);
-    idleTimer.unref?.();
   };
   try {
     let stuck = null;
@@ -102,7 +105,7 @@ export async function download(url, dest, { idleMs = 60000, fetchFn = fetch } = 
     let written = 0;
     let lastLog = 0;
     const body = res.body;
-    const iterator = body[Symbol.asyncIterator]();
+    iterator = body[Symbol.asyncIterator]();
     for (;;) {
       // 每收一块就重置空闲计时；卡住则由 stalled 先 reject
       const next = await Promise.race([iterator.next(), stalled]);
@@ -124,6 +127,10 @@ export async function download(url, dest, { idleMs = 60000, fetchFn = fetch } = 
     return written;
   } catch (error) {
     try { controller.abort(); } catch { /* 已经结束 */ }
+    // 释放响应流：**不能 await** —— 卡住不动的流不会响应 release，等它就把清理本身挂住了
+    // （2026-09-26 本地实测：await 版本让整个测试文件挂满 120 秒）。abort 已经取消请求，
+    // 这里只是让生成器别再被引用。
+    try { iterator?.return?.()?.catch?.(() => {}); } catch { /* 已经结束 */ }
     try { file?.destroy(); } catch { /* 关不掉就随进程退出 */ }
     try { fs.rmSync(tmp, { force: true }); } catch { /* 清不掉无害 */ }
     throw error;
