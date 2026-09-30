@@ -143,9 +143,17 @@ export class SendQueue {
     if (entry.muted) throw mutedError(entry.untilTs);
   }
 
+  // ponytail: 按群覆盖限速，config.send.groupOverrides[chatKey] 有值时优先生效；
+  // 全局结构不变，只对风控敏感群收紧。上游如加官方 per-chat 配置则删除此节。
+  #sendCfg(chatKey) {
+    const cfg = getConfig().send;
+    const ov = cfg.groupOverrides && cfg.groupOverrides[chatKey];
+    return ov ? { ...cfg, ...ov } : cfg;
+  }
+
   #checkRate(chatKey) {
     const now = Date.now();
-    const cfg = getConfig().send;
+    const cfg = this.#sendCfg(chatKey);
     const minute = (this.minuteTimes.get(chatKey) || []).filter((t) => now - t < 60000);
     const hour = (this.hourTimes.get(chatKey) || []).filter((t) => now - t < 3600000);
     // 回退值必须与 config.js 的默认值一致（80）。此前这里是 8，
@@ -162,8 +170,8 @@ export class SendQueue {
     this.hourTimes.set(chatKey, hour);
   }
 
-  #gap(text, isLast) {
-    const cfg = getConfig().send;
+  #gap(text, isLast, chatKey) {
+    const cfg = this.#sendCfg(chatKey);
     const min = Math.max(200, Number(cfg.minGapMs) || 1000);
     const max = Math.max(min, Number(cfg.maxGapMs) || 3000);
     if (isLast) return 0;
@@ -251,7 +259,7 @@ export class SendQueue {
     for (let i = 0; i < parts.length; i++) {
       const text = parts[i];
       const isLast = i === parts.length - 1;
-      const gap = this.#gap(text, isLast);
+      const gap = this.#gap(text, isLast, chatKey);
       promises.push(chain(async () => {
         assertCanSend(chatKey, options.signal, { gameScoped: options.gameScoped === true });
         if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
@@ -423,6 +431,23 @@ export class SendQueue {
       const label = (options.text ? String(options.text) : '') + (face?.name ? `[表情：${face.name}]` : `[表情：${face?.id ?? ''}]`);
       this.store.appendSelf(chatKey, { text: label, ts, mid: data?.message_id ?? null, eventKind: 'face' });
       this.onSent?.({ chatKey, text: label, messageId: data?.message_id ?? null });
+      return data;
+    });
+  }
+
+  /** 改自己在群里的群名片。改完留档，下次运行模型才知道当前名片是什么。 */
+  setCard(chatKey, card, options = {}) {
+    const [kind, id] = String(chatKey).split(':');
+    const chain = this.#chain(chatKey);
+    return chain(async () => {
+      if (kind !== 'group') throw new Error('群名片只能在群聊里改');
+      await this.#assertNotMuted(chatKey);
+      this.#checkRate(chatKey);
+      await sleep(randInt(300, 900));
+      const data = await this.onebot.setGroupCard(id, this.onebot.selfId, String(card ?? '').trim());
+      const label = `[改群名片] 现在叫「${String(card ?? '').trim()}」`;
+      this.store.appendSelf(chatKey, { text: label, ts: Date.now(), mid: null, eventKind: 'card' });
+      this.onSent?.({ chatKey, text: label, messageId: null });
       return data;
     });
   }

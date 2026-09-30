@@ -387,6 +387,10 @@ export class OneBotClient {
   async getGroupMemberInfo(groupId, userId) {
     return this.call('get_group_member_info', { group_id: Number(groupId), user_id: Number(userId) });
   }
+
+  async setGroupCard(groupId, userId, card) {
+    return this.call('set_group_card', { group_id: Number(groupId), user_id: Number(userId), card: String(card ?? '') });
+  }
 }
 
 // ── 入站事件 → 文本（移植自原版 segmentsToText） ─────────────────────────

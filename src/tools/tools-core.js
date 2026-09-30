@@ -555,6 +555,32 @@ export function buildToolDefs() {
       }
     },
     {
+      name: 'set_group_card',
+      description: '修改你自己在当前群的群名片（群昵称）。只能改自己的，不能改别人。名字要符合本群氛围（一般 2~8 字），别带广告或奇怪符号。别人问"你叫什么/改下名片"或名片跟当前人设明显不符时可以用，别频繁改。',
+      parameters: {
+        type: 'object',
+        properties: { card: { type: 'string', description: '新的群名片（2~8 字，空字符串=清空名片恢复昵称）' } },
+        required: ['card']
+      },
+      async execute(ctx, args) {
+        try {
+          if (ctx.kind !== 'group') return err('群名片只能在群聊里改');
+          const card = String(args.card ?? '').trim().slice(0, 20);
+          if (!card) return err('card 不能为空');
+          if (ctx.sender?.setCard) {
+            await ctx.sender.setCard(ctx.chatKey, card, { runId: ctx.session.leaseId, signal: ctx.signal });
+          } else if (ctx.onebot?.setGroupCard) {
+            await ctx.onebot.setGroupCard(ctx.chatId, ctx.selfId, card);
+          } else {
+            return err('当前环境不支持改群名片');
+          }
+          return ok({ card, note: '群名片已修改。' });
+        } catch (error) {
+          return err(`改群名片失败：${error?.message ?? error}`);
+        }
+      }
+    },
+    {
       name: 'send_poke',
       description: '拍一拍（群聊传 targetUserId；私聊默认拍对方）。targetUserId 必须是数字 QQ 号：不知道对方 QQ 号时，先调 get_active_members 或 get_recent_messages 查到再拍，绝对不要传名字、昵称或"未知"。适合用"戳一下"代替一句废话、回应别人的拍一拍，或偶尔逗一下正在聊的人。别频繁。',
       parameters: {
@@ -1137,7 +1163,7 @@ export function buildToolDefs() {
     },
     {
       name: 'web_search',
-      description: '联网搜索（Bing），返回标题/URL/摘要列表。适用：实时信息、新闻热点、网络用语/梗的含义、自己不确定的事实。可以换关键词连续搜 2~3 次；对最相关的 1~2 个结果用 web_fetch 读正文，不要只看摘要。',
+      description: '联网搜索，返回标题/URL/摘要列表（结果带 source 标注来源引擎）。适用：实时信息、新闻热点、网络用语/梗的含义、自己不确定的事实。可以换关键词连续搜 2~3 次；对最相关的 1~2 个结果用 web_fetch 读正文，不要只看摘要。',
       parameters: {
         type: 'object',
         properties: { query: { type: 'string', description: '搜索词' } },
