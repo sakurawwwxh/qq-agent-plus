@@ -27,7 +27,7 @@
     "node-html-parser": "^9.0.4",
     "silk-wasm": "^3.7.1",
     "undici": "^6.28.0",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   },
   "license": "MIT",
   "author": "sakurawwwxh",
