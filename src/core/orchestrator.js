@@ -115,7 +115,7 @@ import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } 
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from '../llm/prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, emptyUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool, platformToolAllowed } from '../tools/tools.js';
-import { normalizeMid } from '../tools/tools-core.js';
+import { normalizeMid, visionModelConfig } from '../tools/tools-core.js';
 import { visionEnabled } from '../llm/vision-scan.js';
 import { currentProviders } from './providers.js';
 import { buildSlangContextForChat } from '../console/asset-observer.js';
@@ -1633,8 +1633,10 @@ export class Orchestrator {
       : '';
 
     // 工具集按配置过滤：工具列表属于缓存前缀，必须先固定后再决定是否复用生命周期 transcript。
-    // 口径收敛在 vision-scan.visionEnabled：只读 api.vision 会漏掉"模型不支持图片"那一半
-    const canSeeImages = visionEnabled(cfg);
+    // 口径收敛在 vision-scan.visionEnabled：只读 api.vision 会漏掉"模型不支持图片"那一半。
+    // 配了识图专用模型（visionModel）也算能看图：主模型收不了图时工具会把图先送识图模型转述
+    // （2026-10-05 复审：纯文本主模型 + visionModel 这个核心场景恰恰不可达）。
+    const canSeeImages = visionEnabled(cfg) || Boolean(visionModelConfig(cfg));
     const searchEnabled = cfg.webSearch?.enabled !== false;
     // ASR 有自己的开关与供应商（asr.enabled / asr.provider / asr.apiKey），与"联网搜索"解耦：
     // 关掉搜索的人不该顺带失去语音转写（2026-09-26 审查）。判定收敛在 config.asrAvailable()。

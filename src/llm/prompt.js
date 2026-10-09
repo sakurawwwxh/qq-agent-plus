@@ -13,6 +13,12 @@
 import { asrAvailable, getConfig, imageGenAvailable } from '../core/config.js';
 import { platformGateAllowed, platformQuotaLimit } from '../core/platform-gates.js';
 import { visionEnabled } from './vision-scan.js';
+import { visionModelConfig } from '../tools/tools-core.js';
+
+/** 看图口径（与编排器工具摘除同一道门）：模型能看图，或配了识图专用模型转述。 */
+function canSeeImages(cfg = getConfig()) {
+  return visionEnabled(cfg) || Boolean(visionModelConfig(cfg));
+}
 // 与 orchestrator 摘 send_voice 的条件同源（enabled && baseUrl 都齐才算能用）：
 // 只看 enabled 会在"勾了启用但没填地址"时教一个不存在的工具（2026-10-07 审计 P0）
 import { ttsConfigured } from './tts-openai.js';
@@ -183,8 +189,8 @@ function stickerRules(grounded = false) {
   // 活跃度档位直接改写策略段的频率行（引导统一在系统提示，不在"本次输入"重复）
   const cfg = getConfig();
   const lvl = Math.min(3, Math.max(0, Number(cfg.sticker?.encourage) || 0));
-  // 图片输入关掉、"或模型不支持图片"时 get_sticker_image 都会被摘掉工具：口径与编排器共用 visionEnabled
-  const vision = visionEnabled(cfg);
+  // 图片输入关掉、"或模型不支持图片"时 get_sticker_image 会被摘掉工具：口径与编排器共用（canSeeImages 含识图模型兜底）
+  const vision = canSeeImages(cfg);
   return [
     grounded
       ? `${buildStickerStrategyHint(0, { vision })}\n- 表情偏好：${['少用', '适中', '较多', '喜欢用'][lvl]}；只是倾向，不按轮数凑配额，场景、关系与认真交流优先。`
@@ -222,7 +228,7 @@ function runGuidance() {
 
 function qqSceneRules(grounded = false, platform = null, chatKey = '') {
   const cfg = getConfig();
-  const vision = visionEnabled(cfg);
+  const vision = canSeeImages(cfg);
   const search = cfg.webSearch?.enabled !== false;
   const lines = [
     '【QQ 场景规则】',
@@ -520,7 +526,7 @@ export function buildSystemPrompt({
       // 这里必须读 getConfig()：本函数里的 cfg 是 persona 对象（没有 api 字段），
       // 写成 cfg.api?.vision 会恒为 undefined → 关掉图片输入后照样教模型"先看一眼"
       // （2026-09-26 审查：提示词自相矛盾，还指向一个已被摘掉的工具）
-      { vision: visionEnabled() }
+      { vision: canSeeImages() }
     );
     if (stickerCtx) parts.push('', stickerCtx);
   }
