@@ -8,6 +8,7 @@ import {
   autoUpdatePaths,
   autoUpdatePending,
   consumeAutoUpdateRequest,
+  failureDetail,
   readAutoUpdateState,
   writeAutoUpdateState
 } from '../src/auto-update.js';
@@ -358,4 +359,56 @@ test('currentRevision 以 deployed-revision 为准：状态文件里的旧值不
 
   fs.writeFileSync(path.join(f.dataDir, 'deployed-revision'), `${'d'.repeat(40)}\n`);
   assert.equal(f.manager.status().currentRevision, 'd'.repeat(40), '提交部署时显示提交号');
+});
+
+test('failureDetail：有 TAP 失败项就列失败项，不再拿输出结尾当详情（2026-10-10 事故）', () => {
+  const stdout = [
+    '# Subtest: some passing test',
+    'ok 1 - some passing test',
+    '  ---',
+    "  type: 'test'",
+    '  ...',
+    'not ok 1048 - Issue \\#30：pull 阶段才发现没权限（例如 docker info 恰好能过）也要给可执行提示',
+    '  ---',
+    '  duration_ms: 1.0',
+    "  type: 'test'",
+    '  error: \'要说清"连 sudo 都试过了"，否则用户会以为没试\'',
+    "  code: 'ERR_ASSERTION'",
+    '  ...',
+    '# Subtest: 女巫兜底/拒绝文案逐条钉住（狼刀未定/没看懂毒谁/不能毒自己/只剩毒药/通用提示）',
+    'ok 1339 - 女巫兜底/拒绝文案逐条钉住（狼刀未定/没看懂毒谁/不能毒自己/只剩毒药/通用提示）',
+    '  ---',
+    "  type: 'test'",
+    '  ...',
+    '# tests 1452',
+    '# pass 1417',
+    '# fail 2'
+  ].join('\n');
+  const detail = failureDetail({ stdout, stderr: '', status: 1 });
+  assert.ok(detail.includes('not ok 1048 - Issue'), detail);
+  assert.ok(detail.includes('连 sudo 都试过了'), detail);
+  assert.ok(detail.includes('# fail 2'), detail);
+  assert.ok(!detail.includes('女巫兜底'), '不许再把结尾的无关通过项当详情：' + detail);
+  // 没有 TAP 失败行时退回旧口径（stderr 优先）
+  assert.equal(failureDetail({ stdout: 'junk tail', stderr: 'real error', status: 1 }), 'real error');
+  // YAML 块形式（error: |- 的真实内容在后续缩进行，assert.equal 的 actual/expected 就在这）
+  const block = failureDetail({
+    stdout: ['not ok 3 - something', '  ---', '  error: |-', '    Expected values to be strictly equal:', '    ', '    15 !== 16', "  code: 'ERR_ASSERTION'", '  ...'].join('\n'),
+    status: 1
+  });
+  assert.ok(block.includes('15 !== 16'), block);
+  // describe() 内的失败：TAP 给 not ok 行加缩进（实测 4 空格/层），也要认；同级的下一条要能终止收集
+  const nested = [
+    '# Subtest: outer',
+    '    not ok 1 - nested failing case',
+    '      ---',
+    '      error: |-',
+    '        详情的真实内容',
+    "      code: 'ERR_ASSERTION'",
+    '    ok 2 - nested passing case'
+  ].join('\n');
+  const nd = failureDetail({ stdout: nested, status: 1 });
+  assert.ok(nd.includes('not ok 1 - nested failing case'), nd);
+  assert.ok(nd.includes('详情的真实内容'), nd);
+  assert.ok(!nd.includes('nested passing case'), nd);
 });

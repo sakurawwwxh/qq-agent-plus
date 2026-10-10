@@ -6,6 +6,7 @@ import {
   autoUpdateOwner,
   autoUpdatePaths,
   consumeAutoUpdateRequest,
+  failureDetail,
   readAutoUpdateState,
   sanitizeUpdateError,
   writeAutoUpdateState
@@ -95,7 +96,8 @@ function command(binary, args, {
   if (allowFailure) return result;
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim().slice(-2000);
+    // 详情口径见 failureDetail：node --test 优先列 not ok 失败项，不拿输出结尾凑数
+    const detail = failureDetail(result);
     const error = new Error(`${path.basename(binary)} ${args[0] || ''} failed`
       + `${detail ? `: ${detail}` : ` with exit ${result.status}`}`);
     error.status = result.status;
@@ -117,7 +119,8 @@ function networkGitArgs(args) {
 
 function commandFailure(binary, args, result) {
   if (result?.error) return result.error;
-  const detail = String(result?.stderr || result?.stdout || '').trim().slice(-2000);
+  // 与 command() 同一口径（见 failureDetail）：有 TAP 失败项就别拿输出结尾当详情
+  const detail = failureDetail(result);
   const error = new Error(`${path.basename(binary)} ${args[0] || ''} failed`
     + `${detail ? `: ${detail}` : ` with exit ${result?.status}`}`);
   error.status = result?.status;

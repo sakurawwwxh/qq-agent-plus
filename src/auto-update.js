@@ -192,6 +192,60 @@ export function sanitizeUpdateError(error) {
   return cleanText(error?.message ?? error ?? '更新失败');
 }
 
+/**
+ * 失败命令的"值得展示的详情"。
+ *
+ * 旧口径是"输出结尾 2000 字符"，对 `node --test` 的 TAP 输出会把失败项甩掉：
+ * 测试文件并行跑、按字典序收尾，结尾往往是狼人杀/卧底这类排在最后的测试文件，
+ * 真正的失败可以离结尾好几百条 —— 2026-10-10 线上实测：更新失败信息里整段是群游戏
+ * 测试名（用户被问"为什么爆群游戏的内容"），真正的失败（snowluma 用例）一条看不见，
+ * 误导了整个排查过程。有 TAP 的 `not ok` 行时改为列出**失败项本身**
+ * （名字 + 紧随的诊断 error/message，最多 10 行）加结尾汇总；没有则退回旧口径。
+ *
+ * 两个细节都踩过：`describe()` 内的用例失败时 TAP 行带缩进（按嵌套层级缩进 4 空格/层，
+ * 2026-10-10 实测 `    not ok 1 - …`），所以匹配要允许行首空白；`error: |-` 是 YAML 块
+ * 形式（assert.equal 的 actual/expected 对比就在块里），要把块内容一起收进来。
+ */
+export function failureDetail(result) {
+  const stdout = String(result?.stdout || '');
+  const picked = [];
+  if (/^\s*not ok \d+ - /m.test(stdout)) {
+    const lines = stdout.split('\n');
+    for (let i = 0; i < lines.length && picked.length < 10; i += 1) {
+      if (!/^\s*not ok \d+ - /.test(lines[i])) continue;
+      picked.push(lines[i].trim());
+      for (let j = i + 1; j < Math.min(lines.length, i + 20); j += 1) {
+        const m = /^(\s+)(error|message):\s*(.*)$/.exec(lines[j]);
+        if (m) {
+          const keyIndent = m[1].length;
+          picked.push(`  ${m[2]}: ${m[3]}`);
+          // YAML 块形式（`error: |-`）：真实内容在更深缩进的后续行里，收集到下一个
+          // 同级键或 `...` 为止（空行跳过），最多 6 行
+          if (/^\|[-+]?$/.test(m[3].trim())) {
+            let took = 0;
+            for (let k = j + 1; k < Math.min(lines.length, j + 12) && took < 6; k += 1) {
+              const line = lines[k];
+              if (!line.trim()) continue;
+              const indent = line.length - line.trimStart().length;
+              if (indent <= keyIndent || line.trim() === '...') break;
+              picked.push(`    ${line.trim()}`);
+              took += 1;
+            }
+          }
+          break;
+        }
+        if (/^\s*(?:ok|not ok) \d|^\s*# /.test(lines[j])) break;
+      }
+    }
+    const summary = (stdout.match(/^\s*# (?:tests|pass|fail|skipped) .+$/gm) || []).map((s) => s.trim()).join('\n');
+    if (summary) picked.push(summary);
+  }
+  const detail = picked.length
+    ? picked.join('\n')
+    : String(result?.stderr || result?.stdout || '').trim().slice(-2000);
+  return detail.slice(0, 2000);
+}
+
 export class AutoUpdateManager {
   constructor({
     appDir,
