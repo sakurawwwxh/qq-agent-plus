@@ -1,6 +1,6 @@
 {
   "name": "qq-agent-plus",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": false,
   "description": "Linux QQ group agent (OneBot v11)：分条发言、贴纸系统、主动发言与内置运维命令。",
   "type": "module",
