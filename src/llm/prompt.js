@@ -26,6 +26,7 @@ import {
 } from '../core/tier-slider.js';
 export { _sliderToTier as sliderToTier, _tierToSlider as tierToSlider };
 import { formatFullTime, formatShortTime, quotePrefixFor, safeSlice, sanitizeUserText, resolveSelfName } from '../core/util.js';
+import { displayNameOf } from '../core/display-name.js';
 import { buildStickerContext, buildStickerStrategyHint } from '../onebot/stickers.js';
 
 // ── 系统提示 ─────────────────────────────────────────────────────────────
@@ -524,8 +525,8 @@ export function buildSystemPrompt({
     );
     if (stickerCtx) parts.push('', stickerCtx);
   }
-  // 玩法与工具箱（2026-09-28）：小游戏与"随机/提醒/语音"这几件群友会主动要的事，
-  // 工具一直都在，缺的是告诉模型"可以这么玩"。保持 3~4 行，别把省 Token 的收益吃掉。
+  // 玩法与工具箱（2026-09-28）：小游戏与"随机/提醒/语音/称呼"这几件群友会主动要的事，
+  // 工具一直都在，缺的是告诉模型"可以这么玩"。保持 4~5 行，别把省 Token 的收益吃掉。
   {
     const cfgNow = getConfig();
     const gameLines = ['【玩法与工具箱】'];
@@ -538,8 +539,9 @@ export function buildSystemPrompt({
     // 提醒要按 reminders.enabled 收敛（orchestrator 关掉时会摘掉 remind 工具）：之前这里
     // 无条件教，与工具表不同判（2026-10-07 审计 P1）。
     if (cfgNow.reminders?.enabled !== false) {
-      gameLines.push('- 群友说「提醒我 / 到点叫我 / 明天 9 点提醒 X」时，用 remind 落一条（时间用 HH:MM 或多少分钟后；这是持久化承诺，重启也不丢）。到点你会被唤醒、用你的口吻说出来；改主意用 remind cancel。');
+      gameLines.push('- 群友说「提醒我 / 到点叫我 / 明天 9 点提醒 X」时，用 remind 落一条（时间用 HH:MM 或多少分钟后；这是持久化承诺，重启也不丢）。到点你会被唤醒、用你的口吻说出来；改主意用 remind cancel。是「A 让你提醒 B」时（"12 点提醒他吃饭"），to 填 B、from 填 A —— 到点才说得清是谁请你提醒谁，别让被提醒的人以为是自己设的。');
     }
+    gameLines.push('- 群友让你"以后叫他 X / 别喊群名片、喊 X"时，用 set_member_note 记下（QQ 号 + 称呼；不确定号码先 get_group_member_list 查）——之后你在聊天记录、成员列表里看到的这个人都会用这个称呼，群名片改了它也不变。');
     if (ttsConfigured(cfgNow)) {
       gameLines.push('- 想"说"而不是"打"时可以用 send_voice 发一条短语音（1~3 句、≤120 字）：内容要写成口语，带语气词与标点（「哎——」「不是吧？」「……行吧」）才不会念得像播报；只在被要求或很合适的场合用，平时打字更像真人。');
     }
@@ -572,11 +574,10 @@ function participationText(level) {
 // withId：是否带 "#消息id" 前缀。id 只在需要引用/看图的场景展示（触发批、带图消息），
 // 纯文本历史行不带，避免整屏数字噪音。
 function formatEntry(m, { withId = true } = {}) {
-  const notes = getConfig().memberNotes || {};
   const senderId = String(m.senderId || '');
-  // 昵称/备注名来自 QQ 侧（可任意字符），进提示词前用同一套规则弱化段标记
-  const rawWho = notes[senderId] || m.senderName || senderId || '未知';
-  const who = m.self ? '我' : sanitizeUserText(rawWho);
+  // 显示名口径（备注/代号优先于群名片 + 段头弱化）统一在 core/display-name.js ——
+  // 工具结果与这里必须同口径，否则同一个人在一处叫"pyy"、另一处叫群名片（2026-10-10 反馈）
+  const who = m.self ? '我' : (displayNameOf(senderId, m.senderName) || '未知');
   // 管理员发言单独打标：提示词里没有 QQ，模型只能靠名字判断说话人，
   // 不标的话"谁是管理员"这件事在对话里不可见（服从类人设也就无从执行）。
   const adminTag = !m.self && senderId && senderId === String(getConfig().admin?.ownerUin || '').trim()
@@ -989,10 +990,17 @@ export function buildUserPrompt(ctx) {
 
   // 最新消息始终位于动态输入末端，兼顾注意力与前缀缓存。
   const triggerBlock = buildTriggerBlock(ctx.triggerEntries, ctx);
-  if (ctx.manual) {
+  if (ctx.manual && !ctx.paced) {
     parts.push(triggerBlock
       ? `【本次唤醒】管理员从控制台主动要求你立即处理以下未读消息，不受普通响应档位限制。请结合上下文自行决定是否发言：\n${triggerBlock}`
       : '【本次唤醒】管理员从控制台主动唤醒了你。当前没有未读消息，请查看最近聊天状态，自行决定是否需要发言；不需要时可以直接结束。');
+  } else if (ctx.paced) {
+    // 到点唤醒（定时提醒 / 自己安排的稍后发言）不是管理员点的：说成"管理员从控制台唤醒"
+    // 是事实错误，模型会顺着它把提醒说成"管理员托的"（2026-10-10 复核）。具体要做什么
+    // 由后面那段【本次唤醒】的说明（wakeNote）给出；这里只给中性交代。
+    parts.push(triggerBlock
+      ? `【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：\n${triggerBlock}`
+      : '【本次唤醒】到点了，看看群里的最近情况；具体要做什么以下面的说明为准。');
   } else {
     parts.push(`【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：\n${triggerBlock}`);
   }

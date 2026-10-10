@@ -92,3 +92,34 @@ test('remind：新增（HH:MM / 分钟）、列表、取消；无 store 时优�
   // 无提醒能力的环境
   assert.equal((await tool('remind').execute({ chatKey: 'group:1', kind: 'group' }, { action: 'list' })).isError, true);
 });
+
+test('remind 归属（2026-10-10 复核版）：from 必须对上本轮消息里的人；对不上/不填都不记', async () => {
+  const store = new ReminderStore(path.join(dataDir, 'reminders-attribution-tool.json'));
+  const base = { chatKey: 'group:43', kind: 'group', chatId: '43', reminders: store };
+  const batch = [{ senderId: '7', senderName: '彭于晏' }, { senderId: 'self', senderName: '小鲸鱼', self: true }];
+  // 1) from 对上本轮发送者（群名片）→ 记录；to 一并落盘
+  const explicit = parse(await tool('remind').execute(
+    { ...base, triggerEntries: batch },
+    { action: 'add', at: '23:59', text: '去吃饭', to: '吴彦祖', from: '彭于晏' }
+  ));
+  const it1 = store.list('group:43').find((x) => x.id === explicit.id);
+  assert.equal(it1.createdBy, '彭于晏');
+  assert.equal(it1.targetName, '吴彦祖');
+  // 2) from 用 QQ 号也对得上
+  const byId = parse(await tool('remind').execute({ ...base, triggerEntries: batch },
+    { action: 'add', minutes: 30, text: '喝水', from: '7' }));
+  assert.equal(store.list('group:43').find((x) => x.id === byId.id).createdBy, '7');
+  // 3) from 对不上（借管理员之名 / 猜的人）→ 不记（派发话术回落"有人"，不把错的人当事实）
+  const fake = parse(await tool('remind').execute({ ...base, triggerEntries: batch },
+    { action: 'add', minutes: 31, text: '吃药', from: '管理员' }));
+  assert.equal(store.list('group:43').find((x) => x.id === fake.id).createdBy, '');
+  // 4) 不填 from → 不猜（已移除"唯一发送者兜底"：提醒可能上一轮的人提的、这一轮是别人在说话）
+  const none = parse(await tool('remind').execute({ ...base, triggerEntries: batch },
+    { action: 'add', minutes: 32, text: '睡觉' }));
+  assert.equal(store.list('group:43').find((x) => x.id === none.id).createdBy, '');
+  // 5) list 回带归属（模型自查"是谁请的"）
+  const list = parse(await tool('remind').execute(base, { action: 'list' }));
+  const row = list.reminders.find((x) => x.id === explicit.id);
+  assert.equal(row.to, '吴彦祖');
+  assert.equal(row.from, '彭于晏');
+});

@@ -1655,6 +1655,53 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     for (const text of ['喝水', '吃药', '开会', '睡觉']) assert.ok(notes[0].includes(text), `${text} 应在同一条 note 里`);
   });
 
+  it('定时提醒：派发话术带归属（谁提的/提醒谁），模型不用再自己圆', async (t) => {
+    const { runner, append } = fixture(t, { reminders: new ReminderStore(path.join(root, 'reminders-attribution-fire.json')) });
+    append(1);
+    runner.reminders.items.push({
+      id: 'r-attr', chatKey: 'group:1', at: Date.now() - 1000, text: '去吃饭',
+      status: 'pending', createdBy: '彭于晏', targetName: '吴彦祖'
+    });
+    const notes = [];
+    runner.wake = async (_chatKey, opts = {}) => { notes.push(String(opts.wakeNote || '')); };
+
+    runner.fireDueReminders();
+
+    assert.equal(notes.length, 1);
+    assert.ok(notes[0].includes('之前彭于晏让你在'), notes[0]);
+    assert.ok(notes[0].includes('提醒吴彦祖：去吃饭'), notes[0]);
+    assert.ok(notes[0].includes('是谁请你提醒谁的要说清'), notes[0]);
+  });
+
+  it('定时提醒：缺归属时话术明确"别猜"，不把提醒说成被提醒人自己设的', async (t) => {
+    const { runner, append } = fixture(t, { reminders: new ReminderStore(path.join(root, 'reminders-plain-fire.json')) });
+    append(1);
+    runner.reminders.items.push({
+      id: 'r-plain', chatKey: 'group:1', at: Date.now() - 1000, text: '喝水', status: 'pending'
+    });
+    const notes = [];
+    runner.wake = async (_chatKey, opts = {}) => { notes.push(String(opts.wakeNote || '')); };
+
+    runner.fireDueReminders();
+
+    assert.equal(notes.length, 1);
+    assert.ok(notes[0].includes('之前有人让你在'), notes[0]);
+    assert.ok(notes[0].includes('别猜'), notes[0]);
+  });
+
+  it('锚点（2026-10-10 反馈）：提醒走"逐字"框架，话术真源在 reminders.buildReminderNote', () => {
+    const orch = fs.readFileSync(new URL('../src/core/orchestrator.js', import.meta.url), 'utf8');
+    assert.ok(orch.includes("const isReminderNote = String(wakeNote).startsWith('【定时提醒】');"), '要有提醒专用分支');
+    assert.ok(orch.includes('? `${safeSlice(String(wakeNote), 600)}\\n`'), '提醒 note 要逐字进入（不套"给自己留过话"框架）');
+    assert.ok(orch.includes('把提醒自然地说出来即可；说完就结束'), '提醒分支要有自己的收尾语');
+    assert.ok(orch.includes('buildReminderNote(chosen, { now })') && orch.includes('reminderNoteCost(item)'),
+      '话术与预算要共用 reminders 的唯一实现');
+    assert.ok(orch.includes('triggerEntries: (triggerEntries || []).map'),
+      '工具 ctx 要带本轮触发消息（remind 的 from 兜底要用）');
+    const rem = fs.readFileSync(new URL('../src/core/reminders.js', import.meta.url), 'utf8');
+    assert.ok(rem.includes('不要说是被提醒的人自己设的'), '缺归属时的"别猜"指令要留在话术真源里');
+  });
+
   it('自安排唤醒：会话接不了这次唤醒时顺延，而不是删掉安排后静默丢弃', async (t) => {
     const { runner, cfg } = fixture(t);
     // 没配模型时 #wake 会静默 return（模型未设置 → 不产生报错会话），安排不能被吃掉

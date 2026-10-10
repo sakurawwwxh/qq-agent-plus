@@ -240,13 +240,13 @@ import { saveMemberNote } from './pages/memory.js';
     // 15 秒轮询会重建整块详情：不保留草稿的话，正在输入的字会被擦掉
     const noteValue = noteKey && noteDraft.key === noteKey ? noteDraft.value : savedNote;
     const noteHtml = noteKey ? `
-      <div class="gm-section"><h3>备注</h3>
+      <div class="gm-section"><h3>备注（称呼/代号）</h3>
         <div class="gm-note-field">
           <input type="text" id="gm-note-input" maxlength="200" value="${esc(noteValue)}" placeholder="留空 = 不设备注（如 老王）" />
           <button class="btn btn-small" type="button" id="gm-note-save">保存备注</button>
           <span class="gm-status" id="gm-note-status"></span>
         </div>
-        <div class="gm-status">备注用于聊天记录、记忆与提示词里的称呼（与“会话记忆”页共用同一份数据）。</div>
+        <div class="gm-status">备注用于聊天记录、记忆与提示词里的称呼（与“会话记忆”页共用同一份数据）；在群里让机器人"以后叫他 X"，它记的也是这一份。</div>
       </div>` : '';
 
     setHtmlIfChanged(box, `

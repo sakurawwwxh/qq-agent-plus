@@ -111,6 +111,7 @@ import { assertTimeAllowed, isTimeActive, TimeControlError, watchTimeWindow, wit
 import { vendorOfConfig, vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { budgetStatus } from './budget.js';
 import { readOwnerUin } from './notify-owner.js';
+import { buildReminderNote, reminderNoteCost } from './reminders.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from '../llm/prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, emptyUsage, isRetryableError } from '../llm/llm.js';
@@ -1756,6 +1757,9 @@ export class Orchestrator {
       moreUnreadDuringRun: this.store.unreadCount(chatKey) > 0,
       proactive,
       manual,
+      // 到点唤醒（定时提醒/自安排）与"控制台手动唤醒"在提示词里要说清区别：
+      // paced 唤醒不能说成"管理员从控制台唤醒"（2026-10-10 复核）
+      paced,
       contextLimit,
       tierInfo,
       thread,
@@ -1794,11 +1798,21 @@ export class Orchestrator {
     const selfWakeOn = cfg.proactive?.selfWakeEnabled !== false;
     // 600 而不是 200：定时提醒合并派发时 note 可能有多条（单条正文上限 200），
     // 这里截到 200 会把第二条整体截掉，而它们已经被 markFired（2026-09-29 审查 P2）
-    const pacedLead = (wakeNote ? `你之前给自己留过话：${safeSlice(String(wakeNote), 600)}\n` : '')
-      + '这些消息是攒着等你按自己的节奏来看的。决定要不要说话、说什么；不想接就安静结束'
-      + (selfWakeOn
-        ? '，并用 schedule_wake 给自己安排下一次醒来的时间（比如几分钟后、或二三十分钟后）。'
-        : '。（自安排唤醒已关闭，不用安排下次唤醒，系统会按配置的节奏再唤醒你。）');
+    // 定时提醒（【定时提醒】标记）是"别人托的承诺"，不能套"你给自己留过话"的自留话框架 ——
+    // 此前两者混在同一条分支里，模型收到"你自己留的 + 有人让你"的矛盾信号，会自己圆归属
+    //（2026-10-10 用户反馈：把别人托的提醒说成被提醒人自己设的）。提醒走逐字 + 简短收尾。
+    const isReminderNote = String(wakeNote).startsWith('【定时提醒】');
+    const pacedLead = (wakeNote
+      ? (isReminderNote
+        ? `${safeSlice(String(wakeNote), 600)}\n`
+        : `你之前给自己留过话：${safeSlice(String(wakeNote), 600)}\n`)
+      : '')
+      + (isReminderNote
+        ? '把提醒自然地说出来即可；说完就结束，不用给自己安排下一次唤醒。'
+        : '这些消息是攒着等你按自己的节奏来看的。决定要不要说话、说什么；不想接就安静结束'
+          + (selfWakeOn
+            ? '，并用 schedule_wake 给自己安排下一次醒来的时间（比如几分钟后、或二三十分钟后）。'
+            : '。（自安排唤醒已关闭，不用安排下次唤醒，系统会按配置的节奏再唤醒你。）'));
     const wakeTail = String(wakeNote).startsWith('【系统提醒】')
       ? '就按上面那条提醒处理：想补就补一句很短的，补完就放下；不想补就安静结束。'
       : '你可以主动抛一个自然的话题（像随口说的，不要像播报），也可以判断没必要说话就安静结束。';
@@ -1846,6 +1860,10 @@ export class Orchestrator {
       scheduleWake: (delayMs, note) => this.scheduleInitiativeWake(chatKey, delayMs, note),
       // 定时提醒（remind 工具）：持久化的"给别人的承诺"，到点走主动唤醒
       reminders: this.reminders,
+      // 本轮触发消息（remind 的 from 兜底要判断"是否只有一个发送者"；只带最小字段）
+      triggerEntries: (triggerEntries || []).map((m) => ({
+        senderId: m?.senderId || '', senderName: m?.senderName || '', self: Boolean(m?.self)
+      })),
       // 群游戏（group_game 工具）：进行中的局由管理器负责推进与判定
       games: this.getGames?.() || null
     };
@@ -2278,27 +2296,21 @@ export class Orchestrator {
       byChat.get(item.chatKey).push(item);
     }
     for (const [chatKey, items] of byChat) {
-      const first = items[0];
-      const late = now - first.at;
-      const at = new Date(first.at).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' });
       // 一次只合并"能完整写进 note"的条目：note 在 #wake 里被 safeSlice(…, 600) 截断，
       // 而下面会对合并进来的每一条 markFired。无限合并（单条正文 200 字 × 每会话最多 10 条）
       // 会让第 4 条起的内容被截掉却照样标记已触发 —— 内容永久丢失（2026-09-29 审查 P1）。
       // 第一条无论如何都进（否则会永远卡在同一条上）；放不下的留到下一轮 tick 继续。
+      // 预算口径在 reminderNoteCost（正文 + 归属名 + 引号/分隔开销），与 note 截断同一口径。
       const chosen = [];
       let bodyChars = 0;
       for (const item of items) {
-        const cost = String(item.text || '').length + 4;
+        const cost = reminderNoteCost(item);
         if (chosen.length && bodyChars + cost > REMINDER_NOTE_BODY_MAX) break;
         chosen.push(item);
         bodyChars += cost;
       }
-      // 不再自称（createdBy 是机器人自己的名字，写成"小鲸鱼之前让你…"很怪）
-      const body = chosen.length === 1
-        ? `之前有人让你在 ${at} 提醒：${chosen[0].text}`
-        : `到点了，要提醒的事有 ${chosen.length} 件：${chosen.map((x) => `「${x.text}」`).join('、')}`;
-      const note = `【定时提醒】${body}`
-        + `${late > 3 * 60000 ? '（已经迟到了一点，顺口说明下）' : ''}。现在自然地把这些说出来（一两句，别说"系统提醒"）。`;
+      // 派发话术的唯一真源在 reminders.buildReminderNote（含"谁提的/提醒谁"的归属）
+      const note = buildReminderNote(chosen, { now });
       // **直接唤醒**，不走 scheduledWakes：那是"每会话单槽"，两批提醒只要落在相邻 tick
       // （30 秒一轮）就会互相顶掉——先被顶掉的那批已经标记 fired，内容永久丢失。
       // 2026-09-28 服务器实测：相隔 5 秒的两条提醒，第一条"喝水"从未发出。

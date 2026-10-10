@@ -323,9 +323,16 @@ async function loadRemindersView() {
   const rows = (items, done) => items.map((it) => {
     const time = new Date(it.at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     const statusLabel = { fired: '已触发', canceled: '已取消', expired: '已过期' }[it.status] || String(it.status || '');
+    // 归属（谁提的/提醒谁）：与提醒到点派发时的话术同源（字段来自 config 的 memberNotes 口径）
+    const from = String(it.from || '').trim();
+    const to = String(it.to || '').trim();
+    const attr = from && to ? `${from} 请你提醒 ${to}`
+      : from ? `${from} 请你提醒`
+      : to ? `有人请你提醒 ${to}` : '';
     return `<div class="reminder-row" data-id="${esc(it.id)}" data-chatkey="${esc(it.chatKey)}">`
       + `<span class="reminder-when">${esc(time)}</span>`
       + `<span class="reminder-chat">${esc(formatChatTitle(it.chatKey, chatNameOf(it.chatKey)))}</span>`
+      + (attr ? `<span class="reminder-attr" title="${esc(attr)}">${esc(attr)}</span>` : '')
       + `<span class="reminder-text">${esc(it.text)}</span>`
       + (done ? `<span class="muted">${esc(statusLabel)}</span>` : '<button type="button" class="btn btn-small reminder-cancel-btn">取消</button>')
       + '</div>';

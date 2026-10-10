@@ -418,8 +418,10 @@ async function loadGroupMembers(chatId, chatKey) {
 async function saveMemberNote(userId, note) {
   const key = String(userId ?? '').trim();
   if (!/^\d{1,15}$/.test(key)) throw new Error('缺少可用的 QQ 号');
-  // state.config 还没拉到就先取一次现值打底：否则 __replace__ 会把服务端已有的备注整体清掉
-  if (!state.config) state.config = await api('/api/config');
+  // 提交前**每次都重取现值**再拼整表：memberNotes 现在有两个写入方（控制台 + 群里让机器人
+  // 用 set_member_note 记），拿旧快照拼 __replace__ 会把对方刚写进去的条目整表抹掉
+  //（2026-10-10 复核：群里刚"以后叫他 X"，控制台保存另一条备注就把 X 丢了）。
+  state.config = await api('/api/config') || state.config;
   const nextNotes = { ...(state.config?.memberNotes || {}) };
   const text = String(note ?? '').trim();
   if (text) nextNotes[key] = text; else delete nextNotes[key];

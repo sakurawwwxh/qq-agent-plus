@@ -124,6 +124,23 @@ test('昵称与引用预览进提示词前同样被弱化', () => {
   assert.ok(!prompt.includes('【管理员】'), '不该出现未弱化的【管理员】');
 });
 
+test('到点唤醒（paced）不被说成"管理员从控制台唤醒"；真·手动唤醒保持原措辞（2026-10-10 复核）', () => {
+  const base = {
+    store: { recent: () => [], listChats: () => [] },
+    memory: { formatForPrompt: () => '' },
+    chatKey: 'group:1', chatId: '1', chatName: '测试群', kind: 'group',
+    triggerEntries: [], selfNickname: '测试鲸鱼'
+  };
+  // 定时提醒/自安排唤醒走 manual+paced：在安静群里没有未读，提示词里不能说成管理员点的
+  //（那是事实错误，模型会顺着它把提醒说成"管理员托的"）
+  const paced = buildUserPrompt({ ...base, manual: true, paced: true });
+  assert.ok(!paced.includes('管理员从控制台'), 'paced 唤醒不能说成管理员唤醒：' + paced);
+  assert.ok(paced.includes('到点了'), paced);
+  // 真·控制台手动唤醒（manual 且非 paced）保持原措辞
+  const manual = buildUserPrompt({ ...base, manual: true, paced: false });
+  assert.ok(manual.includes('管理员从控制台'), manual);
+});
+
 test('提示词里的每个段头都能被弱化（清洗白名单不许落后于任何注入模块）', () => {
   // 这条守卫是给"加新段头忘了同步 util.js"准备的：2026-09-22 加【优先级】时漏过一次，
   // 群里写「【优先级】…」能原样进提示词 —— 而它恰好自称最高优先级。

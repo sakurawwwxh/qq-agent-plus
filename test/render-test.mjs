@@ -3412,41 +3412,52 @@ try {
       + `出错提示后退回同样内容能重新渲染（缓存复位=${okRecover}，控制页结构标志归零=${okHub}）`);
   }
 
-  // ── 群友备注的写入形状（2026-09-29 审查 P1）──
+  // ── 群友备注的写入形状（2026-09-29 审查 P1；2026-10-10 多写方跟进）──
   //    备注写回必须走 __replace__ 整体替换：普通深合并删不掉键，"清空/删除备注"会看着成功、实际没变。
-  //    控制台只有 saveMemberNote 一个写入口（会话记忆页与人物记忆页共用），这里钉住它的三种调用。
+  //    memberNotes 现在有两个写入方（控制台 + 群里让机器人用 set_member_note 记），所以
+  //    saveMemberNote 每次提交前都会重取一次现值再拼整表 —— 用**动态的服务端表**演：
+  //    POST 的 __replace__ 结果会写回"服务端"，GET 返回它的当前值。
   {
     const originalFetch = sandbox.fetch;
     const posts = [];
+    let serverNotes = { '42': '老张', '43': '小李' };
     sandbox.fetch = async (url, options = {}) => {
       const method = String(options.method || 'GET').toUpperCase();
       const body = options.body ? JSON.parse(options.body) : null;
       posts.push({ url: String(url), method, body });
       if (method === 'GET') {
         // /api/config 的 GET 直接返回配置本身（控制台就是这么用的）
-        return { ok: true, status: 200, json: async () => ({ memberNotes: { '42': '服务端上的老张' } }) };
+        return { ok: true, status: 200, json: async () => ({ memberNotes: { ...serverNotes } }) };
       }
-      return { ok: true, status: 200, json: async () => ({ ok: true, config: { memberNotes: body.memberNotes.__replace__ } }) };
+      serverNotes = { ...(body?.memberNotes?.__replace__ || {}) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, config: { memberNotes: { ...serverNotes } } }) };
     };
+
+    // 群里刚用 set_member_note 记过一条（控制台的旧快照里没有）：写入时必须带上它，
+    // 不许被旧快照整表覆盖（2026-10-10 复核的丢数据场景）
+    serverNotes['77'] = '群里刚记的';
 
     vm.runInContext("state.config = { memberNotes: { '42': '老张', '43': '小李' } };", ctx);
     await ctx.saveMemberNote('42', '张三');
     const setBody = posts.at(-1)?.body;
     const okSet = setBody?.memberNotes?.__replace__?.['42'] === '张三'
       && setBody.memberNotes.__replace__['43'] === '小李'
+      && setBody.memberNotes.__replace__['77'] === '群里刚记的'
       && setBody.memberNotes['42'] === undefined;   // 普通对象形态会让服务端把旧值并回来
 
     await ctx.saveMemberNote('42', '');              // 传空串 = 删除这条备注
     const delBody = posts.at(-1)?.body;
     const okDel = Boolean(delBody?.memberNotes?.__replace__) && !('42' in delBody.memberNotes.__replace__)
-      && delBody.memberNotes.__replace__['43'] === '小李';
+      && delBody.memberNotes.__replace__['43'] === '小李'
+      && delBody.memberNotes.__replace__['77'] === '群里刚记的';
 
-    // state.config 还没拉到就先取一次现值打底：否则 __replace__ 会把服务端已有的备注整体清掉
+    // state.config 还没拉到（或已过期）也先取一次现值打底：否则 __replace__ 会把服务端已有
+    // 的备注（含群里刚记的）整体清掉
     vm.runInContext('state.config = null;', ctx);
     await ctx.saveMemberNote('43', '小李子');
     const guardBody = posts.at(-1)?.body;
     const okGuard = guardBody?.memberNotes?.__replace__?.['43'] === '小李子'
-      && guardBody.memberNotes.__replace__['42'] === '服务端上的老张';
+      && guardBody.memberNotes.__replace__['77'] === '群里刚记的';
 
     // 还原：后面还有用例要按正常配置渲染分区（state.config 为 null 时 renderApiSection 会抛错）
     vm.runInContext(`state.config = ${JSON.stringify(cfg)};`, ctx);
@@ -3454,7 +3465,7 @@ try {
     const ok = okSet && okDel && okGuard;
     ok ? pass++ : fail++;
     console.log('  ' + (ok ? 'OK   ' : 'FAIL ')
-      + `备注写入走 __replace__（新增=${okSet}，删除=${okDel}，配置未加载时不误清=${okGuard}）`);
+      + `备注写入走 __replace__（新增=${okSet}，删除=${okDel}，未加载/多写方时不误清=${okGuard}）`);
   }
 
   // ── 存档页 / 顶栏刷新的合并（2026-09-29 审查 P2）──

@@ -87,8 +87,11 @@ export class ReminderStore {
     if (drop.size) this.items = this.items.filter((it) => !drop.has(it.id));
   }
 
-  /** 新增一条提醒。返回 { id, at }；超出限制/参数非法时抛带可读原因的错。 */
-  add({ chatKey, at, text, createdBy = '' }) {
+  /** 新增一条提醒。返回 { id, at }；超出限制/参数非法时抛带可读原因的错。
+   *  createdBy = 谁提的（"a 让你提醒 b"里的 a）；targetName = 提醒谁（b）。
+   *  两者都是可选的事实信息，只用于到点派发时的话术归属（2026-10-10 用户反馈：
+   *  此前不记归属，派发话术又套着"你给自己留过话"的框架，模型会自己圆归属）。 */
+  add({ chatKey, at, text, createdBy = '', targetName = '' }) {
     const when = Number(at);
     // 提醒正文是"用户可诱导模型原样搬运"的文本，落盘前统一弱化段头（提示注入面，2026-09-28 审查 P2）
     const body = sanitizeUserText(String(text || '').trim()).slice(0, MAX_REMINDER_TEXT);
@@ -116,7 +119,9 @@ export class ReminderStore {
       chatKey,
       at: when,
       text: body,
-      createdBy: String(createdBy || '').slice(0, 40),
+      // 归属名与其他入口同口径（段头弱化 + 截断）：它们会进派发 note，也在注入面里
+      createdBy: sanitizeUserText(String(createdBy || '').trim()).slice(0, 40),
+      targetName: sanitizeUserText(String(targetName || '').trim()).slice(0, 40),
       status: 'pending',
       createdAt: now,
       firedAt: null,
@@ -194,3 +199,47 @@ export class ReminderStore {
 }
 
 export { EXPIRE_AFTER_MS };
+
+// ── 派发话术（唯一真源）────────────────────────────────────────────────────
+// 到点唤醒时给模型的那条 note 由这里生成；orchestrator 只管条数预算与派发。
+// 归属（谁提的/提醒谁）只作为事实写进来；缺归属时明确要求"别猜"——此前话术是
+// "之前有人让你…"且外面套着"你之前给自己留过话"的框架，模型只能自己圆，会把
+// 别人托的提醒说成被提醒人自己设的（2026-10-10 用户反馈）。
+
+const REMINDER_AT_FMT = { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' };
+
+/** 单条提醒在派发 note 里的预估占用（正文 + 归属名 + 引号/分隔开销）。
+ *  派发侧的条数预算（orchestrator 的 REMINDER_NOTE_BODY_MAX）与 note 截断（600 字）
+ *  必须同一口径：漏算归属名会让"装得下"的条目在截断后丢内容却照样被标记已触发。 */
+export function reminderNoteCost(item) {
+  return String(item?.text || '').length
+    + String(item?.createdBy || '').length
+    + String(item?.targetName || '').length
+    + 8;
+}
+
+/** 把到点的一组提醒拼成唤醒 note（纯函数，便于单测）。 */
+export function buildReminderNote(items, { now = Date.now(), lateMs = 3 * 60000 } = {}) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) return '';
+  const first = list[0];
+  const at = new Date(first.at).toLocaleTimeString('zh-CN', REMINDER_AT_FMT);
+  const late = now - first.at;
+  const whoOf = (it) => {
+    const from = String(it.createdBy || '').trim();
+    const to = String(it.targetName || '').trim();
+    if (from && to) return `${from}请你提醒${to}`;
+    if (from) return `${from}请你提醒`;
+    if (to) return `有人请你提醒${to}`;
+    return '';
+  };
+  const body = list.length === 1
+    ? `之前${String(first.createdBy || '').trim() || '有人'}让你在 ${at} 提醒`
+      + `${String(first.targetName || '').trim() ? `${String(first.targetName).trim()}：` : '：'}${first.text}`
+    : `到点了，要你提醒的事有 ${list.length} 件：${list.map((x) => `「${x.text}」${whoOf(x) ? `（${whoOf(x)}）` : ''}`).join('、')}`;
+  const hasNames = list.some((x) => String(x.createdBy || '').trim() || String(x.targetName || '').trim());
+  const howto = hasNames
+    ? '现在自然地把这些说出来（一两句，别说"系统提醒"）：是谁请你提醒谁的要说清，别猜也别含糊。'
+    : '现在自然地把这些说出来（一两句，别说"系统提醒"）：不确定是谁托你提醒的就别猜（说"有人托我提醒"即可），更不要说是被提醒的人自己设的。';
+  return `【定时提醒】${body}${late > lateMs ? '（已经迟到了一点，顺口说明下）' : ''}。${howto}`;
+}

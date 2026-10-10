@@ -3892,7 +3892,9 @@ export function createApp({
     const enabled = getConfig().reminders?.enabled !== false;
     const fmt = (it) => ({
       id: it.id, chatKey: it.chatKey, text: it.text, status: it.status || 'pending',
-      at: it.at, createdAt: it.createdAt, finishedAt: it.finishedAt || null
+      at: it.at, createdAt: it.createdAt, finishedAt: it.finishedAt || null,
+      // 归属（谁提的/提醒谁）：控制台列表要显示"谁请你提醒谁"（2026-10-10 反馈）
+      from: String(it.createdBy || ''), to: String(it.targetName || '')
     });
     const pending = reminders.items
       .filter((it) => it.status === 'pending')

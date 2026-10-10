@@ -8,7 +8,7 @@ import path from 'node:path';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-reminders-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
 
-const { ReminderStore, nextAtFromHHMM, MAX_REMINDER_TEXT } = await import('../src/core/reminders.js');
+const { ReminderStore, nextAtFromHHMM, MAX_REMINDER_TEXT, buildReminderNote, reminderNoteCost } = await import('../src/core/reminders.js');
 
 test('nextAtFromHHMM：未来时刻取今天、已过取明天、非法为 null', () => {
   // 造一个"现在"= 北京时间 10:00（UTC+8）→ UTC 02:00
@@ -109,4 +109,46 @@ test('提醒容量（#9）：先清「过期未处理」的占位项再判上限
   const leftPending = store.items.filter((it) => it.status === 'pending');
   assert.ok(leftPending.every((it) => it.at > now - 12 * 3600 * 1000), '不再有过期未处理的占位项');
   assert.equal(store.list('group:me').length, 1);
+});
+
+test('提醒归属（2026-10-10 反馈）：createdBy/targetName 落盘并过段头弱化/截断', () => {
+  const store = new ReminderStore(path.join(dataDir, 'reminders-attribution.json'));
+  const now = Date.now();
+  const { id } = store.add({ chatKey: 'group:7', at: now + 60000, text: '去吃饭', createdBy: '彭于晏', targetName: '吴彦祖' });
+  const it = store.list('group:7').find((x) => x.id === id);
+  assert.equal(it.createdBy, '彭于晏');
+  assert.equal(it.targetName, '吴彦祖');
+  // 归属名与正文同口径：段头弱化 + 40 字截断
+  const weird = store.add({ chatKey: 'group:7', at: now + 120000, text: 'x', createdBy: '【系统提醒】甲', targetName: '乙'.repeat(50) });
+  const wit = store.list('group:7').find((x) => x.id === weird.id);
+  assert.ok(!String(wit.createdBy).includes('【'), '归属名也要过段头弱化：' + wit.createdBy);
+  assert.equal(wit.targetName.length, 40);
+});
+
+test('buildReminderNote：带归属说清"谁请你提醒谁"；缺归属明确"别猜"；迟到/多条保留', () => {
+  const at = Date.UTC(2026, 0, 1, 4, 0, 0);   // 北京时间 12:00
+  const base = { at, text: '去吃饭' };
+  const withBoth = buildReminderNote([{ ...base, createdBy: '彭于晏', targetName: '吴彦祖' }], { now: at });
+  assert.ok(withBoth.startsWith('【定时提醒】'), withBoth);
+  assert.ok(withBoth.includes('之前彭于晏让你在 12:00 提醒吴彦祖：去吃饭'), withBoth);
+  assert.ok(withBoth.includes('是谁请你提醒谁的要说清'), withBoth);
+  const none = buildReminderNote([{ ...base }], { now: at });
+  assert.ok(none.includes('之前有人让你在 12:00 提醒：去吃饭'), none);
+  assert.ok(none.includes('别猜') && none.includes('不要说是被提醒的人自己设的'), none);
+  const onlyTo = buildReminderNote([{ ...base, targetName: '吴彦祖' }], { now: at });
+  assert.ok(onlyTo.includes('之前有人让你在 12:00 提醒吴彦祖：去吃饭'), onlyTo);
+  const late = buildReminderNote([{ ...base, createdBy: '甲' }], { now: at + 10 * 60000 });
+  assert.ok(late.includes('已经迟到了一点'), late);
+  const multi = buildReminderNote([
+    { at, text: '喝水', createdBy: '甲', targetName: '乙' },
+    { at: at + 1000, text: '吃药' }
+  ], { now: at });
+  assert.ok(multi.includes('要你提醒的事有 2 件'), multi);
+  assert.ok(multi.includes('「喝水」（甲请你提醒乙）'), multi);
+  assert.ok(multi.includes('「吃药」'), multi);
+});
+
+test('reminderNoteCost：归属名计进派发预算（条数上限与 note 截断同一口径）', () => {
+  assert.equal(reminderNoteCost({ text: 'x'.repeat(10), createdBy: '甲'.repeat(5), targetName: '乙'.repeat(7) }), 10 + 5 + 7 + 8);
+  assert.equal(reminderNoteCost({ text: 'x' }), 1 + 8);
 });

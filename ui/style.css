@@ -3071,6 +3071,7 @@ input[type=checkbox], input[type=radio] {
 .reminder-row:nth-child(odd) { background: color-mix(in srgb, var(--bg-3) 55%, transparent); }
 .reminder-when { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--text); }
 .reminder-chat { flex: 0 0 auto; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
+.reminder-attr { flex: 0 0 auto; max-width: 26%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); }
 .reminder-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
 .reminder-row .btn { flex: 0 0 auto; }
 

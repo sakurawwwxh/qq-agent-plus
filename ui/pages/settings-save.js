@@ -833,9 +833,9 @@ async function saveConfig({ quiet = false } = {}) {
       refreshMs: Math.max(1000, Number(val('#cfg-refreshms', c.ui?.refreshMs ?? 15000)) || 15000)
     };
     delete patch.ui.mode;
-    patch.memberNotes = {
-      ...(c.memberNotes || {})
-    };
+    // 不再回传 memberNotes：备注有自己的写入口（人物记忆页 saveMemberNote 的 __replace__ /
+    // 模型工具 set_member_note），这里拿可能过期的快照做深合并，会把别处已删的备注合并复活
+    //（2026-10-10 复核：深合并删不掉键，但能把控制台快照里还留着的键加回来）。
   }
 
   if (sec === 'onebot') {

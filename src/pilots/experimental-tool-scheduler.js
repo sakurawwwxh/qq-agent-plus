@@ -70,6 +70,7 @@ export const EXPERIMENTAL_SAME_ROUND_ACTION_TOOLS = new Set([
   'set_my_signature', // 对外写：改个性签名（有每日闸门）
   'set_my_status',    // 对外写：改在线状态（有每日闸门）
   'set_remark',       // 对外写：给好友/群设备注（有每日闸门）
+  'set_member_note',  // 本地持久化写入：设"称呼/代号"（不影响后续动作的参数）
   'send_group_file',  // 对外写：发文件到群
   'like_album_photo', // 对外写：相册点赞
   'comment_album_photo', // 对外写：相册评论

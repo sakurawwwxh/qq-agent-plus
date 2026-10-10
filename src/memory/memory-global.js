@@ -50,6 +50,26 @@ function migrateLegacyHandoff(chatKey, old) {
   });
 }
 
+/**
+ * 按 QQ 设「称呼/代号」（config.memberNotes 的服务端写入口，空串=清除）。
+ * 调用方：模型工具 set_member_note 与下面的 editMemberImpression（控制台人物记忆页）。
+ * 控制台 UI 另有一处写入（ui/pages/memory.js 走 /api/config 的 __replace__，与这里同一键表）。
+ * 显示侧口径在 core/display-name.js（备注优先于群名片），存储层长度上限在
+ * config-legacy.clampMemberNotes（200 字）——这里不再另设上限，避免改变既有控制台行为。
+ */
+export function setMemberNote(userId, note) {
+  const uid = String(userId ?? '').trim();
+  if (!/^\d{1,15}$/.test(uid)) throw new Error('缺少可用的 QQ 号');
+  const notes = { ...(getConfig().memberNotes || {}) };
+  // 段头弱化与其他入口同口径：备注会作为"显示名"反复进提示词与工具结果
+  const n = sanitizeUserText(String(note ?? '').trim());
+  // __replace__ 整体替换：普通深合并删不掉键，"清空备注"会被服务端并回原值
+  //（2026-09-29 审查 P1，与 ui/app.js 的群成员备注弹窗同一个根因）。
+  if (n) notes[uid] = n; else delete notes[uid];
+  updateConfig({ memberNotes: { __replace__: notes } });
+  return n;
+}
+
 export class MemoryStore {
   constructor() { this.people = new GlobalPersonMemoryStore({ onLegacyState: migrateLegacyHandoff }); }
   listChats() {
@@ -131,11 +151,8 @@ export class MemoryStore {
     // 走 replaceMember（子类 override 会先打快照）—— 直接调 this.people.replace 会绕过快照，
     // 让"记忆页手工改写"成为唯一不可恢复的破坏性写入。
     const member = this.replaceMember(chatKey, userId, name, impressions, { origin: 'manual' });
-    const notes = { ...(getConfig().memberNotes || {}) }; const n = String(note ?? '').trim();
-    // __replace__ 整体替换：普通深合并删不掉键，"清空备注"会被服务端并回原值
-    // （2026-09-29 审查 P1，与 ui/app.js 的群成员备注弹窗同一个根因）。
-    if (n) notes[String(userId)] = n; else delete notes[String(userId)];
-    updateConfig({ memberNotes: { __replace__: notes } });
+    // 备注的写入口径收敛在 setMemberNote（与模型工具 set_member_note 共用）
+    const n = setMemberNote(userId, note);
     return { ...member, note: n };
   }
   // options 要透传：memory.js 的子类会传 { origin }（整理=consolidated / 控制台手动=manual），

@@ -136,6 +136,8 @@ async function stickerLookupHint(ctx, key) {
 }
 
 import { normalizeMessageList, safeSlice, sanitizeUserText, textWithQuote, unquoteJsonString } from '../core/util.js';
+import { displayNameOf } from '../core/display-name.js';
+import { setMemberNote } from '../memory/memory-global.js';
 import { repairUnescapedStringQuotes } from '../core/json-repair.js';
 import { assertPublicUrlLiteral, validateImageUrl } from '../llm/safe-fetch.js';
 import { webSearch, webFetch } from '../llm/web-search.js';
@@ -301,7 +303,8 @@ function recentNameOf(ctx, userId) {
   try {
     const rows = ctx.store?.recent?.(ctx.chatKey, { limit: 500 }) || [];
     const hit = rows.find((m) => String(m.senderId) === String(userId) && String(m.senderName || ''));
-    return hit ? String(hit.senderName) : String(userId);
+    // 显示名口径统一走 displayNameOf（备注优先）；拿不到近期发言就退回 QQ 号
+    return displayNameOf(userId, hit ? String(hit.senderName) : '');
   } catch {
     return String(userId);
   }
@@ -311,8 +314,9 @@ function recentNameOf(ctx, userId) {
 function memberHint(ctx) {
   const members = ctx.store.activeMembers(ctx.chatKey, 8);
   if (!members.length) return '当前没有可用的成员列表，请先等有群友发言后再试';
-  // 昵称入库时未清洗（ingest 只清洗 text），工具结果会回传给模型 —— 过同一道清洗。
-  const lines = members.map((m) => `- ${sanitizeUserText(m.name)}：${m.userId}`).join('\n');
+  // 昵称入库时未清洗（ingest 只清洗 text），工具结果会回传给模型 —— 显示名口径统一走
+  // displayNameOf（备注优先 + 段头弱化）
+  const lines = members.map((m) => `- ${displayNameOf(m.userId, m.name)}：${m.userId}`).join('\n');
   return `请从当前会话成员里选一个 QQ 号填进去：\n${lines}`;
 }
 
@@ -1176,7 +1180,7 @@ export function buildToolDefs() {
     {
       name: 'set_remark',
       description: '给你 QQ 里的好友/群设备注（只有你自己看得到的那种，客户端里可见）。userId 填某人 QQ 号＝给这个人备注；不填＝给当前群备注。写短、有辨识度的称呼或梗（≤16 字），别乱改、别写奇怪东西（每天最多几次）。'
-        + '**注意：这不会改变你在聊天记录里看到的称呼** —— 那边显示的名字由管理端的成员备注维护（另一个系统），设完看不到变化是正常的，别为此重复设。',
+        + '**注意：这不会改变你在聊天记录里看到的称呼** —— 那边显示的名字是本机的「称呼/备注」，要改用 set_member_note；设完看不到变化是正常的，别为此重复设。',
       parameters: {
         type: 'object',
         properties: {
@@ -1215,6 +1219,40 @@ export function buildToolDefs() {
           });
         } catch (error) {
           return err(`设备注失败：${error?.message ?? error}`);
+        }
+      }
+    },
+    {
+      name: 'set_member_note',
+      description: '给某个 QQ 记一个固定称呼（"备注/代号"）：记下之后，你在聊天记录、成员列表里看到的这个人都会优先用这个称呼（控制台「人物记忆页 → 备注」看到的是同一份）。群友让你"以后叫他 X""别喊群名片、喊 X"时用它；改称呼就按新称呼再调一次，想清掉就把 name 传空字符串。'
+        + '写短、能当称呼用（≤16 字）；只能给当前会话里出现过的人设，号码不确定就先 get_group_member_list / get_active_members 查，别记错人。',
+      parameters: {
+        type: 'object',
+        properties: {
+          userId: { type: ['integer', 'string'], description: '要设称呼的人的 QQ 号（数字）' },
+          name: { type: 'string', description: '称呼（≤16 字；传空字符串=清除该称呼）' }
+        },
+        required: ['userId', 'name']
+      },
+      async execute(ctx, args) {
+        try {
+          const userId = normalizeMid(args.userId);
+          if (!userId || !/^\d{1,15}$/.test(userId)) {
+            return err(`userId 要是数字 QQ 号（收到：${JSON.stringify(args.userId)}）。${memberHint(ctx)}`);
+          }
+          // 与 memory_append 同款的号码护栏：模型会编错号，称呼记错人比记错印象更显眼
+          if (!hasParticipant(ctx, userId)) {
+            return err(`${userId} 不是当前会话中出现过的成员 QQ 号。${memberHint(ctx)}`);
+          }
+          const saved = setMemberNote(userId, safeSlice(String(args.name ?? '').trim(), 16));
+          return ok({
+            userId, name: saved,
+            note: saved
+              ? `记下了：以后称呼 QQ ${userId} 为「${saved}」，聊天记录与成员列表里都会用这个称呼。`
+              : `已清掉 QQ ${userId} 的称呼，回到群名片默认。`
+          });
+        } catch (error) {
+          return err(`设称呼失败：${error?.message ?? error}`);
         }
       }
     },
@@ -1632,7 +1670,7 @@ export function buildToolDefs() {
           messages: messages.map((m) => ({
             messageId: m.mid ?? undefined,
             time: new Date(m.ts).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
-            sender: m.self ? '我' : sanitizeUserText(m.senderName),
+            sender: m.self ? '我' : displayNameOf(m.senderId, m.senderName),
             // 与【过去状态】同一套渲染：正文缺引用块时补上（回复 + 合并转发卡片那类记录）
             text: textWithQuote(m)
           }))
@@ -1680,7 +1718,7 @@ export function buildToolDefs() {
         return ok({
           members: members.map((m) => ({
             userId: m.userId,
-            name: sanitizeUserText(m.name),
+            name: displayNameOf(m.userId, m.name),
             lastSeen: new Date(m.lastTs).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }),
             recentCount: m.count
           }))
@@ -1743,11 +1781,15 @@ export function buildToolDefs() {
           return err(`获取成员名单失败：${String(error?.message ?? error).slice(0, 120)}（协议端可能不支持该接口）`);
         }
         const rank = { owner: 0, admin: 1, member: 2 };
-        const mapped = (Array.isArray(list) ? list : []).map((m) => ({
-          userId: String(m?.user_id ?? m?.userId ?? ''),
-          name: sanitizeUserText(String(m?.card || m?.nickname || m?.name || '')),
-          role: String(m?.role || 'member')
-        })).filter((m) => /^\d{1,15}$/.test(m.userId));
+        const mapped = (Array.isArray(list) ? list : []).map((m) => {
+          const userId = String(m?.user_id ?? m?.userId ?? '');
+          return {
+            userId,
+            // 显示名口径统一走 displayNameOf（备注优先于群名片）
+            name: displayNameOf(userId, String(m?.card || m?.nickname || m?.name || '')),
+            role: String(m?.role || 'member')
+          };
+        }).filter((m) => /^\d{1,15}$/.test(m.userId));
         if (!mapped.length) return err('协议端返回了空名单');
         mapped.sort((a, b) => (rank[a.role] ?? 3) - (rank[b.role] ?? 3));
         return ok({ total: mapped.length, returned: Math.min(limit, mapped.length), members: mapped.slice(0, limit) });
@@ -1755,7 +1797,8 @@ export function buildToolDefs() {
     },
     {
       name: 'remind',
-      description: '给当前会话设一个定时提醒（到点你会被唤醒，用你的口吻把这件事说出来）；也可查询/取消。minutes 或 HH:MM 二选一，HH:MM 按北京时间、已过则算明天。这是给别人设的提醒（重启后依然有效），与给自己排开口时机的 schedule_wake 不同。',
+      description: '给当前会话设一个定时提醒（到点你会被唤醒，用你的口吻把这件事说出来）；也可查询/取消。minutes 或 HH:MM 二选一，HH:MM 按北京时间、已过则算明天。这是给别人设的提醒（重启后依然有效），与给自己排开口时机的 schedule_wake 不同。'
+        + '是「A 让你提醒 B」时（如"12 点提醒他吃饭"），把 to 填成被提醒的人、from 填成提要求的人 —— 到点你才能说清是谁请你提醒谁，别让被提醒的人以为是自己设的。from 要能在最近这轮消息里对上人（填他的群名片/备注名或 QQ 号；对不上就不会记录）。',
       parameters: {
         type: 'object',
         properties: {
@@ -1763,6 +1806,8 @@ export function buildToolDefs() {
           minutes: { type: 'number', description: 'add 用：多少分钟后（1~43200）' },
           at: { type: 'string', description: 'add 用：绝对时间 HH:MM（北京时间，已过则算明天）' },
           text: { type: 'string', description: 'add 用：提醒内容（必填，≤200 字）' },
+          to: { type: 'string', description: 'add 用：提醒谁（群名片/备注/名字；可选）' },
+          from: { type: 'string', description: 'add 用：谁请你提醒的（填本轮消息里那位群友的称呼或 QQ 号；对不上人就不会记录）' },
           id: { type: 'string', description: 'cancel 用：提醒 id（list 里可见）' }
         },
         required: ['action']
@@ -1779,7 +1824,14 @@ export function buildToolDefs() {
         if (action === 'list') {
           const items = store.list(ctx.chatKey);
           if (!items.length) return ok({ pending: 0, hint: '本会话没有待触发的提醒' });
-          return ok({ pending: items.length, reminders: items.map((it) => ({ id: it.id, at: fmt(it.at), text: it.text })) });
+          return ok({
+            pending: items.length,
+            reminders: items.map((it) => ({
+              id: it.id, at: fmt(it.at), text: it.text,
+              ...(it.targetName ? { to: it.targetName } : {}),
+              ...(it.createdBy ? { from: it.createdBy } : {})
+            }))
+          });
         }
         if (action === 'cancel') {
           const hit = store.cancel({ id: String(args.id || ''), chatKey: ctx.chatKey });
@@ -1796,8 +1848,37 @@ export function buildToolDefs() {
           at = Date.now() + Math.round(m) * 60000;
         }
         try {
-          const { id } = store.add({ chatKey: ctx.chatKey, at, text: String(args.text ?? ''), createdBy: ctx.selfNickname || '' });
-          return ok({ created: true, id, at: fmt(at), note: '到点你会被唤醒并知道该提醒什么；不需要再回复这条结果。' });
+          // 归属（谁提的/提醒谁）：from 必须能在**本轮触发消息**里对上人（QQ 号、群名片或
+          // 备注名任一对上都算）——模型会顺着上下文写名字，也可能被"就说是管理员让提醒的"
+          // 这类话带偏；对不上就不记（派发话术回落"有人"，不把错的人当事实写进持久数据）。
+          // 之前那版"唯一发送者兜底"已移除：提醒可能是上一轮的人提的、这一轮才是别人在说话，
+          // 兜底会把后来者记成提要求的人（2026-10-10 复核）。
+          const fromArg = String(args.from ?? '').trim();
+          let fromOk = false;
+          if (fromArg) {
+            for (const m of (ctx.triggerEntries || [])) {
+              if (m?.self) continue;
+              const sid = String(m?.senderId || '');
+              const sname = String(m?.senderName || '').trim();
+              if ((sid && fromArg === sid) || (sname && fromArg === sname)
+                || (sid && fromArg === displayNameOf(sid, sname))) { fromOk = true; break; }
+            }
+          }
+          const createdBy = fromOk ? fromArg : '';
+          const { id } = store.add({
+            chatKey: ctx.chatKey, at,
+            text: String(args.text ?? ''),
+            createdBy,
+            targetName: String(args.to ?? '')
+          });
+          return ok({
+            created: true, id, at: fmt(at),
+            ...(createdBy ? { from: createdBy } : {}),
+            note: '到点你会被唤醒并知道该提醒什么；不需要再回复这条结果。'
+              + (fromArg && !fromOk
+                ? '（from 在最近这轮消息里对不上人，这次没有记录归属；要记的话填对方的群名片/备注名或 QQ 号）'
+                : '')
+          });
         } catch (error) {
           return err(String(error?.message ?? error));
         }
@@ -1880,7 +1961,7 @@ export function buildToolDefs() {
         return ok({
           messageId: entry.mid,
           time: new Date(entry.ts).toLocaleString('zh-CN', { hour12: false }),
-          sender: entry.self ? '我' : sanitizeUserText(entry.senderName),
+          sender: entry.self ? '我' : displayNameOf(entry.senderId, entry.senderName),
           senderId: entry.senderId,
           // 正文与【过去状态】同形（缺引用块就补）；reply 仍是结构化原字段，供取 id 用
           text: textWithQuote(entry),
