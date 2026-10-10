@@ -106,7 +106,7 @@ function readBudgetKeepPending(dataDir) {
  * @param {object} opts
  *   dataDir / mode(observe|active) / consolePort / onebotHttpPort / onebotToken
  *   notify: async (text) => void|null   通知通道（ops.js 里接 core/notify-owner）
- *   fetchImpl / statfs                  注入点（测试）
+ *   fetchImpl / statfs / sudoDockerProbe 注入点（测试）
  * @returns {{ healthy: boolean, checks: Array, notified: string[], code: number }}
  */
 export async function runHealthCheck(opts = {}) {
@@ -119,6 +119,7 @@ export async function runHealthCheck(opts = {}) {
     snowlumaDir = '',
     service = '',
     noNewPrivsStatus = null,   // 可注入（测试）：null＝自动探测主服务进程
+    sudoDockerProbe = null,    // 可注入（测试）：null＝走真实 probeSudoDocker()
     outboundStaleMs = OUTBOUND_STALE_MS,
     notify = null,
     fetchImpl = globalThis.fetch,
@@ -197,7 +198,7 @@ export async function runHealthCheck(opts = {}) {
       add('docker-socket', false,
         `${error?.code || '不可读'}：控制台主进程被 NoNewPrivileges 加固，sudo 回退不可用，`
         + '更新协议端会失败；修法见 docs/LINUX.md「控制台里更新协议端报 docker 权限不足」');
-    } else if (probeSudoDocker()) {
+    } else if ((sudoDockerProbe ?? probeSudoDocker)()) {
       // ⚠️ 关键：不能只因为"直连不可用"就报失败。更新路径有一条 `sudo -n docker` 回退
       //（Issue #30，与 deploy-all.sh 同一条路），那条路通则功能就是**能用**的。
       // 只报直连失败会造出一条**永不过期的误报**：巡检每 5 分钟失败一次、连击 3 次通知 owner，

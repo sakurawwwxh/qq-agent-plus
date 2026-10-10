@@ -101,6 +101,44 @@ test('docker-socket：主进程被 NNP 加固时报红并指向修法，不再�
   }
 });
 
+test('docker-socket：主进程未加固且 sudo -n docker 可用 → 报"走回退"而不是红（防永不过期误报）', async (t) => {
+  // health-check 里"直连不可用但 sudo 回退可用 → 报绿"那一支是防误报的防线：报红会每 5 分钟
+  // 失败一次、连击 3 次通知 owner，而条件不会自愈（也不会有"已恢复"）。加了可注入的
+  // sudoDockerProbe 之后这条分支才有确定性覆盖 —— 此前只在"无 docker 组 + 未加固 + 免密
+  // sudo"的真实机器上被偶然走到，文件级 DOCKER_HOST 解耦后就再也碰不到了（2026-10-10 审查）。
+  if (process.platform === 'win32') return t.skip('需要 POSIX 权限位造 EACCES（Windows 无法复现）');
+  if (process.getuid?.() === 0) return t.skip('root 无视权限位，造不出 EACCES');
+  const prevHost = process.env.DOCKER_HOST;
+  try {
+    const run = async (sudoOk) => {
+      const dir = makeDataDir({});
+      const sock = path.join(dir, 'fake-docker.sock');
+      fs.writeFileSync(sock, '');
+      fs.chmodSync(sock, 0o000);
+      process.env.DOCKER_HOST = `unix://${sock}`;
+      try {
+        const r = await runHealthCheck({
+          dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null,
+          service: 'qq-agent-linux.service', noNewPrivsStatus: false,
+          sudoDockerProbe: () => sudoOk
+        });
+        return r.checks.find((c) => c.name === 'docker-socket');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const fallback = await run(true);
+    assert.equal(fallback.ok, true, '有可用的 sudo 回退就不能报红（否则是永不过期的误报）');
+    assert.match(String(fallback.detail), /回退/);
+    const none = await run(false);
+    assert.equal(none.ok, false, '直连与回退都不可用才是真故障');
+    assert.match(String(none.detail), /回退都不可用/);
+  } finally {
+    if (prevHost === undefined) delete process.env.DOCKER_HOST;
+    else process.env.DOCKER_HOST = prevHost;
+  }
+});
+
 test('全绿：控件/OneBot/水位/磁盘/完整性都过 → healthy，退出码 0', async () => {
   const dir = makeDataDir();
   const r = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });

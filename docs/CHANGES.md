@@ -57,11 +57,14 @@ docker 组时，套接字必然不可访问、`sudo -n docker` 回退又必被 N
 复现：恰好 3 条）。CI 与开发机的测试进程都在 docker 组里，这条机器环境依赖一直不可见。
 
 - **现行做法**：该文件统一把 `DOCKER_HOST` 指向自建的可读假套接字，与机器环境解耦；
-  "不可访问 → 报红"的真实失败路径仍由专用用例（000 权限套接字 + 注入 NNP 状态）确定性覆盖。
-  CI 与发布闸门的加固复跑同步补上"无 docker 访问"维度（000 假套接字 + `DOCKER_HOST`）。
+  "不可访问 → 报红"的真实失败路径仍由专用用例（000 权限套接字 + 注入 NNP 状态）确定性覆盖；
+  "sudo 回退可用 → 报绿"那一支新增可注入的 `sudoDockerProbe` 并补确定性用例（此前只在特定
+  真实环境被偶然走到）。CI 与发布闸门的加固复跑同步补上"无 docker 访问"维度（000 假套接字
+  + `DOCKER_HOST`）。
 - **影响面**：正是原始 issue #30 那批机器（用户管理器缺 docker 组）—— 他们不只更新协议端
   失败，**更新本体也被门禁拦死**，只能先修 docker 组；修复后这类机器可直接升级。
-- **涉及文件**：`test/ops-health.test.mjs`、`.github/workflows/ci.yml`、`.github/workflows/release.yml`。
+- **涉及文件**：`src/core/health-check.js`（新增可注入的 `sudoDockerProbe`）、`test/ops-health.test.mjs`、
+  `.github/workflows/ci.yml`、`.github/workflows/release.yml`。
 
 ## 未发布 · 表情收藏的判定标准改为可配置
 
