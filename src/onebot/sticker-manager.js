@@ -27,6 +27,19 @@ function stickerSourceKey(url) {
   return fileid || text.slice(0, 120);
 }
 
+// 收藏判定的「判定标准」：配置 sticker.collectCriteria 填了就用它的，留空用下面这套内置默认。
+// 默认值 = 现状（老 config.json 一字不改照旧跑）；上限 2000 字，防把判定请求撑爆。
+export const STICKER_JUDGE_DEFAULT_CRITERIA = '判断标准只有一条：以后聊天时用得上吗。'
+  + '值得收：真正的表情包——带字的梗图、猫猫狗狗、卡通形象、抽象搞笑图，能拿来表达情绪、吐槽或怼人的。'
+  + '不值得收：本人或朋友的生活照、随手拍、自拍，以及跟聊天无关的截图（游戏、聊天记录、网页）、二维码、证件、广告、纯风景照。'
+  + '拿不准就问自己一句：以后聊天时真会用上吗。会就用得上才收，不会就别收。';
+
+/** 收藏判定的判定标准：配置里填了就用配置的，否则用内置默认（默认值即现状）。 */
+export function stickerJudgeCriteria(config = {}) {
+  const custom = String(config?.sticker?.collectCriteria || '').trim();
+  return custom ? custom.slice(0, 2000) : STICKER_JUDGE_DEFAULT_CRITERIA;
+}
+
 import { chatCompletionWithRetry } from '../llm/llm.js';
 import { safeFetchBinary, validateImageUrl } from '../llm/safe-fetch.js';
 import { resolveToolCalls } from '../tools/inline-tools.js';
@@ -551,10 +564,8 @@ export class StickerManager {
       {
         role: 'system',
         content: `你是「${botName}」，一个混在 QQ 群里的普通群友，正在看群友刚发的一张图。`
-          + '判断标准只有一条：以后聊天时用得上吗。'
-          + '值得收：真正的表情包——带字的梗图、猫猫狗狗、卡通形象、抽象搞笑图，能拿来表达情绪、吐槽或怼人的。'
-          + '不值得收：本人或朋友的生活照、随手拍、自拍，以及跟聊天无关的截图（游戏、聊天记录、网页）、二维码、证件、广告、纯风景照。'
-          + '拿不准就问自己一句：以后聊天时真会用上吗。会就用得上才收，不会就别收。'
+          // 判定标准可配置：留空即内置默认（默认值 = 现状）；身份那句由代码补在前面。
+          + stickerJudgeCriteria(getConfig())
       },
       {
         role: 'user',

@@ -605,7 +605,9 @@ export function buildToolDefs() {
             return err('这次没判断出来（图片可能被服务商拦截或模型没提交决定），过会儿再试一次；确实想留就再调一次 collect_sticker，把 note 写清楚');
           }
           if (verdict.save !== true) {
-            return err(`这张不收（${verdict.reason || '不像表情包'}）：只收以后聊天用得上的表情包，生活照/截图/自拍不存`);
+            // 判定标准可配置（sticker.collectCriteria），这里不再复述默认标准 —— 否则用户改了标准，
+            // 这句给模型看的理由会跟配置打架；结论与理由按判定结果走。
+            return err(`这张不收（${verdict.reason || '不像表情包'}）：按当前的收藏标准判定`);
           }
           // 与 send_message/send_sticker 一样归一化：模型常传 "#123"，直接当 id 会生成
           // collected_#123，而刷新逻辑只认 collected_123，收藏的表情链接就永远不刷新。

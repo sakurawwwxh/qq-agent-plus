@@ -48,6 +48,24 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试上报（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
+## 未发布 · 表情收藏的判定标准改为可配置
+
+**尚未发版**（本节由工作树整理，发布时按版本号改名即可）。给表情收藏判定加一个可选配置
+`sticker.collectCriteria`：**留空 = 内置默认（默认值 = 现状）**，填了按自己的口味走。
+
+- **失败模式**：判定标准原本写死在 `#judgeSticker()` 的提示词里（"以后聊天时用得上吗"，而且把
+  "带字的梗图、抽象搞笑图"一律算作值得收）。不同角色的取向不同 —— 有的部署希望库里以 ACG／
+  动漫画风、干净卡通的图为主，技术群可能正好相反 —— 想调只能改源码，而升级会整树替换 `src/`，
+  改一次丢一次。
+- **现行做法**：`sticker.collectCriteria`（字符串，默认空）。只写"收什么 / 不收什么"，身份那句
+  （你是「谁」、正在看谁的图）仍由代码补在前面；填了就用配置的，留空用内置默认（默认文案与改动前
+  **逐字相同**），超长截断到 2000 字防撑爆判定请求。自动收藏与聊天里主动收藏共用这一份标准，
+  改完即时生效、不用重启。
+- **涉及文件**：`src/onebot/sticker-manager.js`（新增 `STICKER_JUDGE_DEFAULT_CRITERIA` 常量与
+  `stickerJudgeCriteria()`）、`src/core/config-legacy.js`（新增 `sticker.collectCriteria`）、
+  `src/tools/tools-core.js`（`collect_sticker` 的拒绝文案不再复述默认标准，免得与自定义标准打架）、
+  `test/sticker-collect-criteria.test.mjs`（新增）、`docs/CONFIG-EXAMPLES.md`（配置说明）。
+
 ## 0. 修复「更新装不上」（v0.8.2 门禁在加固单元里必败）、报错可读性、提醒归属与称呼统一（v0.8.3 起）
 
 这一版首先是**修复一个发布级缺陷**：v0.8.2 的部署前门禁在标准部署里必然失败 —— 两条
