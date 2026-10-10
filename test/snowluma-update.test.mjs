@@ -73,7 +73,7 @@ function fakeDocker({ dir, state = {} } = {}) {
   return api;
 }
 
-function makeUpdater(dir, docker, { probeOk = true, probeCalls = 0 } = {}) {
+function makeUpdater(dir, docker, { probeOk = true, probeCalls = 0, hasNoNewPrivs = () => false } = {}) {
   let seen = 0;
   return createSnowlumaUpdater({
     composeDir: dir,
@@ -81,6 +81,12 @@ function makeUpdater(dir, docker, { probeOk = true, probeCalls = 0 } = {}) {
     webuiPort: 5099,
     exec: docker.exec,
     probe: async () => { seen += 1; return { ok: seen > probeCalls && probeOk, status: probeOk ? 200 : 0 }; },
+    // NNP 探测必须注入、不许落到真实的 /proc/self/status：更新器的部署前门禁**跑在带
+    // NoNewPrivileges 的 unit 里**（标准部署默认加固），不注入的话走 sudo 回退的两条用例
+    // （#1043/#1048）在门禁环境里必败 —— 结果是所有加固部署都更不了版
+    //（2026-10-10 线上实测：本机 unit 的门禁日志里正是这两条）。默认"未加固"＝确定性地
+    // 走 sudo 路径；要测加固路径就显式传 () => true（见下方 #392 那条）。
+    hasNoNewPrivs,
     log: () => {},
     readyPollMs: 1,
     readyTimeoutMs: 30
@@ -321,6 +327,9 @@ test('Issue #30：预检拦住"没权限"，给可执行步骤，且一个新文
   const updater = createSnowlumaUpdater({
     composeDir: dir,
     container: 'qq-agent-snowluma',
+    // 预检分支要确定性：不注入的话这条用例的分支随运行环境有没有 NNP 漂移
+    //（测试要验的是"没免密 sudo → 给人工步骤"这一支；NNP 分支由 #392 专门覆盖）
+    hasNoNewPrivs: () => false,
     exec(cmd, args) {
       calls.push([cmd, ...args].join(' '));
       if (cmd === 'docker' && args[0] === 'info') {

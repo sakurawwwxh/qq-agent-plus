@@ -68,6 +68,21 @@ jobs:
       - name: 单元测试
         run: npm run test:unit
 
+      # 更新器的部署前门禁（scripts/auto-update.mjs）把同一份**门禁全清单**跑在 unit 的
+      # 加固环境里（install-service.mjs 生成的 unit 带 NoNewPrivileges=true + UMask=0077）。
+      # CI 默认环境没有这两样，于是一类"只在门禁环境里败"的用例（真实 /proc 探测、文件权限）
+      # 能一路绿到把更新路径弄瘫 —— 2026-10-10 线上实测即是如此（#1043/#1048 两条 sudo 回退
+      # 用例在带 NNP 的 unit 里必败，导致所有标准部署都装不上新版本）。这一步按 unit 的姿势
+      # 把门禁清单（unit + local + 四个回归 harness + scan，与更新器同一份）复跑一遍。
+      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077）
+        run: |
+          command -v setpriv >/dev/null || { echo "缺少 setpriv"; exit 1; }
+          umask 0077
+          setpriv --no-new-privs npm run test:unit
+          setpriv --no-new-privs npm run test:local
+          setpriv --no-new-privs npm run test:regression
+          setpriv --no-new-privs node src/ops.js scan --strict
+
       - name: 本地回归测试
         run: npm run test:local
 

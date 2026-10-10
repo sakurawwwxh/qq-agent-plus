@@ -76,6 +76,17 @@ jobs:
           echo "Shell 语法检查通过（${#shells[@]} 个）"
       - run: node src/ops.js scan --strict
       - run: npm run test:unit
+      # 与 ci.yml 同一步：发布闸门也要按更新器 unit 的加固环境（NoNewPrivileges + umask 0077）
+      # 把门禁全清单复跑一遍 —— 门禁跑在加固 unit 里，2026-10-10 的事故（加固环境里两条
+      # sudo 回退用例必败、导致标准部署装不上新版）正是默认环境里看不见的那一类。
+      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077）
+        run: |
+          command -v setpriv >/dev/null || { echo "缺少 setpriv"; exit 1; }
+          umask 0077
+          setpriv --no-new-privs npm run test:unit
+          setpriv --no-new-privs npm run test:local
+          setpriv --no-new-privs npm run test:regression
+          setpriv --no-new-privs node src/ops.js scan --strict
       - run: npm run test:local
       - name: 提示词 / 渲染 / 滚动 / 用量端到端回归
         run: |
