@@ -48,6 +48,21 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试上报（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
+## 未发布 · 门禁不再依赖机器的 docker 访问（无 docker 组的管理器也能升级）
+
+**尚未发版**。`test/ops-health.test.mjs` 里有 3 条断言"全绿 / healthy"的用例直连真实
+`/var/run/docker.sock`，而更新器的部署前门禁跑在加固 unit 里：该单元继承的用户管理器没带
+docker 组时，套接字必然不可访问、`sudo -n docker` 回退又必被 NoNewPrivileges 挡死 —— 3 条
+用例必红、**门禁拒绝升级**（issue #30 评论实测；2026-10-10 本机以"000 假套接字 + NNP"逐字
+复现：恰好 3 条）。CI 与开发机的测试进程都在 docker 组里，这条机器环境依赖一直不可见。
+
+- **现行做法**：该文件统一把 `DOCKER_HOST` 指向自建的可读假套接字，与机器环境解耦；
+  "不可访问 → 报红"的真实失败路径仍由专用用例（000 权限套接字 + 注入 NNP 状态）确定性覆盖。
+  CI 与发布闸门的加固复跑同步补上"无 docker 访问"维度（000 假套接字 + `DOCKER_HOST`）。
+- **影响面**：正是原始 issue #30 那批机器（用户管理器缺 docker 组）—— 他们不只更新协议端
+  失败，**更新本体也被门禁拦死**，只能先修 docker 组；修复后这类机器可直接升级。
+- **涉及文件**：`test/ops-health.test.mjs`、`.github/workflows/ci.yml`、`.github/workflows/release.yml`。
+
 ## 未发布 · 表情收藏的判定标准改为可配置
 
 **尚未发版**（本节由工作树整理，发布时按版本号改名即可）。给表情收藏判定加一个可选配置

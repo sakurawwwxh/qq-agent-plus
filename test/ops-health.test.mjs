@@ -4,11 +4,23 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 
 const { runHealthCheck } = await import('../src/core/health-check.js');
 const { openDatabase } = await import('../src/core/sqlite.js');
 const { readOwnerUin } = await import('../src/core/notify-owner.js');
+
+// docker-socket 探针会读真实 /var/run/docker.sock，而本文件多条用例断言的是"全绿 / healthy"。
+// 2026-10-10 实测（issue #30）：更新器的部署前门禁跑在加固 unit 里，若该单元继承的用户管理器
+// 没有 docker 组，套接字必然不可访问、sudo 回退又必被 NoNewPrivileges 挡死，本文件恰好 3 条
+// 用例必红、门禁拒绝升级 —— 而 CI / 开发机的测试进程都在 docker 组里，这个机器环境依赖一直
+// 不可见。这里统一把 DOCKER_HOST 指向自建的可读假套接字，让本文件与机器环境解耦；
+// "不可访问 → 报红"的真实失败路径由下面那条专用用例（000 权限套接字 + 注入 NNP 状态）覆盖。
+const dockerSockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-health-sock-'));
+const dockerSock = path.join(dockerSockDir, 'docker.sock');
+fs.writeFileSync(dockerSock, '');
+process.env.DOCKER_HOST = `unix://${dockerSock}`;
+after(() => fs.rmSync(dockerSockDir, { recursive: true, force: true }));
 
 function makeDataDir({ withDb = true, withUpdaterState = false, withMarker = false, outboundAgoMs = 0, inboundAgoMs = 0, inboundState = 'pending', inboundAvailableInMs = null, runtimePaused = false, budgetDegraded = false, budgetPolicy = 'degrade', extraInbound = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-health-'));
