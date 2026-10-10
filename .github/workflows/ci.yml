@@ -74,10 +74,18 @@ jobs:
       # 能一路绿到把更新路径弄瘫 —— 2026-10-10 线上实测即是如此（#1043/#1048 两条 sudo 回退
       # 用例在带 NNP 的 unit 里必败，导致所有标准部署都装不上新版本）。这一步按 unit 的姿势
       # 把门禁清单（unit + local + 四个回归 harness + scan，与更新器同一份）复跑一遍。
-      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077）
+      # 2026-10-10 同族第二个漏网：门禁单元的进程也可能没有 docker 组（用户管理器未继承），
+      # 此时 ops-health 里断言"全绿"的用例会因直连真实套接字失败而全红（issue #30 实测恰好
+      # 3 条必挂、门禁拒绝升级）—— 所以这里同时把 DOCKER_HOST 指向 000 权限的假套接字，
+      # 把"套接字不可访问"也作为门禁环境的一个维度复跑。
+      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077 + 无 docker 访问）
         run: |
           command -v setpriv >/dev/null || { echo "缺少 setpriv"; exit 1; }
           umask 0077
+          NO_DOCKER_SOCK="${RUNNER_TEMP:-/tmp}/no-docker-access.sock"
+          : > "$NO_DOCKER_SOCK"
+          chmod 000 "$NO_DOCKER_SOCK"
+          export DOCKER_HOST="unix://$NO_DOCKER_SOCK"
           setpriv --no-new-privs npm run test:unit
           setpriv --no-new-privs npm run test:local
           setpriv --no-new-privs npm run test:regression

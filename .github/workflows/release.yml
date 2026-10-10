@@ -79,10 +79,17 @@ jobs:
       # 与 ci.yml 同一步：发布闸门也要按更新器 unit 的加固环境（NoNewPrivileges + umask 0077）
       # 把门禁全清单复跑一遍 —— 门禁跑在加固 unit 里，2026-10-10 的事故（加固环境里两条
       # sudo 回退用例必败、导致标准部署装不上新版）正是默认环境里看不见的那一类。
-      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077）
+      # 2026-10-10 同族第二个漏网：门禁单元的进程还可能没有 docker 组（用户管理器未继承），
+      # ops-health 里断言"全绿"的用例会因直连真实套接字失败而全红（issue #30 实测 3 条必挂）
+      # —— 这里同样把 DOCKER_HOST 指向 000 权限的假套接字，复刻"套接字不可访问"。
+      - name: 更新器门禁全清单（按 unit 的加固环境复跑：NoNewPrivileges + umask 0077 + 无 docker 访问）
         run: |
           command -v setpriv >/dev/null || { echo "缺少 setpriv"; exit 1; }
           umask 0077
+          NO_DOCKER_SOCK="${RUNNER_TEMP:-/tmp}/no-docker-access.sock"
+          : > "$NO_DOCKER_SOCK"
+          chmod 000 "$NO_DOCKER_SOCK"
+          export DOCKER_HOST="unix://$NO_DOCKER_SOCK"
           setpriv --no-new-privs npm run test:unit
           setpriv --no-new-privs npm run test:local
           setpriv --no-new-privs npm run test:regression
