@@ -40,6 +40,7 @@ export const DEFAULT_CONFIG = {
     model: '',                              // UI 里选择/填写
     provider: '',                           // 当前模型所属提供商（多提供商目录的选中项）
     vision: true,                           // 模型是否支持图片输入（关掉则移除看图工具）
+    visionModel: '',                        // 识图专用模型（可选）：主模型是纯文本模型时，看图工具的图片先送给它转述成文字；空=直塞主模型（原行为）
     // 思考控制（语义层，见 src/core/provider-presets.js 的渠道形状翻译）：
     //   'on'（默认，不干预）/ 'off'（尽力关闭；渠道关不掉时按最低档近似并提示）
     //   / 'low' / 'medium' / 'high' / 'max'（档位，仅该渠道已核实的档位会发出去）
