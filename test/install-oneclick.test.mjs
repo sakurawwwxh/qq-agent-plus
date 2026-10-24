@@ -135,7 +135,12 @@ test('root 自动进入降权准备：不会直接执行 deploy-all.sh', { skip 
   const r = run(f, [], {
     PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
     // 测试环境不是 root：只让 root 包装层打印计划，绝不创建用户/改系统
-    QQ_AGENT_ROOT_INSTALL_TEST: '1'
+    QQ_AGENT_ROOT_INSTALL_TEST: '1',
+    // ⚠️ 部署根目录必须显式指到 fixture **旁边**：root-install.sh 默认用 /mnt/data/qq-agent，
+    // 而 fixture 建在 os.tmpdir() 下 —— 在部署机上跑测试时 TMPDIR 往往就在 /mnt/data/qq-agent 里
+    // （auto-update 用 <checkout>/.auto-update-test-tmp），源码会落进默认部署根目录，
+    // 被"源码不能放在部署根目录里"的安全闸门拦下，用例想验的降权计划反而没机会打印。
+    QQ_AGENT_STACK_DIR: `${f.dir}-stack`
   });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /root 安装准备/);
