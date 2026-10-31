@@ -8,9 +8,16 @@ import { assertTimeAllowed, withTimeWindow } from '../core/time-gate.js';
 import { readJsonBounded, readTextBounded } from '../core/http-body.js';
 
 // 各上游响应体量上限（防畸形/超大响应把常驻进程读爆，只设超时挡不住这一点）。
-// 搜索 API 返回的是结构化短文本，2 MiB 已远超正常结果；Bing 抓的是 HTML 结果页，1 MiB 足够。
+// 搜索 API 返回的是结构化短文本，2 MiB 已远超正常结果；Bing 的 RSS/HTML 响应 1 MiB 足够。
 const SEARCH_JSON_MAX_BYTES = 2 * 1024 * 1024;
 const BING_HTML_MAX_BYTES = 1024 * 1024;
+// RSS 先尝试 5 秒；回退 HTML 只使用总预算的剩余时间，不把原有 15 秒上限翻倍。
+const BING_TOTAL_TIMEOUT_MS = 15_000;
+const BING_RSS_TIMEOUT_MS = 5_000;
+const BING_HEADERS = {
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+  'accept-language': 'zh-CN,zh;q=0.9'
+};
 
 // B 站 wbi 签名：不带签名时，搜索几次后会只返回 v_voucher（人机验证），没有 result。
 // 公开的 mixinKey 置换表；key 从 nav 接口的 wbi_img 文件名拼出来，缓存半小时。
@@ -116,19 +123,53 @@ export async function aggregateSearch(query) {
   return { query, results, sources: ok.map((o) => o.source), failed: sources.filter((s) => !ok.some((o) => o.source === s)) };
 }
 
-/** Bing 搜索（解析 b_algo 结果块）。searchUrl 可在配置中替换（测试/换引擎）。 */
-export async function bingSearch(query) {
-  const cfg = getConfig().webSearch ?? {};
-  const searchUrl = String(cfg.searchUrl || 'https://cn.bing.com/search');
-  const maxResults = Math.max(1, Math.min(10, Number(cfg.maxResults) || 6));
+function isBingSearchUrl(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === 'bing.com' || hostname.endsWith('.bing.com');
+  } catch {
+    return false;
+  }
+}
+
+function parseBingRss(xml, maxResults) {
+  const results = [];
+  const items = String(xml || '').matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi);
+  for (const match of items) {
+    const block = match[1];
+    const pick = (tag) => {
+      const found = block.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+      return found ? decodeHtml(found[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')) : '';
+    };
+    const title = pick('title') || '（无标题）';
+    const url = pick('link');
+    if (!/^https?:\/\//i.test(url)) continue;
+    results.push({ title, url, snippet: pick('description') });
+    if (results.length >= maxResults) break;
+  }
+  return results;
+}
+
+async function bingRssSearch(query, { searchUrl, maxResults, deadline }) {
+  const url = new URL(searchUrl);
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'rss');
+  const timeoutMs = Math.max(1, Math.min(BING_RSS_TIMEOUT_MS, deadline - Date.now()));
+  const res = await fetch(url, {
+    headers: BING_HEADERS,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!res.ok) throw new Error(`Bing RSS HTTP ${res.status}`);
+  const xml = await readTextBounded(res, BING_HTML_MAX_BYTES);
+  return parseBingRss(xml, maxResults);
+}
+
+async function bingHtmlSearch(query, { searchUrl, maxResults, deadline }) {
   const url = new URL(searchUrl);
   url.searchParams.set('q', query);
   const res = await fetch(url, {
-    headers: {
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-      'accept-language': 'zh-CN,zh;q=0.9'
-    },
-    signal: AbortSignal.timeout(15000)
+    headers: BING_HEADERS,
+    signal: AbortSignal.timeout(Math.max(1, deadline - Date.now()))
   });
   if (!res.ok) throw new Error(`搜索服务 HTTP ${res.status}`);
   const html = await readTextBounded(res, BING_HTML_MAX_BYTES);
@@ -149,7 +190,22 @@ export async function bingSearch(query) {
   // Bing 是 HTML 抓取，命中验证页/同意页/改版 DOM 时这里会是空数组——
   // 不抛错的话模型只看到一个空列表，容易转而编造内容（Issue #9）。
   if (!results.length) throw new Error('Bing 搜索没有返回可解析的结果（可能命中验证页或页面结构变化，可换个搜索提供方）');
-  return { query, results };
+  return results;
+}
+
+/** Bing 搜索：优先 RSS，失败或为空时回退原 HTML 结果页。searchUrl 可换成非 Bing 地址。 */
+export async function bingSearch(query) {
+  const cfg = getConfig().webSearch ?? {};
+  const searchUrl = String(cfg.searchUrl || 'https://cn.bing.com/search');
+  const maxResults = Math.max(1, Math.min(10, Number(cfg.maxResults) || 6));
+  const deadline = Date.now() + BING_TOTAL_TIMEOUT_MS;
+  if (isBingSearchUrl(searchUrl)) {
+    try {
+      const results = await bingRssSearch(query, { searchUrl, maxResults, deadline });
+      if (results.length) return { query, results };
+    } catch { /* RSS 不可用时保留原 HTML 解析路径 */ }
+  }
+  return { query, results: await bingHtmlSearch(query, { searchUrl, maxResults, deadline }) };
 }
 
 // 抖音站内内容基本不进 Bing 的索引；中文新梗在 Bing 上还常被拆成单字（"奶绿波"只剩"奶"）。

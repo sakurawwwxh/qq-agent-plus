@@ -262,7 +262,7 @@ Clash/mihomo 等代理的 fake-ip 模式会把任意域名解析到 `198.18.0.0/
 }
 ```
 
-- `provider` 可选：`bing`（默认，抓 `cn.bing.com` 页面，不需要 Key）、`deepseek`、`zhipu`、`bocha`、
+- `provider` 可选：`bing`（默认，优先读 `cn.bing.com` RSS，失败时回退 HTML 页面，不需要 Key）、`deepseek`、`zhipu`、`bocha`、
   `baidu`、`metaso`、`doubao`、`tavily`、`aggregate`（控制台「设置 → 搜索」里选）。
 - 每家一套 `{ apiKey, baseUrl, count, timeoutMs }`（`zhipu` 另有 `engine`、`tavily` 另有 `searchDepth`）；
   `apiKey` 留空时回退各自的环境变量：`DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `BOCHA_API_KEY` /
