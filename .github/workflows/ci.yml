@@ -125,6 +125,27 @@ jobs:
       - name: 提示词 / 渲染 / 滚动 / 用量端到端回归
         run: npm run test:regression
 
+  # 覆盖率基线（里程碑 1）：Node 内置 --experimental-test-coverage，零依赖；
+  # 先只把数字打进 CI 日志，不设硬门槛。M2 起按版本 ratchet。
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: 单元测试覆盖率基线
+        run: npm run test:coverage
+
   # Windows 门禁（2026-10）：只允许显式 skip，不允许 fail。
   # 跨平台可修项已修；POSIX/Linux-only 用例经 test/helpers/platform.mjs 带原因跳过。
   # 用 spec 报告与空基线比对，任何未预期失败都会红，避免“Windows 永远一片红”掩盖回归。

@@ -1,0 +1,1340 @@
+[
+  {
+    "method": "GET",
+    "path": "/api/storage",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/storage/compress",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/healthz",
+    "auth": false,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/metrics",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/health",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/login",
+    "auth": false,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/console-token",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/audit",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/api-key",
+    "auth": true,
+    "keyEndpoint": true
+  },
+  {
+    "method": "GET",
+    "path": "/api/fallback-key",
+    "auth": true,
+    "keyEndpoint": true
+  },
+  {
+    "method": "GET",
+    "path": "/api/search-key",
+    "auth": true,
+    "keyEndpoint": true
+  },
+  {
+    "method": "GET",
+    "path": "/api/onebot-key",
+    "auth": true,
+    "keyEndpoint": true
+  },
+  {
+    "method": "GET",
+    "path": "/api/events",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/integrations/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/auto-update/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/host",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/health/check",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/snowluma/version",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/snowluma/update",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/snowluma/rollback",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/channel-prices",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/model-prices",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/vision/results",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/daily-moments/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/qzone-interactions/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/group-game/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/group-digest/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/admin-briefing/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/tts/presets",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/platform/gates",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/platform/quota-usage",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/identity-pilot/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/slang-pilot/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/incident-pilot/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/integrations/snowluma/password",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/api/auto-update/settings",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/auto-update/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/auto-update/resume",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/auto-update/pause",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/auto-update/notify-pending",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/auto-update/check",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/auto-update/ignore",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/runtime",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/(retry-failed|resolve-held)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/runtime-control$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/runtime-control$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/messages$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/export$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/groups\\/(\\d+)\\/members$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/wake$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/thread$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/thread$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/test-send$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/mark-read$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/overview",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/stickers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/stickers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/stickers/analyze",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/stickers/image",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/slang",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/slang",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/identities",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/identities",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/assets/memory",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/assets/memory",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/api/assets/memory",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/assets/memory",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/assets\\/stickers\\/([^/]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/assets\\/stickers\\/([^/]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/assets\\/slang\\/([^/]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/assets\\/slang\\/([^/]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/assets\\/identities\\/(\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/assets\\/identities\\/(\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/knowledge",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/knowledge/files",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/knowledge/files",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/knowledge/files",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/knowledge/reindex",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/memes",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/memes",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/memes",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/mcp/presets",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/mcp/registry",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/mcp",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/mcp/reload",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/plugins",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/plugins/settings",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/settings",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/approval",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/plugins/pending-count",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/plugins/pending",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/probe",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/call",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/write-switch",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/secrets/clear",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/plugins/index",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/master",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/toggle",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/reload",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/upgrade-preview",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/install",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/install-file",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/rollback",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/plugins/uninstall",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/skills",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/skills/market",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/skills/market/preview",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/skills/market/install",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/skills/market/uninstall",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/skills/:id",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/skills/reload",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/skills/state",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/memory/search",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/memory-files",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/memory-files/consolidate",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/memory-files\\/(group|private)_(\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/memory-files\\/(group|private)_(\\d+)\\/handoff$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/memory-files\\/(group|private)_(\\d+)\\/handoff$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/memory-files\\/global\\/members\\/(\\d{1,15})$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "PUT",
+    "path": "/^\\/api\\/memory-files\\/(group|private)_(\\d+)\\/members\\/(\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/memory-files\\/(group|private)_(\\d+)\\/members\\/(\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/living-memory/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/living-memory/memories",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/living-memory/recall-test",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/living-memory/memories",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/archive$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/restore$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/living-memory/graph",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/providers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/providers/key",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/asr/models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/asr/install-status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/asr/uninstall",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/asr/install",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/asr-key",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/fetch-models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/test-one",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/test-chat",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/probe-thinking",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/providers/models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/set-key",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/providers/test-all",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/vision/scan",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/tts/key",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/tts/models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/tts/test",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/imagegen/presets",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/imagegen/key",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/imagegen/test",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/model-prices/probe",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/channel-prices",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/channel-prices/refresh",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/channel-prices/remove",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/model-prices/refresh",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/onebot/groups",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/onebot/friends",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/onebot/ai-characters",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/persona-templates",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/persona-templates",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/persona/reset-handoffs",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/search-providers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/search-providers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/search-providers",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/search-providers/test",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/web-search/test",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/test/api",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/humanize/state",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/usage/stats",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/usage/breakdown",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/config",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/config",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/config/reload",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/group-game/stop",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/group-digest/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/admin-briefing/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/reminders",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/reminders/cancel",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/life-feed/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/life-feed/forage",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/life-feed/dismiss",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/life-feed/more",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/life-feed/clear",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/life-feed/share",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/backup/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/backup/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/backup/verify",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/backup/restore",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/group-policy",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/incidents",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/slang-pilot/discoveries",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/identity-pilot/people",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/identity-pilot/incoming-friend-requests",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/identity-pilot/friend-proposals",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/identity-pilot/friend-opportunities",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/qzone-interactions/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/time-control/status",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/daily-moments/run",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/sessions",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/chats",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/pause",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/pause",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/persona-templates\\/(custom_\\d+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/incidents\\/(inc_[a-f0-9]{16})$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/^\\/api\\/incidents\\/(inc_[a-f0-9]{16})$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/identity-pilot\\/friend-proposals\\/(fp_[a-f0-9]{12})\\/decision$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/daily-moments\\/records\\/([\\w-]+)\\/edit$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/daily-moments\\/records\\/([\\w-]+)\\/(publish|reconcile|resolve)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/sessions\\/([\\w-]+)$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/unknown-operations$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/unknown-operations\\/([\\w-]+)\\/reconcile$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/incidents\\/(inc_[a-f0-9]{16})\\/(acknowledge|resolve)$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/slang-pilot\\/discoveries\\/(sr_[a-f0-9]{12})$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/slang-pilot\\/discoveries\\/(sr_[a-f0-9]{12})\\/research-decision$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/slang-pilot\\/discoveries\\/(sr_[a-f0-9]{12})\\/admission-decision$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/identity-pilot\\/incoming-friend-requests\\/(fr_[a-f0-9]{12})\\/decision$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/slang-pilot\\/discoveries\\/(sr_[a-f0-9]{12})\\/retry$/i",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/identity-pilot/friend-review/manual",
+    "auth": true,
+    "keyEndpoint": false
+  }
+]

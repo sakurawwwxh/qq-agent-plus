@@ -36,8 +36,12 @@ const UNIT_FILES = fs
   .sort()
   .map((f) => path.join('test', f));
 
+// 并发度默认压到 4：几百个测试文件里不少会临时监听端口/启动 app，默认按 CPU 核数
+// 并发时 Windows 上偶发端口抢占（表现为某个文件整体 "test failed"、单独跑却全绿）。
+const TEST_CONCURRENCY = String(Math.max(1, Number(process.env.QQ_AGENT_TEST_CONCURRENCY) || 4));
+
 const SUITES = {
-  unit: [[process.execPath, ['--test', ...UNIT_FILES]]],
+  unit: [[process.execPath, [`--test-concurrency=${TEST_CONCURRENCY}`, '--test', ...UNIT_FILES]]],
   regression: [
     [process.execPath, ['test/test-prompt.mjs']],
     [process.execPath, ['test/render-test.mjs']],
@@ -45,6 +49,9 @@ const SUITES = {
     [process.execPath, ['test/usage-e2e.mjs']],
   ],
   local: [[process.execPath, ['test/local/run.mjs']]],
+  // 覆盖率：与 unit 同一批文件，只是多一个 Node 内置覆盖率开关；
+  // 走这里可以复用 TMPDIR 重定向与统一清理。
+  coverage: [[process.execPath, [`--test-concurrency=${TEST_CONCURRENCY}`, '--experimental-test-coverage', '--test', ...UNIT_FILES]]],
 };
 // 默认集与改动前的 `npm test` 完全一致：只含 unit + regression，不含 local。
 SUITES.all = [...SUITES.unit, ...SUITES.regression];
@@ -110,7 +117,7 @@ function cleanup() {
 // 子进程只继承我们重定向后的临时目录，其余环境原样透传。
 // 单元测试会频繁 createApp().start()；默认配置里的技能索引是真实 GitHub 地址，
 // 启动预热会让每个测试都发一次外网请求（离线 CI 还会拖到超时）。测试集里统一关掉。
-const childEnv = { ...process.env, TMPDIR: tmpRoot, TMP: tmpRoot, TEMP: tmpRoot, QQ_AGENT_SKIP_INDEX_WARM: '1' };
+const childEnv = { ...process.env, TMPDIR: tmpRoot, TMP: tmpRoot, TEMP: tmpRoot, QQ_AGENT_SKIP_INDEX_WARM: '1', QQ_AGENT_SKIP_NETWORK_PROBES: '1' };
 let current = null;
 let aborted = null;
 

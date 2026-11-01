@@ -146,5 +146,18 @@ export function createRouter(deps = {}) {
     return false;
   }
 
-  return { add, handle, routes };
+  /**
+   * 路由清单（method + path + 鉴权标志）。路径是 RegExp 时转成字符串，
+   * 供 `test/route-parity.test.mjs` 做顺序敏感的快照；不含 handler（不可序列化）。
+   */
+  function listRoutes() {
+    return routes.map((route) => ({
+      method: route.method,
+      path: route.path instanceof RegExp ? String(route.path) : route.path,
+      auth: route.auth,
+      keyEndpoint: route.keyEndpoint
+    }));
+  }
+
+  return { add, handle, routes, listRoutes };
 }

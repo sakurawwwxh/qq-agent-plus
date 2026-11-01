@@ -168,6 +168,8 @@ requestPendingApproval(dataDir, {
 
 const { createApp } = await import('../src/console/app.js');
 const app = createApp({ log: (...args) => { if (process.env.E2E_VERBOSE) console.log(...args); } });
+const { installManualFriendReviewRoute } = await import('../src/console/manual-friend-review-route.js');
+installManualFriendReviewRoute(app);
 const port = await app.start();
 app.memory.append(`group:${E2E_GROUP}`, 'memberImpression', '昨天中午去新开的面馆排队半小时，汤有点咸', { userId: '2001', target: '演示群友' });
 // 聊天页、长期记忆页都按真实会话列表渲染；没有消息时这两页只剩空态，浏览器冒烟也就测不到管理区。

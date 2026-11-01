@@ -17,6 +17,8 @@
     "test:local": "node scripts/test-suite.mjs local",
     "test:regression": "node scripts/test-suite.mjs regression",
     "test:browser": "playwright test",
+    "test:coverage": "node scripts/coverage.mjs",
+    "release:check": "node scripts/release-check.mjs",
     "test:prompt": "node test/test-prompt.mjs",
     "test:render": "node test/render-test.mjs",
     "test:scroll": "node test/scroll-test.mjs",

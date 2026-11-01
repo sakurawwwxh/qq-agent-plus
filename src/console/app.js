@@ -1,35 +1,32 @@
 // Linux 服务总装：OneBot 事件接入 → 存储 → 编排器；HTTP API + SSE 给 UI。
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRouter } from './router.js';
 import { createMetrics } from './metrics.js';
+import { registerStorageRoutes } from './storage.js';
 
-import { asrApiKey, asrAvailable, asrConfigured, asrCredentialForSlot, asrCredentialResolve, asrCredentialSlot, asrCredentialSlotOf, asrCredentials, asrEndpointHost, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, ASR_PROVIDERS, conversationConfigForChat, findWhisperBinSync, getConfig, getConfigConflict, reloadConfig, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, imageGenKeyOwnedBy, imageGenKeyResolve, incidentPilotEnabled, slangPilotEnabled, storeConfigForChat, updateConfig, onTimeControlChange, pinImageGenKeyHost, DATA_DIR, ROOT } from '../core/config.js';
-import { tokenSaverEffective } from '../core/token-saver.js';
+import { asrApiKey, asrAvailable, asrConfigured, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, conversationConfigForChat, findWhisperBinSync, getConfig, getConfigConflict, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, incidentPilotEnabled, slangPilotEnabled, storeConfigForChat, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { redactText } from '../core/redact.js';
-import { getSkillRegistry } from '../skills/registry.js';
-import { listMarketSkills, previewMarketSkill, installMarketSkill, uninstallMarketSkill, marketIndexUrl, warmMarketIndex } from '../skills/market.js';
+import { warmMarketIndex } from '../skills/market.js';
 import { catchupReplyWindowMs, catchupLogLine, isFreshForReply } from '../core/catchup-policy.js';
-import { budgetStatus } from '../core/budget.js';
 import { sanitizeConfigSecrets } from '../core/secret-keys.js';
 import { appendAudit, queryAudit } from '../core/audit-log.js';
-import { lastTraceId, createLogger } from '../core/logger.js';
-import { customSearch, webSearch } from '../llm/web-search.js';
+import { createLogger } from '../core/logger.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
 import { faceNameOf } from '../onebot/face-catalog.js';
 import { readForwardMessages, readForwardNodesById, forwardResIdFromSegment } from '../onebot/forward-reader.js';
 import { ChatStore } from '../core/store.js';
+import { EffectLedger } from '../core/effects.js';
 import { MemoryStore } from '../memory/memory.js';
 import { LivingMemoryRuntime } from '../living-memory/runtime.js';
 import { StickerManager } from '../onebot/sticker-manager.js';
 import { SendQueue } from '../onebot/sender.js';
-import { SessionRegistry, personaLabelOfPrompt } from '../core/sessions.js';
+import { SessionRegistry, personaLabelOfPrompt, listSessionFiles, readSessionFile } from '../core/sessions.js';
 import { Orchestrator } from '../core/orchestrator.js';
 import { DailyMomentsManager } from '../features/daily-moments.js';
 import { LifeFeedManager } from '../features/life-feed.js';
@@ -40,28 +37,42 @@ import { GroupGameManager } from '../features/group-game.js';
 import { ReminderStore } from '../core/reminders.js';
 import { PluginRegistry } from '../plugins/registry.js';
 import { McpManager } from '../mcp/manager.js';
-import { searchRegistry } from '../mcp/registry.js';
-import { searchPresets } from '../mcp/presets.js';
-import { knowledgeEnabled, knowledgeStats, listKnowledgeFiles, writeKnowledgeFile, deleteKnowledgeFile, reindexKnowledge } from '../knowledge/store.js';
-import { listMemes, rememberMeme, deleteMeme, memeStats } from '../memes/store.js';
-import { listModels, chatCompletion, resolveApiKey, cachedTokensOfUsage, llmRuntimeStats, addUsage, emptyUsage } from '../llm/llm.js';
+import { registerKnowledgeRoutes } from './routes/knowledge.js';
+import { registerMemeRoutes } from './routes/memes.js';
+import { registerMcpRoutes } from './routes/mcp.js';
+import { registerSkillRoutes } from './routes/skills.js';
+import { registerLivingMemoryRoutes } from './routes/living-memory.js';
+import { registerLifeFeedRoutes } from './routes/life-feed.js';
+import { registerAutoUpdateRoutes } from './routes/auto-update.js';
+import { registerManagerRoutes } from './routes/managers.js';
+import { registerAssetRoutes } from './routes/assets.js';
+import { registerProviderRoutes } from './routes/providers.js';
+import { registerPluginRoutes } from './routes/plugins.js';
+import { registerChatRoutes } from './routes/chats.js';
+import { registerBackupRoutes } from './routes/backup.js';
+import { registerSessionRoutes } from './routes/sessions.js';
+import { registerStatusRoutes } from './routes/status.js';
+import { registerConfigRoutes } from './routes/config.js';
+import { registerMemoryRoutes } from './routes/memory.js';
+import { registerMediaSettingsRoutes } from './routes/media-settings.js';
+import { registerPriceRoutes } from './routes/prices.js';
+import { registerOnebotRoutes } from './routes/onebot.js';
+import { registerPersonaRoutes } from './routes/persona.js';
+import { registerSearchRoutes } from './routes/search.js';
+import { chatCompletion, cachedTokensOfUsage, llmRuntimeStats, addUsage, emptyUsage } from '../llm/llm.js';
 import { matchesBlacklistKeyword } from '../core/keyword-rules.js';
-import { synthesizeSpeech } from '../llm/tts.js';
-import { generateImage, imageGenEffectiveHost, imageGenKeyStale, resolveImageGenAuth } from '../llm/image-gen.js';
-import { imageType } from '../core/image-type.js';
-import { IMAGEGEN_SERVICES } from '../llm/image-gen-presets.js';
-import { TTS_SERVICES, ttsServiceById, ttsServiceOfBaseUrl, ttsKeyServices, ttsServiceOf, ttsKeyFor } from '../llm/tts-presets.js';
-import { resolveOfficialPrice, listOfficialPrices, listModelAliases, isPeakHour, priceAt, resolveModelPrice, costModeOf, modelLabel, splitModelLabel, vendorOfConfig, UNKNOWN_VENDOR } from '../pricing/model-prices.js';
-import { initPriceFeed, refreshPriceFeed, priceFeedStatus } from '../pricing/price-feed.js';
-import { probeChannelPrices, capPrices } from '../pricing/price-probe.js';
-import { initChannelPrices, refreshChannelFeed, removeChannelFeed, channelPriceStatus, maybeAutoProbeChannel } from '../pricing/channel-prices.js';
-import { currentProviders, setProviderKey, testAllProviders, testOneProvider, testModelChat, probeThinking, fetchModelsFrom, upsertProvider, addModelsToProvider, removeModelFromProvider } from '../core/providers.js';
+import { imageGenKeyStale } from '../llm/image-gen.js';
+import { TTS_SERVICES, ttsKeyServices, ttsServiceOf } from '../llm/tts-presets.js';
+import { resolveOfficialPrice, listOfficialPrices, listModelAliases, isPeakHour, priceAt, resolveModelPrice, costModeOf, modelLabel, splitModelLabel, vendorOfConfig, vendorOfBaseUrl, UNKNOWN_VENDOR } from '../pricing/model-prices.js';
+import { initPriceFeed, priceFeedStatus } from '../pricing/price-feed.js';
+import { initChannelPrices, channelPriceStatus, maybeAutoProbeChannel } from '../pricing/channel-prices.js';
+import { currentProviders } from '../core/providers.js';
 import { personaStateSnapshot } from '../core/persona-state.js';
 import { resolvePersona } from '../personas.js';
 import { scanModelsVision, visionResults } from '../llm/vision-scan.js';
 import { builtinVisionResults } from '../llm/model-vision-docs.js';
-import { createEventBus, todayKey, shanghaiDayStart, isSelfSender, safeSlice, sanitizeUserText, textWithQuote } from '../core/util.js';
-import { assertCanSend, chatAllowed } from '../core/access.js';
+import { createEventBus, todayKey, shanghaiDayStart, isSelfSender, safeSlice, sanitizeUserText } from '../core/util.js';
+import { chatAllowed } from '../core/access.js';
 import { idList } from '../core/list.js';
 import { isTimeActive } from '../core/time-gate.js';
 import { timeControlState, TIME_ZONE } from '../core/time-control.js';
@@ -74,18 +85,12 @@ import {
   inactiveIncidentPilotStatus,
   incidentDatabasePath
 } from '../pilots/incident-pilot.js';
-import { safeFetch, safeFetchBinary } from '../llm/safe-fetch.js';
+import { safeFetch } from '../llm/safe-fetch.js';
 import { DEFAULT_CONFIG } from '../core/config.js';
-import { uiBuildStamp } from './ui-build.js';
-import { installPlugin, uninstallPlugin, fetchPluginIndexes, sha256Of, MAX_PLUGIN_ARCHIVE_BYTES, rollbackPlugin, createIndexRevokedCache, indexResultForDisplay } from '../plugins/install.js';
-import { DEFAULT_MIRROR_PREFIXES, fetchBinaryWithMirrors } from '../plugins/mirrors.js';
+import { fetchPluginIndexes, createIndexRevokedCache, indexResultForDisplay } from '../plugins/install.js';
+import { DEFAULT_MIRROR_PREFIXES } from '../plugins/mirrors.js';
 import { createIndexTextFetcher } from '../plugins/index-fetch.js';
 import { readOwnerUin } from '../core/notify-owner.js';
-import { pluginSecretStatus, writePluginSecrets, secretFieldKeys, clearPluginSecrets } from '../plugins/secrets.js';
-import {
-  grantsStatus, listPendingApprovals, approvePendingApproval,
-  rejectPendingApproval, listPluginWrites, clearPluginGrants, resetPluginGrants
-} from '../plugins/grants.js';
 // 平台能力门控的元数据（键→标签/工具/默认取向/配额默认）：控制台不手抄第二份，防漂移
 import {
   PLATFORM_DEFAULT_OFF, PLATFORM_GATE_LABELS, PLATFORM_QUOTA_DEFAULTS, PLATFORM_TOOL_GATES,
@@ -96,8 +101,8 @@ import { createSnowlumaUpdater, baselineAlignDecision } from '../core/snowluma-u
 import { hostStats } from '../core/host-stats.js';
 import { runHealthCheck } from '../core/health-check.js';
 import { isContainerRuntime, containerUpdateHint } from '../core/runtime.js';
-import { AutoUpdateManager, autoUpdatePending, readAutoUpdateState } from '../auto-update.js';
-import { checkForUpdate, ignoreVersion } from '../update-notice.js';
+import { AutoUpdateManager } from '../auto-update.js';
+import { acquireInstanceLock } from '../core/instance-lock.js';
 
 // /healthz 用：只暴露名称、版本与运行状态，不含任何配置内容
 const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -199,9 +204,90 @@ let loginGlobalAlerted = false;
 // 禁止 if 链形态的路由判定，路径判定一律收口到这里（2026-10-06 复审 P3）。
 const QUERY_TOKEN_PATHS = new Set(['/api/events']);
 
+// ── 反代地址与客户端 IP（登录限流 / Cookie Secure）────────────────────────
+// 只有 TCP 对端命中 server.trustedProxies 时才采信转发头。**绝不**用转发头做鉴权或
+// loopback 判定（isLoopbackRemote 仍只看 socket），避免伪造 XFF 绕过本机限制。
+function normalizeIp(raw) {
+  let value = String(raw || '').trim();
+  if (value.startsWith('::ffff:')) value = value.slice(7);
+  if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1);
+  const zone = value.indexOf('%');
+  if (zone > 0) value = value.slice(0, zone);
+  return value.toLowerCase();
+}
+
+function ipv4ToInt(value) {
+  const parts = String(value).split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    const num = Number(part);
+    if (!Number.isInteger(num) || num < 0 || num > 255) return null;
+    n = (n * 256) + num;
+  }
+  return n;
+}
+
+function ipMatchesRule(ip, rule) {
+  const target = normalizeIp(rule);
+  if (!target) return false;
+  if (!target.includes('/')) return ip === target;
+  // 严格解析：空前缀（"10.0.0.0/"）不能被 Number('')=0 当成 /0（那会让所有 IPv4 变成可信代理）。
+  const cidr = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(target);
+  if (!cidr) return false;
+  const bits = Number(cidr[5]);
+  const ipInt = ipv4ToInt(ip);
+  const baseInt = ipv4ToInt(cidr.slice(1, 5).join('.'));
+  if (ipInt === null || baseInt === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+  const mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return (ipInt & mask) === (baseInt & mask);
+}
+
+function isTrustedProxy(req) {
+  const list = getConfig()?.server?.trustedProxies;
+  if (!Array.isArray(list) || !list.length) return false;
+  const peer = normalizeIp(req.socket?.remoteAddress);
+  return Boolean(peer) && list.some((rule) => ipMatchesRule(peer, rule));
+}
+
+function forwardedClientIp(req) {
+  const chain = String(req.headers['x-forwarded-for'] || '')
+    .split(',').map((item) => normalizeIp(item)).filter(Boolean);
+  // 只认 X-Forwarded-For：X-Real-IP 常被代理原样透传，客户端可直接伪造。
+  // 代理未设置 XFF 时限流退化为按代理地址计数（安全侧的可用性降级，不是绕过）。
+  if (!chain.length) return '';
+  // 从右往左跳过可信反代，取第一个**非可信**地址：
+  // - 单级 nginx（$proxy_add_x_forwarded_for 追加）：最右就是真实客户端；
+  // - 多级代理（CDN → nginx）：最右是中间代理，必须按 trustedProxies 继续往左剥，
+  //   否则所有访客共用一个限流桶；
+  // - 客户端自带的伪造段在最左边，不会被选中。
+  const rules = getConfig()?.server?.trustedProxies;
+  const trusted = Array.isArray(rules) ? rules : [];
+  for (let i = chain.length - 1; i >= 0; i -= 1) {
+    if (!trusted.some((rule) => ipMatchesRule(chain[i], rule))) return chain[i];
+  }
+  // 所有跳都落在 trustedProxies 里（把客户端网段也配进来的典型错误）：
+  // 退回最右（反代追加的那一段），至少不采用最左的客户端可伪造值。
+  return chain[chain.length - 1];
+}
+
+function clientIpForThrottle(req) {
+  const peer = normalizeIp(req.socket?.remoteAddress) || 'unknown';
+  if (!isTrustedProxy(req)) return peer;
+  return forwardedClientIp(req) || peer;
+}
+
+function requestIsSecure(req) {
+  if (req.socket?.encrypted === true) return true;
+  if (!isTrustedProxy(req)) return false;
+  // 同样取最后一跳（可信反代追加的那一段）。
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',').map((v) => v.trim()).filter(Boolean);
+  return String(proto[proto.length - 1] || '').toLowerCase() === 'https';
+}
+
 const loginThrottle = new Map();
 function loginGate(req) {
-  const key = String(req.socket?.remoteAddress || 'unknown');
+  const key = clientIpForThrottle(req);
   // 原"超 4096 整体 clear()"会把还在生效期的锁定一起清掉（攻击者灌满 map 即解锁自己）。
   // 改为先逐出非锁定条目，仍超限再按最旧逐出 —— 最坏也只是个别旧锁提前释放，不会全军覆没。
   if (loginThrottle.size > 4096) {
@@ -246,16 +332,6 @@ function loginGate(req) {
   };
 }
 
-function decodeImageDataUrl(value) {
-  const match = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/=\r\n]+)$/i
-    .exec(String(value || ''));
-  if (!match) throw new Error('图片数据格式无效');
-  const buffer = Buffer.from(match[1].replace(/\s+/g, ''), 'base64');
-  if (!buffer.length) throw new Error('图片内容为空');
-  if (buffer.length > 8 * 1024 * 1024) throw new Error('表情图片不能超过 8 MiB');
-  return buffer;
-}
-
 /**
  * 设置页「模型价格」要的一整组数据。
  * GET /api/model-prices 与「立即拉取」共用同一个形状 —— 少一个字段，
@@ -295,15 +371,39 @@ function consoleUrlHost(host) {
 const consoleLogger = createLogger('console');
 const defaultConsoleLog = (...args) => consoleLogger.info(...args);
 
-export function createApp({
+/**
+ * 组合根。单实例锁在**构造存储之前**获取：旧实现放到 start()，第二个进程在被拒绝前
+ * 已经打开 SQLite、做过迁移/清理、重写过会话索引（2026-10-31 复核 P1）。
+ * 同进程可重入（测试会创建多个 app 对象），跨进程严格互斥。
+ */
+export function createApp(options = {}) {
+  const lock = getConfig().server?.singleInstanceLock === false
+    ? null
+    : acquireInstanceLock(DATA_DIR, { log: options.log ?? defaultConsoleLog });
+  try {
+    return buildApp(options, lock);
+  } catch (error) {
+    lock?.release();
+    throw error;
+  }
+}
+
+function buildApp({
   log = defaultConsoleLog,
   autoUpdateOptions = {},
   asrInstaller = null,
   // 事件流的两个阈值只在测试里改（见 test/sse-stream.test.mjs）：默认值就是生产口径
   sseBacklogLimit = 1 << 20,
   sseHeartbeatMs = 20_000
-} = {}) {
+} = {}, instanceLock = null) {
   const cfg = getConfig();
+  // 过宽的可信代理网段等于让同网段任意主机自选限流键；启动时明确告警一次。
+  for (const rule of Array.isArray(cfg.server?.trustedProxies) ? cfg.server.trustedProxies : []) {
+    const bits = Number(String(rule).split('/')[1]);
+    if (String(rule).includes('/') && (!Number.isFinite(bits) || bits <= 8)) {
+      log(`[console] server.trustedProxies 含过宽网段 ${rule}：同网段主机可伪造 X-Forwarded-For，建议只填反代自身地址`);
+    }
+  }
   const bus = createEventBus();
   const sseClients = new Set();
 
@@ -556,9 +656,16 @@ export function createApp({
   const store = new ChatStore(cfg.store?.maxMessagesPerChat ?? 0, {
     synchronous: cfg.store?.sqliteSynchronous   // FULL（默认）/ NORMAL，Issue #45
   });   // 0 = 不限
+  // 出站副作用账本：日报/提醒/游戏终局等"一次性动作"的幂等键与未知结果（docs/EFFECT-LEDGER.md）。
+  // 与 store 同一个 sqlite 库，构造时会把上一条命留下的 planned 转成 unknown（不自动重试）。
+  // 清扫放到 start() 成功监听之后（构造期清扫会误伤另一个正在运行的进程：
+  // 第二个实例没抢到端口时，也会把第一个实例在途的 planned 标成 unknown）。
+  const effects = new EffectLedger(store.db, { sweep: false });
   const memory = new MemoryStore();
   const sessions = new SessionRegistry(cfg.store?.keepSessionFiles ?? 0, {
-    persistIntervalMs: cfg.store?.sessionPersistMs
+    persistIntervalMs: cfg.store?.sessionPersistMs,
+    compressAfterDays: cfg.store?.sessionCompressAfterDays,
+    maxTotalMb: cfg.store?.sessionMaxTotalMb
   });   // 0 = 不限
   let incidentPilot = null;
   let incidentPilotError = '';
@@ -599,7 +706,9 @@ export function createApp({
         const usage = emptyUsage();
         addUsage(usage, response?.usage);
         usage.calls = 1;
-        sessions.recordExternalUsage(usage, { model: model || response?.model || '' });
+        const vendor = response?.originBaseUrl
+          ? vendorOfBaseUrl(getConfig(), response.originBaseUrl) : '';
+        sessions.recordExternalUsage(usage, { model: model || response?.model || '', vendor });
       } catch { /* 记账失败不影响主流程 */ }
     }
   });
@@ -715,6 +824,7 @@ export function createApp({
     sessions,
     onebot,
     reminders,
+    effects,
     getGames: () => groupGame,
     getPlugins: () => pluginRegistry,
     getMcp: () => mcpManager,
@@ -748,6 +858,7 @@ export function createApp({
   const groupGame = new GroupGameManager({
     store,
     sender,
+    effects,
     log: moduleLog('group-game'),
     wake: (chatKey, delayMs, note, opts) => orchestrator.scheduleInitiativeWake(chatKey, delayMs, note, opts)
   });
@@ -755,6 +866,7 @@ export function createApp({
   const groupDigest = new GroupDigestManager({
     store,
     sender,
+    effects,
     sessions,
     log: moduleLog('group-digest')
   });
@@ -862,6 +974,10 @@ export function createApp({
       { name: '运行台账', run: () => store.pruneRuns() },
       { name: '发送台账', run: () => store.pruneOutbox() },
       { name: '会话留档', run: () => sessions.pruneSessions() },
+      // 压缩放在清理之后：先按保留期/预算删掉该删的，剩下的旧留档再压成 .gz。
+      // 每次最多压 100 个，避免每日任务占满事件循环；没压完的下一轮继续。
+      { name: '留档压缩', run: () => sessions.compressSessions() },
+      { name: '副作用账本', run: () => effects.prune() },
       { name: '人物记忆', run: () => memory.maybePrune(Date.now()) }
     ];
   }
@@ -1156,12 +1272,16 @@ export function createApp({
   // 每渠道一份价目表：先吃磁盘缓存，缓存缺失/过旧的按需后台刷新（同样幂等、不阻塞启动）
   initChannelPrices(cfg.api?.channelPriceFeeds || []);
   // 零配置路径：填了渠道地址但没配过价目表时，后台自己探一次（成功自动采用，失败静默）
-  maybeAutoProbeChannel({
-    baseUrl: cfg.api?.baseUrl || '',
-    vendor: vendorOfConfig(cfg) || '',
-    feedsConfig: cfg.api?.channelPriceFeeds || [],
-    options: { getConfig, updateConfig }
-  }).catch(() => { /* 内部已吞，这里是第二道保险 */ });
+  // 测试集用 QQ_AGENT_SKIP_NETWORK_PROBES=1 关掉这类"顺手探测"：几百个测试文件并行时
+  // 每个 createApp 都去打默认渠道地址，会拖慢/拖住无外网的 CI 与部署机。
+  if (process.env.QQ_AGENT_SKIP_NETWORK_PROBES !== '1') {
+    maybeAutoProbeChannel({
+      baseUrl: cfg.api?.baseUrl || '',
+      vendor: vendorOfConfig(cfg) || '',
+      feedsConfig: cfg.api?.channelPriceFeeds || [],
+      options: { getConfig, updateConfig }
+    }).catch(() => { /* 内部已吞，这里是第二道保险 */ });
+  }
 
   // OneBot 连接状态推送
   onebot.onStatus((status) => {
@@ -1823,10 +1943,12 @@ export function createApp({
       || sameSecret(cookie?.slice('qq_agent_token='.length), encodeURIComponent(token));
   }
 
-  function setConsoleCookie(res, token) {
+  function setConsoleCookie(req, res, token) {
     res.setHeader('set-cookie',
-      // 本地改动：加 Max-Age，避免关掉浏览器就要重新输令牌
-      `qq_agent_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`);
+      // 本地改动：加 Max-Age，避免关掉浏览器就要重新输令牌。
+      // HTTPS（直连或可信反代 x-forwarded-proto: https）下加 Secure，避免明文链路发 Cookie。
+      `qq_agent_token=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`
+      + (requestIsSecure(req) ? '; Secure' : ''));
   }
 
   function writeConsoleAccess(token) {
@@ -2017,12 +2139,6 @@ export function createApp({
     });
   }
 
-  /** 顶层键差异清单（config.update 的审计摘要用）；只比 JSON 形态，键名排序稳定。 */
-  function changedTopKeys(a, b) {
-    const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
-    return [...keys].filter((k) => JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])).sort();
-  }
-
   const metrics = createMetrics();
   const router = createRouter({
     authorize,
@@ -2033,6 +2149,9 @@ export function createApp({
     // 读 req.consoleTokenFp —— 与鉴权同一次取值，不在每个埋点里各自重算。
     tokenFp: () => tokenFpOf(getConfig().server?.token)
   });
+  // 存储占用接口（/api/storage、/api/storage/compress）。按领域拆在 console/storage.js，
+  // 这里只注册，不再往本文件里加 handler。
+  registerStorageRoutes(router, { json, sessions });
 
   router.add('GET', '/healthz', async (req, res) => {
     // 给拨测/uptime 监控用：无鉴权，但只含版本与连接状态，不带任何配置
@@ -2174,7 +2293,7 @@ export function createApp({
       return json(res, 401, { error: 'Token 不正确' });
     }
     gate.clear();
-    setConsoleCookie(res, token);
+    setConsoleCookie(req, res, token);
     return json(res, 200, { ok: true });
   }, { auth: false });
 
@@ -2207,7 +2326,7 @@ export function createApp({
       before: { tokenFp: String(req.consoleTokenFp ?? '') },
       after: { tokenFp: tokenFpOf(next), accessFileUpdated }
     });
-    setConsoleCookie(res, next);
+    setConsoleCookie(req, res, next);
     for (const client of sseClients) client.end();
     sseClients.clear();
     return json(res, 200, { ok: true, accessFileUpdated });
@@ -2392,611 +2511,18 @@ export function createApp({
       });
     }
   });
-  router.add('PUT', '/api/auto-update/settings', async (req, res) => {
-    const body = await readBody(req);
-    try {
-      autoUpdate.configure({
-        ownerUin: body.ownerUin,
-        intervalHours: body.intervalHours
-      });
-      return json(res, 200, { ok: true, status: autoUpdate.status() });
-    } catch (error) {
-      return json(res, error.httpStatus || 400, {
-        error: String(error?.message ?? error)
-      });
-    }
-  });
-  router.add('POST', '/api/auto-update/run', async (req, res) => {
-    const body = await readBody(req);
-    if (body.confirm !== true) {
-      return json(res, 409, { error: '手动更新需要显式确认' });
-    }
-    // 容器里没有 update service / systemd，提交请求只会留下一个永远不执行的 pending。
-    // 在入口直接拒绝，并把正确的更新方式告诉用户。
-    if (isContainerRuntime()) {
-      return json(res, 409, { error: containerUpdateHint() });
-    }
-    try {
-      const status = autoUpdate.requestManual({ version: body.version });
-      auditWrite('auto-update.run', String(body.version || ''), { req, after: status });
-      return json(res, 202, { ok: true, status });
-    } catch (error) {
-      auditWrite('auto-update.run', String(body.version || ''), { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, error.httpStatus || 409, {
-        error: String(error?.message ?? error)
-      });
-    }
-  });
-  router.add('POST', '/api/auto-update/resume', async (req, res) => {
-    const body = await readBody(req);
-    if (body.confirm !== true) {
-      return json(res, 409, { error: '恢复自动更新需要显式确认' });
-    }
-    try {
-      autoUpdate.resume({
-        ownerUin: body.ownerUin,
-        intervalHours: body.intervalHours
-      });
-      auditWrite('auto-update.resume', String(body.ownerUin ?? ''), { req, after: autoUpdate.status() });
-      return json(res, 200, { ok: true, status: autoUpdate.status() });
-    } catch (error) {
-      auditWrite('auto-update.resume', String(body.ownerUin ?? ''), { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, error.httpStatus || 400, {
-        error: String(error?.message ?? error)
-      });
-    }
-  });
-  router.add('POST', '/api/auto-update/pause', async (req, res) => {
-    const body = await readBody(req);
-    if (body.confirm !== true) {
-      return json(res, 409, { error: '暂停自动更新需要显式确认' });
-    }
-    autoUpdate.pause();
-    return json(res, 200, { ok: true, status: autoUpdate.status() });
-  });
-  router.add('POST', '/api/auto-update/notify-pending', async (req, res) => {
-    const status = await autoUpdate.handlePendingFailure();
-    return json(res, 200, { ok: true, status });
-  });
-  router.add('GET', '/api/auto-update/check', async (req, res) => {
-    // 「发现新版本」提示：只读检查 + Release 说明，结果缓存 30 分钟。
-    // 点「立即更新」不走这里，仍由 /api/auto-update/run 触发既有部署链路。
-    try {
-      const notice = await checkForUpdate(DATA_DIR, getConfig());
-      const state = readAutoUpdateState(DATA_DIR);
-      return json(res, 200, {
-        ok: true,
-        notice,
-        ignoredVersion: String(state.ignoredVersion || ''),
-        // 已经提交、还没跑完的更新（见 autoUpdatePending）：前端据此不再重复弹同一个版本
-        pending: autoUpdatePending(DATA_DIR)
-      });
-    } catch (error) {
-      return json(res, 500, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/auto-update/ignore', async (req, res) => {
-    const body = await readBody(req);
-    const version = ignoreVersion(DATA_DIR, body.version);
-    if (!version) return json(res, 400, { error: '缺少要忽略的版本号' });
-    return json(res, 200, { ok: true, ignoredVersion: version });
-  });
-  router.add('POST', '/api/runtime', async (req, res) => {
-    const body = await readBody(req);
-    if (!['observe', 'active'].includes(body.mode)) return json(res, 400, { error: 'Invalid mode' });
-    if (body.mode === 'active' && body.confirmExclusive !== true) {
-      return json(res, 409, { error: 'Confirm that the old instance is disabled for these chats or use a different QQ account.' });
-    }
-    if (body.mode === 'observe') {
-      for (const controller of orchestrator.controllers.values()) controller.abort(new Error('Run cancelled'));
-      slangPilot?.abortResearch('机器人已切换到观察模式');
-    }
-    if (body.skipBacklog === true) for (const key of store.listChats()) store.markAllRead(key);
-    updateConfig({ runtime: { mode: body.mode } });
-    // 观察/暂停会挡住日报/早报；切回 active 时立刻重排并补跑当天错过的（否则要等重启）。
-    groupDigest.reconfigure();
-    adminBriefing.reconfigure();
-    if (body.mode === 'active') slangPilot?.resumeQueued();
-    emit('status', { mode: body.mode });
-    return json(res, 200, { ok: true, mode: body.mode });
+  // 自动更新（status 一行式路由仍留在上面的状态聚合区）
+  registerAutoUpdateRoutes(router, { json, readBody, auditWrite, getConfig, getAutoUpdate: () => autoUpdate, dataDir: DATA_DIR });
+
+  registerChatRoutes(router, {
+    json, readBody, emit, log, store, orchestrator, sender, onebot, updateConfig,
+    groupDigest, adminBriefing,
+    getIncidentPilot: () => incidentPilot, getSlangPilot: () => slangPilot
   });
 
-  router.add('POST', /^\/api\/chats\/(group|private)_(\d+)\/(retry-failed|resolve-held)$/, async (req, res, params) => {
-    const body = await readBody(req);
-    const key = `${params[1]}:${params[2]}`;
-    if (body.confirm !== true) return json(res, 409, { error: 'Explicit confirmation required' });
-    const count = params[3] === 'retry-failed' ? store.retryFailed(key) : store.resolveHeld(key);
-    emit('chat-update', key);
-    return json(res, 200, { ok: true, count });
-  });
-  router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/runtime-control$/, async (req, res, params) => {
-    const key = `${params[1]}:${params[2]}`;
-    const meta = store.getChatMeta(key);
-    return json(res, 200, {
-      control: incidentPilot?.getChatControl(key) || {
-        chatKey: key, mode: 'auto', reason: '', version: 0
-      },
-      decision: incidentPilot?.chatDecision(key, meta) || {
-        allowed: meta.held === 0,
-        mode: 'legacy',
-        effectiveState: meta.held > 0 ? 'blocked' : 'normal',
-        reason: meta.held > 0 ? '存在发送结果待确认' : ''
-      },
-      unread: meta.unread,
-      held: meta.held
-    });
-  });
-  router.add('PUT', /^\/api\/chats\/(group|private)_(\d+)\/runtime-control$/, async (req, res, params) => {
-    if (!incidentPilot?.active) {
-      return json(res, 409, { error: '异常处理实验当前未启用' });
-    }
-    const key = `${params[1]}:${params[2]}`;
-    const body = await readBody(req);
-    if (!['auto', 'blocked', 'continue'].includes(body.mode)) {
-      return json(res, 400, { error: 'mode 必须是 auto、blocked 或 continue' });
-    }
-    if (body.mode === 'continue' && body.confirm !== true) {
-      return json(res, 409, { error: '继续处理需要显式确认' });
-    }
-    const control = incidentPilot.setChatControl(key, {
-      mode: body.mode,
-      reason: body.reason,
-      expectedVersion: body.expectedVersion,
-      updatedBy: 'console'
-    });
-    const decision = orchestrator.enforceChatControl(key);
-    let backlog = { action: 'keep', marked: 0, kept: store.unreadCount(key) };
-    if (decision.allowed && body.backlogAction === 'discard') {
-      backlog = { action: 'discard', marked: store.markAllRead(key), kept: 0 };
-    } else if (decision.allowed && body.backlogAction === 'recent') {
-      backlog = { action: 'recent', ...store.keepLatestPending(key) };
-      if (backlog.kept > 0) orchestrator.scheduleWake(key, 0);
-    }
-    emit('chat-update', key);
-    return json(res, 200, { ok: true, control, decision, backlog });
-  });
-  router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/messages$/, async (req, res, params, url) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    // 服务端游标分页：默认 500，普通上限 2000。旧客户端传 limit=100000 仍然兼容，但会被封顶。
-    const requested = Number(url.searchParams.get('limit'));
-    const limit = Math.min(2000, Math.max(1, Number.isFinite(requested) && requested > 0 ? requested : 500));
-    const beforeId = Math.max(0, Number(url.searchParams.get('before')) || 0);
-    const afterId = Math.max(0, Number(url.searchParams.get('after')) || 0);
-    const rows = store.recent(chatKey, { limit: limit + 1, beforeId, afterId });
-    const hasMore = rows.length > limit;
-    if (hasMore) {
-      if (afterId) rows.pop(); else rows.shift();
-    }
-    const messages = rows.map((m) => ({
-      id: m.id, mid: m.mid, ts: m.ts, senderId: m.senderId, senderName: m.senderName,
-      // 与提示词同一套渲染：正文缺引用块时补上（回复 + 合并转发卡片那类记录）
-      text: textWithQuote(m), self: m.self, read: m.read, reply: m.reply,
-      media: m.media || []
-    }));
-    const meta = store.getChatMeta?.(chatKey) || {};
-    return json(res, 200, {
-      chatKey,
-      messages,
-      hasMore,
-      nextBefore: messages.length ? Number(messages[0].id) || 0 : 0,
-      nextAfter: messages.length ? Number(messages[messages.length - 1].id) || 0 : afterId,
-      total: Number(meta.total) || 0
-    });
-  });
-  // 全量导出：单独入口，流式写出，避免把十万条塞进控制台的一次响应。
-  router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/export$/, async (req, res, params, url) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const format = String(url.searchParams.get('format') || 'jsonl').toLowerCase() === 'csv' ? 'csv' : 'jsonl';
-    const safeName = chatKey.replace(':', '_');
-    const MAX_ROWS = 200000;
-    res.writeHead(200, {
-      'content-type': format === 'csv' ? 'text/csv; charset=utf-8' : 'application/x-ndjson; charset=utf-8',
-      'content-disposition': `attachment; filename="${safeName}.${format}"`,
-      'cache-control': 'no-store'
-    });
-    if (format === 'csv') res.write('\uFEFFid,ts,senderId,senderName,self,text\n');
-    const csvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-    let after = 0;
-    let wrote = 0;
-    while (wrote < MAX_ROWS) {
-      const page = store.recent(chatKey, { afterId: after, limit: 5000 });
-      if (!page.length) break;
-      for (const message of page) {
-        if (wrote >= MAX_ROWS) break;
-        if (format === 'csv') {
-          res.write(`${csvCell(message.id)},${Number(message.ts) || 0},${csvCell(message.senderId)},`
-            + `${csvCell(message.senderName)},${message.self ? 1 : 0},${csvCell(message.text)}\n`);
-        } else {
-          res.write(`${JSON.stringify({
-            id: message.id,
-            mid: message.mid,
-            ts: message.ts,
-            senderId: message.senderId,
-            senderName: message.senderName,
-            self: Boolean(message.self),
-            text: message.text,
-            reply: message.reply || null
-          })}\n`);
-        }
-        wrote += 1;
-      }
-      after = Number(page[page.length - 1].id) || after;
-    }
-    log(`[export] ${chatKey} ${format} ${wrote} 条`);
-    res.end();
-  });
-  router.add('GET', /^\/api\/groups\/(\d+)\/members$/, async (req, res, params) => {
-    try {
-      const list = await onebot.call('get_group_member_list', { group_id: Number(params[1]) });
-      const members = (Array.isArray(list) ? list : (list?.data ?? []))
-        .map((m) => ({ userId: String(m.user_id), nickname: String(m.nickname || ''), card: String(m.card || '') }))
-        .sort((a, b) => String(a.card || a.nickname).localeCompare(String(b.card || b.nickname), 'zh-CN'));
-      return json(res, 200, { members });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', /^\/api\/chats\/(group|private)_(\d+)\/wake$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const result = orchestrator.requestManualWake(chatKey);
-    return json(res, result.ok ? 202 : 409, result);
-  });
-  router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/thread$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    return json(res, 200, {
-      chatKey,
-      mode: conversationConfigForChat(chatKey).mode,
-      thread: store.getConversationThread(chatKey),
-      checkpoint: store.latestThreadCheckpoint(chatKey)
-    });
-  });
-  router.add('DELETE', /^\/api\/chats\/(group|private)_(\d+)\/thread$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const closed = store.closeConversationThread(chatKey, 'operator');
-    emit('chat-update', chatKey);
-    return json(res, 200, { ok: true, closed });
-  });
-  router.add('POST', /^\/api\/chats\/(group|private)_(\d+)\/test-send$/, async (req, res, params) => {
-    const body = await readBody(req);
-    const text = String(body.text ?? '').trim();
-    if (!text) return json(res, 400, { error: '消息内容为空' });
-    try {
-      const chatKey = `${params[1]}:${params[2]}`;
-      assertCanSend(chatKey);
-      const decision = incidentPilot?.chatDecision(chatKey, store.getChatMeta(chatKey));
-      if (decision && !decision.allowed) {
-        return json(res, 409, { error: decision.reason || '该会话当前被阻塞' });
-      }
-      const data = await sender.sendTextBatch(chatKey, [text]);
-      emit('chat-update', chatKey);
-      return json(res, 200, { ok: true, messageId: data.sent[0]?.messageId ?? null });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', /^\/api\/chats\/(group|private)_(\d+)\/mark-read$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const drained = store.drainUnread(chatKey);
-    return json(res, 200, { ok: true, marked: drained.length });
-  });
-
-  router.add('GET', '/api/assets/overview', async (req, res) => {
-    const overview = assetObserver.overview();
-    const pilotStatus = slangPilotStatus();
-    return json(res, 200, {
-      ...overview,
-      slang: { ...overview.slang, active: pilotStatus.active },
-      slangPilot: pilotStatus
-    });
-  });
-  router.add('GET', '/api/assets/stickers', async (req, res, params, url) => {
-    const result = await assetObserver.listStickers({
-      query: url.searchParams.get('query') || '',
-      offset: url.searchParams.get('offset') || 0,
-      limit: url.searchParams.get('limit') || 100,
-      refresh: url.searchParams.get('refresh') === '1'
-    });
-    // QQ 收藏表情有上限（非会员 500）：满了之后新收藏只能进本地图库（发出去是图片），
-    // 界面据此解释清楚，别让人以为"表情包坏了"
-    try { result.qqFavorites = await stickers.qqFavoritesState(); } catch { /* 拿不到就不显示 */ }
-    return json(res, 200, result);
-  });
-  router.add('POST', '/api/assets/stickers', async (req, res) => {
-    try {
-      const body = await readBody(req, 12 * 1024 * 1024);
-      let imageBuffer;
-      if (body.imageDataUrl) {
-        imageBuffer = decodeImageDataUrl(body.imageDataUrl);
-      } else if (body.imageUrl) {
-        imageBuffer = (await safeFetchBinary(
-          String(body.imageUrl),
-          8 * 1024 * 1024
-        )).buffer;
-      } else {
-        return json(res, 400, { error: '请选择图片文件或填写图片 URL' });
-      }
-      const entry = assetObserver.addSticker({
-        imageBuffer,
-        desc: body.desc,
-        localNote: body.localNote,
-        tags: body.tags,
-        usage: body.usage
-      });
-      emit('asset-update', { kind: 'stickers', action: 'create', id: entry.id });
-      return json(res, 201, { ok: true, entry });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/assets/stickers/analyze', async (req, res) => {
-    try {
-      const body = await readBody(req, 12 * 1024 * 1024);
-      let imageBuffer;
-      let mime;
-      if (body.stickerId) {
-        const id = String(body.stickerId).trim();
-        if (!/^[A-Za-z0-9_-]{1,120}$/.test(id)) return json(res, 400, { error: '表情 ID 无效' });
-        const localImage = stickers.readImage(id);
-        if (localImage) { imageBuffer = localImage.buffer; mime = localImage.contentType; }
-        else {
-          const sticker = await stickers.findForSend(id);
-          if (!sticker?.url) return json(res, 404, { error: '表情图片不存在' });
-          imageBuffer = (await safeFetchBinary(sticker.url, 8 * 1024 * 1024)).buffer;
-          mime = imageType(imageBuffer);
-        }
-      } else {
-        imageBuffer = decodeImageDataUrl(body.imageDataUrl);
-        mime = imageType(imageBuffer);
-      }
-      if (!mime) return json(res, 400, { error: '图片内容无效或格式不受支持' });
-      const result = await chatCompletion({
-        purpose: 'sticker-image-description',
-        temperature: 0.2,
-        maxTokens: 500,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'text', text: '你是表情包管理助手。观察图片，生成适合检索和聊天调用的中文元数据。严格只返回 JSON 对象，不要 Markdown：{"desc":"简短名称，最多20字","localNote":"客观描述画面主体、动作、文字和情绪，最多100字","tags":["2-6个简短标签"],"usage":"适合使用的聊天语境，最多60字"}。只描述图中可见内容，不推断人物身份或背景。' },
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${imageBuffer.toString('base64')}` } }
-          ]
-        }]
-      });
-      const text = String(result.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-      const metadata = JSON.parse(text);
-      return json(res, 200, {
-        ok: true,
-        metadata: {
-          desc: String(metadata.desc || '').slice(0, 80),
-          localNote: String(metadata.localNote || '').slice(0, 300),
-          tags: Array.isArray(metadata.tags) ? metadata.tags.map((tag) => String(tag).slice(0, 40)).slice(0, 20) : [],
-          usage: String(metadata.usage || '').slice(0, 300)
-        }
-      });
-    } catch (error) {
-      return json(res, error?.httpStatus || 502, { error: `图片分析失败：${String(error?.message ?? error).slice(0, 240)}` });
-    }
-  });
-  router.add('GET', '/api/assets/stickers/image', async (req, res, params, url) => {
-    const id = String(url.searchParams.get('id') || '').trim();
-    if (!id) return json(res, 400, { error: '缺少表情 ID' });
-    let sticker = stickers.peek(id);
-    const localImage = stickers.readImage(id);
-    if (localImage) {
-      // 贴纸图片按 id 内容恒定（id 唯一、删除后不再出现）：长缓存 + 强 ETag。
-      // 2026-10-02：观测页每张 126KB，36 张约 4.5MB，重复浏览不该重下。
-      const etag = `"s-${id}"`;
-      if (String(req.headers['if-none-match'] || '') === etag) {
-        res.writeHead(304, { etag, 'cache-control': 'private, max-age=604800, immutable' });
-        res.end();
-        return;
-      }
-      res.writeHead(200, {
-        'content-type': localImage.contentType,
-        'content-length': localImage.buffer.length,
-        'cache-control': 'private, max-age=604800, immutable',
-        etag,
-        'x-content-type-options': 'nosniff'
-      });
-      res.end(localImage.buffer);
-      return;
-    }
-    if (sticker?.source === 'ai') {
-      // 收藏表情的远程链接过期时 findForSend 会抛 STICKER_LINK_DEAD。控制台预览一张已失效的
-      // 收藏图不是系统错误，不能记进异常面板（会在错误页留一条红项）；返回 404 让界面显示坏图。
-      try {
-        sticker = await stickers.findForSend(id);
-      } catch (error) {
-        if (error?.code === 'STICKER_LINK_DEAD') return json(res, 404, { error: '表情图片已失效' });
-        throw error;
-      }
-    }
-    if (!sticker?.url) return json(res, 404, { error: '表情图片不存在' });
-    // 远程表情图片（QQ 表情 URL 里带 md5、内容恒定）：ETag + 一天浏览器缓存。
-    // 2026-10-02 实测：线上 42 张贴纸**全部**只有远程 URL、没有本地文件，观测页每张
-    // 缩略图都要服务器现去 QQ 拉一次且只缓存 60 秒 —— 每次进页面把整套图重拉一遍。
-    const remoteEtag = `"u-${crypto.createHash('sha1').update(String(sticker.url)).digest('hex').slice(0, 16)}"`;
-    if (String(req.headers['if-none-match'] || '') === remoteEtag) {
-      res.writeHead(304, { etag: remoteEtag, 'cache-control': 'private, max-age=86400' });
-      res.end();
-      return;
-    }
-    try {
-      const image = await safeFetchBinary(sticker.url, 8 * 1024 * 1024);
-      const contentType = String(image.contentType || '').split(';')[0].trim().toLowerCase();
-      if (!contentType.startsWith('image/')) {
-        return json(res, 502, { error: '表情资源不是图片' });
-      }
-      res.writeHead(200, {
-        'content-type': contentType,
-        'content-length': image.buffer.length,
-        'cache-control': 'private, max-age=86400',
-        etag: remoteEtag,
-        'x-content-type-options': 'nosniff'
-      });
-      res.end(image.buffer);
-      return;
-    } catch (error) {
-      return json(res, 502, { error: `表情图片读取失败：${String(error?.message ?? error)}` });
-    }
-  });
-  router.add('GET', '/api/assets/slang', async (req, res, params, url) => {
-    return json(res, 200, assetObserver.listSlang({
-      query: url.searchParams.get('query') || '',
-      status: url.searchParams.get('status') || '',
-      offset: url.searchParams.get('offset') || 0,
-      limit: url.searchParams.get('limit') || 200
-    }));
-  });
-  router.add('POST', '/api/assets/slang', async (req, res) => {
-    try {
-      const entry = assetObserver.addSlang(await readBody(req));
-      emit('asset-update', { kind: 'slang', action: 'create', id: entry.id });
-      return json(res, 201, { ok: true, entry });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/assets/identities', async (req, res, params, url) => {
-    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 500));
-    return json(res, 200, assetObserver.identitySnapshot({
-      limit,
-      query: url.searchParams.get('query') || ''
-    }));
-  });
-  router.add('POST', '/api/assets/identities', async (req, res) => {
-    try {
-      const person = assetObserver.upsertIdentity(await readBody(req));
-      emit('asset-update', { kind: 'identities', action: 'create', id: person.userId });
-      emit('identity-pilot-update', identityPilotStatus());
-      return json(res, 201, { ok: true, person });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/assets/memory', async (req, res, params, url) => {
-    // limit：这个接口要遍历"每个会话 × 每个成员"，不带上限时多群实例会一次吐出上千行
-    // （前端还要把它们全渲染成表格）。默认 500，与身份列表同一口径（2026-10-08 审查）。
-    return json(res, 200, assetObserver.memorySummary({
-      query: url.searchParams.get('query') || '',
-      limit: Math.max(1, Math.min(2000, Number(url.searchParams.get('limit')) || 500))
-    }));
-  });
-  router.add('POST', '/api/assets/memory', async (req, res) => {
-    try {
-      const entry = assetObserver.addMemory(await readBody(req));
-      await refreshIdentityAfterAssetMutation();
-      emit('memory-update', { chatKey: String(entry.chatKey || '') });
-      emit('asset-update', { kind: 'memory', action: 'create' });
-      return json(res, 201, { ok: true, entry });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('PUT', '/api/assets/memory', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const member = assetObserver.updateMemory(body);
-      await refreshIdentityAfterAssetMutation();
-      emit('memory-update', { chatKey: String(body.chatKey || '') });
-      emit('asset-update', { kind: 'memory', action: 'update' });
-      return json(res, 200, { ok: true, member });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', '/api/assets/memory', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      if (body.confirm !== true) return json(res, 409, { error: '删除记忆需要显式确认' });
-      if (!assetObserver.deleteMemory(body)) return json(res, 404, { error: '记忆不存在' });
-      await refreshIdentityAfterAssetMutation();
-      emit('memory-update', { chatKey: String(body.chatKey || '') });
-      emit('asset-update', { kind: 'memory', action: 'delete' });
-      return json(res, 200, { ok: true });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-
-  router.add('PUT', /^\/api\/assets\/stickers\/([^/]+)$/, async (req, res, params) => {
-    try {
-      const id = decodeURIComponent(params[1]);
-      const body = await readBody(req);
-      const entry = assetObserver.updateSticker(id, {
-        desc: body.desc,
-        localNote: body.localNote,
-        tags: body.tags,
-        usage: body.usage
-      });
-      if (!entry) return json(res, 404, { error: '表情不存在' });
-      emit('asset-update', { kind: 'stickers', action: 'update', id });
-      return json(res, 200, { ok: true, entry });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', /^\/api\/assets\/stickers\/([^/]+)$/, async (req, res, params) => {
-    try {
-      const body = await readBody(req);
-      if (body.confirm !== true) return json(res, 409, { error: '删除表情需要显式确认' });
-      const id = decodeURIComponent(params[1]);
-      const result = assetObserver.deleteSticker(id);
-      if (!result?.removed) return json(res, 404, { error: '表情不存在' });
-      emit('asset-update', { kind: 'stickers', action: 'delete', id });
-      return json(res, 200, { ok: true, ...result });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('PUT', /^\/api\/assets\/slang\/([^/]+)$/, async (req, res, params) => {
-    try {
-      const id = decodeURIComponent(params[1]);
-      const entry = assetObserver.updateSlang(id, await readBody(req));
-      if (!entry) return json(res, 404, { error: '黑话词条不存在' });
-      emit('asset-update', { kind: 'slang', action: 'update', id });
-      return json(res, 200, { ok: true, entry });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', /^\/api\/assets\/slang\/([^/]+)$/, async (req, res, params) => {
-    try {
-      const body = await readBody(req);
-      if (body.confirm !== true) return json(res, 409, { error: '删除黑话需要显式确认' });
-      const id = decodeURIComponent(params[1]);
-      if (!assetObserver.deleteSlang(id)) return json(res, 404, { error: '黑话词条不存在' });
-      emit('asset-update', { kind: 'slang', action: 'delete', id });
-      return json(res, 200, { ok: true });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('PUT', /^\/api\/assets\/identities\/(\d+)$/, async (req, res, params) => {
-    try {
-      const person = assetObserver.upsertIdentity({
-        ...(await readBody(req)),
-        userId: params[1]
-      });
-      emit('asset-update', { kind: 'identities', action: 'update', id: person.userId });
-      emit('identity-pilot-update', identityPilotStatus());
-      return json(res, 200, { ok: true, person });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', /^\/api\/assets\/identities\/(\d+)$/, async (req, res, params) => {
-    try {
-      const body = await readBody(req);
-      if (body.confirm !== true) return json(res, 409, { error: '删除人物需要显式确认' });
-      if (!assetObserver.deleteIdentity(params[1])) {
-        return json(res, 404, { error: '人物不存在' });
-      }
-      emit('asset-update', { kind: 'identities', action: 'delete', id: params[1] });
-      emit('identity-pilot-update', identityPilotStatus());
-      return json(res, 200, { ok: true });
-    } catch (error) {
-      return json(res, error?.httpStatus || 400, { error: String(error?.message ?? error) });
-    }
+  registerAssetRoutes(router, {
+    json, readBody, emit, assetObserver, stickers,
+    slangPilotStatus, identityPilotStatus, refreshIdentityAfterAssetMutation
   });
 
   // ── 插件（v1）：列表 / 索引 / 安装 / 卸载 / 启停 / 重载 ───────────────────────────
@@ -3135,1346 +2661,33 @@ export function createApp({
     if (pluginIndexRefreshTimer) clearInterval(pluginIndexRefreshTimer);
     pluginIndexRefreshTimer = null;
   };
-  /**
-   * 插件接口的错误出口。**剥掉文件系统绝对路径**：manifest 校验、换入失败这类错误的原始文案里会带
-   * 服务器路径（"entry 必须落在插件目录内，实际指向 /data/qq-agent/..."），那是控制台不该显示的内部细节。
-   */
-  const pluginError = (res, error, status = 400) => {
-    const raw = String(error?.message ?? error);
-    const safe = raw
-      .replace(/[A-Za-z]:\\[^\s'"]+/g, (hit) => `<路径>/${hit.split(/[\\/]/).pop()}`)
-      .replace(/\/(?:home|root|data|tmp|var|opt|srv|app)\/[^\s'"]*/g, (hit) => `<路径>/${hit.split('/').pop()}`);
-    return json(res, status, { ok: false, code: error?.code || '', error: safe });
-  };
-
-  router.add('GET', '/api/knowledge', async (_req, res) =>
-    json(res, 200, {
-      ok: true,
-      enabled: getConfig().knowledge?.enabled === true,
-      available: knowledgeEnabled(),
-      ...knowledgeStats()
-    })
-  );
-  router.add('GET', '/api/knowledge/files', async (_req, res) =>
-    json(res, 200, { ok: true, files: listKnowledgeFiles() })
-  );
-  router.add('POST', '/api/knowledge/files', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const file = writeKnowledgeFile(body.name, body.content);
-      return json(res, 200, { ok: true, file, ...knowledgeStats() });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', '/api/knowledge/files', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const file = deleteKnowledgeFile(body.name);
-      return json(res, 200, { ok: true, file, ...knowledgeStats() });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/knowledge/reindex', async (_req, res) =>
-    json(res, 200, { ok: true, ...reindexKnowledge() })
-  );
-  router.add('GET', '/api/memes', async (_req, res, params, url) => {
-    const chatKey = String(url?.searchParams?.get('chatKey') || '').trim();
-    const stats = memeStats();
-    return json(res, 200, { ok: true, entries: listMemes(chatKey), count: stats.entries, chats: stats.chats });
-  });
-  router.add('POST', '/api/memes', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const entry = rememberMeme({
-        chatKey: body.chatKey,
-        term: body.term,
-        meaning: body.meaning,
-        usage: body.usage,
-        aliases: body.aliases,
-        createdBy: body.createdBy || 'console'
-      });
-      const stats = memeStats();
-      return json(res, 200, { ok: true, entry, count: stats.entries, chats: stats.chats });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', '/api/memes', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const removed = deleteMeme(body.id);
-    return removed ? json(res, 200, { ok: true, ...memeStats() }) : json(res, 404, { ok: false, error: '梗条目不存在' });
-  });
-  router.add('GET', '/api/mcp/presets', async (_req, res, params, url) => {
-    const query = String(url?.searchParams?.get('query') || '').trim();
-    return json(res, 200, { ok: true, results: searchPresets(query) });
-  });
-  router.add('GET', '/api/mcp/registry', async (_req, res, params, url) => {
-    const query = String(url?.searchParams?.get('query') || '').trim();
-    try {
-      const results = await searchRegistry(query);
-      return json(res, 200, { ok: true, results });
-    } catch (error) {
-      return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/mcp', async (_req, res) =>
-    json(res, 200, { ok: true, status: mcpManager.status() })
-  );
-  router.add('POST', '/api/mcp/reload', async (_req, res) => {
-    try {
-      const status = await mcpManager.reload();
-      return json(res, 200, { ok: true, status });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/plugins', async (_req, res) =>
-    json(res, 200, {
-      ...pluginRegistry.list(),
-      indexUrl: String(getConfig().plugins?.indexUrl || ''),
-      indexUrls: Array.isArray(getConfig().plugins?.indexUrls) ? getConfig().plugins.indexUrls : [],
-      lazy: getConfig().plugins?.lazy !== false,
-      idleMinutes: Math.max(0, Number(getConfig().plugins?.idleMinutes) || 0),
-      // 只读信任视图：发布者公钥与撤回名单（公钥不是秘密；撤回名单是集中下架的依据）
-      publishers: getConfig().plugins?.publishers && typeof getConfig().plugins.publishers === 'object'
-        ? getConfig().plugins.publishers : {},
-      revoked: Array.isArray(getConfig().plugins?.revoked) ? getConfig().plugins.revoked : []
-    }));
-
-  // ── 插件 v2：统一设置面板 / 凭据 / 授权与配额 ─────────────────────────────
-  // 插件作者不写 HTML：设置项由 manifest.settings 描述，这里只做"按 schema 读写"。
-  const pluginEntryOf = (id) => pluginRegistry.list().plugins.find((row) => row.id === id && row.installed) || null;
-  const pluginIdValid = (id) => /^[a-z0-9][a-z0-9-]{1,31}$/.test(id);
-
-  router.add('GET', '/api/plugins/settings', async (req, res) => {
-    const id = String(new URL(req.url || '/', 'http://x').searchParams.get('id') || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    const entry = pluginEntryOf(id);
-    if (!entry) return json(res, 404, { ok: false, error: '这个插件没有安装' });
-    const schema = entry.manifest?.settings || { groups: [] };
-    const stored = getConfig().plugins?.settings?.[id] || {};
-    const secretKeys = secretFieldKeys(schema);
-    const values = {};
-    for (const group of schema.groups || []) {
-      for (const field of group.fields || []) {
-        if (field.type === 'secret') continue;
-        values[field.key] = stored[field.key] === undefined ? (field.default ?? '') : stored[field.key];
-      }
-    }
-    return json(res, 200, {
-      ok: true,
-      id,
-      schema,
-      values,
-      secrets: pluginSecretStatus(DATA_DIR, id, secretKeys),
-      approvals: entry.manifest?.approvals || [],
-      quotas: entry.manifest?.quotas || {},
-      grants: grantsStatus(DATA_DIR, id, {
-        approvals: entry.manifest?.approvals || [],
-        quotas: entry.manifest?.quotas || {}
-      }),
-      // 写动作开关（默认关）＋ 该插件的待批请求 ＋ 写审计（"日志"页签的数据源）
-      switches: getConfig().plugins?.switches?.[id] || {},
-      pending: listPendingApprovals(DATA_DIR).filter((item) => item.pluginId === id),
-      writes: listPluginWrites(DATA_DIR, id, 30),
-      // 登录徽标（可选）：插件实现了 probe 就带一份实测登录态，面板打开即见
-      loginInfo: await pluginRegistry.probePlugin(id).then((r) => (r.ok ? { ...r.info, measuredAt: Date.now() } : null)).catch(() => null)
-    });
+  // 知识库 / 梗库 / MCP 路由（按域拆到 routes/；注册位置保持原顺序）
+  registerKnowledgeRoutes(router, { json, readBody, getConfig });
+  registerMemeRoutes(router, { json, readBody });
+  registerMcpRoutes(router, { json, mcpManager });
+  registerPluginRoutes(router, {
+    json, readBody, getConfig, updateConfig, auditWrite, log, dataDir: DATA_DIR,
+    hostVersion: PKG.version, pluginRegistry,
+    loadIndex: (options) => loadPluginIndex(options),
+    invalidateIndex: () => { pluginIndexCache = { key: '', at: 0, result: { plugins: [], skipped: [], sources: [] } }; },
+    mirrorConfig: pluginMirrorConfig, pluginLog: moduleLog('plugins')
   });
 
-  router.add('POST', '/api/plugins/settings', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    const entry = pluginEntryOf(id);
-    if (!entry) return json(res, 404, { ok: false, error: '这个插件没有安装' });
-    const schema = entry.manifest?.settings || { groups: [] };
-    const fields = new Map();
-    for (const group of schema.groups || []) for (const field of group.fields || []) fields.set(field.key, field);
-    const input = body.values && typeof body.values === 'object' && !Array.isArray(body.values) ? body.values : {};
-    const unknown = Object.keys(input).filter((key) => !fields.has(key));
-    if (unknown.length) return json(res, 400, { ok: false, error: `不认识的设置项：${unknown.join(', ')}` });
-    const plainPatch = {};
-    const secretPatch = {};
-    for (const [key, raw] of Object.entries(input)) {
-      const field = fields.get(key);
-      if (field.type === 'secret') {
-        if (raw === null || raw === undefined) continue;
-        secretPatch[key] = String(raw);
-        continue;
-      }
-      if (field.type === 'boolean') {
-        if (typeof raw !== 'boolean') return json(res, 400, { ok: false, error: `${field.label} 必须是 true/false` });
-        plainPatch[key] = raw;
-      } else if (field.type === 'number') {
-        const value = Number(raw);
-        if (!Number.isFinite(value)) return json(res, 400, { ok: false, error: `${field.label} 必须是数字` });
-        if (field.min !== undefined && value < field.min) return json(res, 400, { ok: false, error: `${field.label} 不能小于 ${field.min}` });
-        if (field.max !== undefined && value > field.max) return json(res, 400, { ok: false, error: `${field.label} 不能大于 ${field.max}` });
-        plainPatch[key] = value;
-      } else if (field.type === 'select') {
-        const value = String(raw);
-        if (!(field.options || []).some((option) => option.value === value)) {
-          return json(res, 400, { ok: false, error: `${field.label} 的取值不在选项里` });
-        }
-        plainPatch[key] = value;
-      } else {
-        const value = String(raw ?? '');
-        if (value.length > 4000) return json(res, 400, { ok: false, error: `${field.label} 太长（上限 4000 字）` });
-        plainPatch[key] = value;
-      }
-    }
-    try {
-      if (Object.keys(plainPatch).length) {
-        updateConfig({ plugins: { settings: { [id]: plainPatch } } });
-      }
-      if (Object.keys(secretPatch).length) {
-        writePluginSecrets(DATA_DIR, id, secretPatch, secretFieldKeys(schema));
-      }
-    } catch (error) {
-      return pluginError(res, error, 400);
-    }
-    // 保存后立刻重载插件：普通设置是进程 init 快照，不重载要等懒启动空闲回收才生效
-    //（最长 15 分钟）。重载失败不让保存报错 —— 配置已经写进去了，重载可以在控制台手动再来。
-    let reloaded = true;
-    try { await pluginRegistry.reload(id); } catch { reloaded = false; }
-    auditWrite('plugins.settings', `plugins:${id}`, {
-      req,
-      fields: Object.keys(plainPatch),
-      secrets: Object.keys(secretPatch),
-      reloaded
-    });
-    return json(res, 200, {
-      ok: true,
-      reloaded,
-      values: plainPatch,
-      secrets: pluginSecretStatus(DATA_DIR, id, secretFieldKeys(schema))
-    });
+  // 技能路由（skills/market 必须先于 :id 注册，顺序由模块内部保证）
+  registerSkillRoutes(router, { json, readBody, getConfig, updateConfig, auditWrite, emit });
+
+  registerMemoryRoutes(router, { json, readBody, getConfig, memory, orchestrator, emit });
+
+  // 长期语义记忆（scope 归一化与路由都在模块内）
+  registerLivingMemoryRoutes(router, { json, readBody, getConfig, livingMemory, emit, auditWrite });
+
+  registerProviderRoutes(router, {
+    json, readBody, getConfig, auditWrite,
+    keyEndpointAllowed, storedKeyAllowedFor, sanitizeProvider,
+    asrInstallSnapshot, removeLocalAsrFiles, startAsrInstall,
+    getAsrRunning: () => asrInstall.running, log
   });
 
-  // 对象级批准：批准/拒绝的是**一条待批请求**（绑定动作+目标），不再是"类别通行证"。
-  router.add('POST', '/api/plugins/approval', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    const entry = pluginEntryOf(id);
-    if (!entry) return json(res, 404, { ok: false, error: '这个插件没有安装' });
-    const pendingId = String(body.pendingId || '').trim();
-    if (!pendingId) return json(res, 400, { ok: false, error: '缺少待批请求编号（pendingId）' });
-    // 待批编号必须属于 URL 里的插件：否则可以借 A 插件的请求批准 B 插件的动作，
-    // 审计还会记在 A 名下（2026-10-24 审查 P2）。
-    const pendingHit = listPendingApprovals(DATA_DIR).find((item) => item.id === pendingId);
-    if (!pendingHit) return json(res, 404, { ok: false, error: '这条待批请求不存在或已过期' });
-    if (pendingHit.pluginId !== id) return json(res, 400, { ok: false, error: '这条待批请求属于另一个插件' });
-    // 安全接口显式白名单：以前只有 reject 被识别，拼错/漏传 decision 会被当成批准（fail-open）。
-    if (body.decision !== 'approve' && body.decision !== 'reject') {
-      return json(res, 400, { ok: false, error: 'decision 只能是 approve 或 reject' });
-    }
-    try {
-      if (body.decision === 'reject') {
-        const rejected = rejectPendingApproval(DATA_DIR, pendingId);
-        auditWrite('plugins.approval.reject', `plugins:${id}:${rejected.action}`, { req, target: rejected.target });
-        return json(res, 200, {
-          ok: true,
-          rejected: { action: rejected.action, target: rejected.target },
-          pending: listPendingApprovals(DATA_DIR).filter((item) => item.pluginId === id)
-        });
-      }
-      const uses = Math.max(1, Math.min(100, Math.floor(Number(body.uses) || 1)));
-      const ttlMinutes = Math.max(1, Math.min(24 * 60, Math.floor(Number(body.ttlMinutes) || 10)));
-      const { grant, pending: hit } = approvePendingApproval(DATA_DIR, pendingId, {
-        uses, ttlMs: ttlMinutes * 60_000
-      });
-      auditWrite('plugins.approval', `plugins:${id}:${hit.action}`, { req, target: hit.target, uses, ttlMinutes });
-      // P1：批准后自动重放原调用（只一次；目标/manifest 变化会在 retryApproved 里跳过）
-      const retry = hit.retry?.tool ? await pluginRegistry.retryApproved(hit) : null;
-      return json(res, 200, {
-        ok: true,
-        grant,
-        retry,
-        pending: listPendingApprovals(DATA_DIR).filter((item) => item.pluginId === id),
-        grants: grantsStatus(DATA_DIR, id, entry.manifest || {})
-      });
-    } catch (error) {
-      return pluginError(res, error, 400);
-    }
-  });
-
-  // 全局待批计数（侧栏红点）：所有插件未批写操作请求的总数
-  router.add('GET', '/api/plugins/pending-count', async (_req, res) => {
-    try {
-      const list = listPendingApprovals(DATA_DIR);
-      return json(res, 200, { ok: true, count: list.length });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-
-  // 全量待批列表：侧栏徽标/顶部提示用它一次看全（跨插件）。
-  // 与逐插件详情里的 pending 同一份数据；不含凭据，只有动作、目标、预览与通知状态。
-  router.add('GET', '/api/plugins/pending', async (_req, res) => {
-    try {
-      const pending = listPendingApprovals(DATA_DIR)
-        .map((item) => ({
-          id: item.id,
-          pluginId: item.pluginId,
-          pluginName: item.pluginName || item.pluginId,
-          action: item.action,
-          label: item.label || item.action,
-          target: item.target || '',
-          preview: String(item.preview || '').slice(0, 300),
-          previewLength: Number(item.previewLength) || 0,
-          createdAt: Number(item.createdAt) || 0,
-          expiresAt: Number(item.expiresAt) || 0,
-          notify: item.notify && typeof item.notify === 'object'
-            ? { ok: item.notify.ok === true, error: String(item.notify.error || ''), at: Number(item.notify.at) || 0 }
-            : null
-        }))
-        .sort((a, b) => a.expiresAt - b.expiresAt);
-      return json(res, 200, { ok: true, pending });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-
-  // 应用层自检（"检测登录"按钮）：懒启动的插件会顺手把进程带起来
-  router.add('POST', '/api/plugins/probe', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    try {
-      const result = await pluginRegistry.probePlugin(id);
-      return json(res, 200, result);
-    } catch (error) {
-      return pluginError(res, error, 500);
-    }
-  });
-
-  // 控制台直调插件的**登录类**工具（扫码登录/查结果）：不是给任意工具开的通用后门。
-  // 白名单只放 login 的四个 action，且 channel 必须是 console —— 登录不是第三方插件的业务工具，
-  // 是宿主替管理员跑的账号操作，所以这里不等同于"模型调用路径"。
-  const CONSOLE_PLUGIN_TOOLS = new Set(['login']);
-  router.add('POST', '/api/plugins/call', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    const tool = String(body.tool || '').trim();
-    if (!CONSOLE_PLUGIN_TOOLS.has(tool)) return json(res, 403, { ok: false, error: '控制台只允许调用登录类工具' });
-    const args = body.args && typeof body.args === 'object' && !Array.isArray(body.args) ? body.args : {};
-    if (tool === 'login') {
-      const allowedActions = new Set(['start', 'poll', 'status', 'logout']);
-      if (!allowedActions.has(String(args.action || ''))) {
-        return json(res, 400, { ok: false, error: 'action 只能是 start/poll/status/logout' });
-      }
-      if (args.channel && args.channel !== 'console') {
-        return json(res, 400, { ok: false, error: '控制台只允许 channel=console' });
-      }
-    }
-    try {
-      const result = await pluginRegistry.callConsoleTool(id, tool, args);
-      return json(res, 200, result);
-    } catch (error) {
-      return pluginError(res, error, 400);
-    }
-  });
-
-  // 写动作开关：默认关；开着工具才会注册给模型
-  router.add('POST', '/api/plugins/write-switch', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    const entry = pluginEntryOf(id);
-    if (!entry) return json(res, 404, { ok: false, error: '这个插件没有安装' });
-    const action = String(body.action || '').trim();
-    if (!(entry.manifest?.approvals || []).some((item) => item.action === action)) {
-      return json(res, 400, { ok: false, error: '这个动作没有在插件 manifest 里声明' });
-    }
-    // 深合并不删键，也不解包"新子树里"的 __replace__（父键不存在时整段照抄）——
-    // 所以这里在 switches 这一层整体替换：手工拼好全量映射再 __replace__。
-    const current = getConfig().plugins?.switches || {};
-    const byPlugin = { ...(current[id] || {}) };
-    if (body.enabled === true) byPlugin[action] = true;
-    else delete byPlugin[action];
-    const next = { ...current, [id]: byPlugin };
-    updateConfig({ plugins: { switches: { __replace__: next } } });
-    await pluginRegistry.reconfigure().catch(() => {});
-    auditWrite('plugins.write-switch', `plugins:${id}:${action}`, { req, enabled: body.enabled === true });
-    return json(res, 200, { ok: true, switches: byPlugin });
-  });
-
-  router.add('POST', '/api/plugins/secrets/clear', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    clearPluginSecrets(DATA_DIR, id);
-    auditWrite('plugins.secrets.clear', `plugins:${id}`, { req });
-    return json(res, 200, { ok: true });
-  });
-
-  router.add('GET', '/api/plugins/index', async (_req, res) => {
-    try {
-      const index = await loadPluginIndex();
-      return json(res, 200, {
-        ok: true,
-        // 条目分两类：compatible=true 能装；false 的照样列出来并带原因（"看得见但装不了"比"看不见"好排查）
-        plugins: index.plugins,
-        // 跳过的条目与拉取失败的来源都如实回报，页面上能看见"少了一条/少了整个索引"
-        skipped: index.skipped,
-        sources: index.sources
-      });
-    } catch (error) { return pluginError(res, error, 502); }
-  });
-
-  router.add('POST', '/api/plugins/master', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      updateConfig({ plugins: { enabled: body.enabled === true } });
-      // 启用前先尽力拿一次撤回名单：否则在索引还没加载过时点开总开关，被撤回的插件会先跑起来
-      if (body.enabled === true) await loadPluginIndex({ applyRevocation: false }).catch(() => null);
-      await pluginRegistry.reconfigure();
-      auditWrite('plugins.master', 'plugins.enabled', { req, enabled: body.enabled === true });
-      return json(res, 200, { ok: true, ...pluginRegistry.list() });
-    } catch (error) { return pluginError(res, error); }
-  });
-
-  router.add('POST', '/api/plugins/toggle', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!/^[a-z0-9][a-z0-9-]{1,31}$/.test(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    try {
-      const current = Array.isArray(getConfig().plugins?.enabledIds) ? getConfig().plugins.enabledIds : [];
-      const next = body.enabled === true
-        ? [...new Set([...current, id])]
-        : current.filter((value) => value !== id);
-      // enabledIds 是**数组**：deepMerge 对数组本来就是整体替换（不需要 __replace__）；
-      // 反过来说 { __replace__: [...] } 会被静默忽略（那个约定只认对象）—— 那样"启用"就永远写不进去
-      updateConfig({ plugins: { enabledIds: next } });
-      // 单独启一个插件时把总开关一起打开：否则用户点了"启用"却什么都没发生（默认全关）
-      if (body.enabled === true && getConfig().plugins?.enabled !== true) {
-        updateConfig({ plugins: { enabled: true } });
-      }
-      // 启用前先尽力拿一次撤回名单：索引还没加载过就点启用时，被撤回的插件会先跑起来
-      if (body.enabled === true) await loadPluginIndex({ applyRevocation: false }).catch(() => null);
-      await pluginRegistry.reconfigure();
-      auditWrite('plugins.toggle', `plugins:${id}`, { req, enabled: body.enabled === true });
-      return json(res, 200, { ok: true, enabledIds: next, ...pluginRegistry.list() });
-    } catch (error) { return pluginError(res, error); }
-  });
-
-  router.add('POST', '/api/plugins/reload', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    try {
-      const result = await pluginRegistry.reload(id);
-      if (!result.ok) return json(res, 400, { ok: false, error: result.error || '重载失败' });
-      return json(res, 200, { ok: true, running: result.running === true, ...pluginRegistry.list() });
-    } catch (error) { return pluginError(res, error); }
-  });
-
-  // 升级预览：只下载/解包/比对，不换目录、不停旧进程。
-  // 权限面有变化时必须先看 diff，再带 expectedDiffHash 安装（fail-closed）。
-  router.add('POST', '/api/plugins/upgrade-preview', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    try {
-      const hit = (await loadPluginIndex()).plugins.find((item) => item.id === id);
-      if (!hit) return json(res, 404, { ok: false, error: `索引里没有 ${id}` });
-      if (hit.compatible === false) return json(res, 409, { ok: false, error: `这个插件在本机装不了：${hit.reason}` });
-      if (!hit.url || !hit.sha256) return json(res, 400, { ok: false, error: '索引条目缺少下载地址或 sha256' });
-      const mirrorConfig = pluginMirrorConfig();
-      const download = async (target, maxBytes) => {
-        const picked = await fetchBinaryWithMirrors({
-          url: target, mirrors: Array.isArray(hit.mirrors) ? hit.mirrors : [], prefixes: mirrorConfig.prefixes,
-          maxBytes, fetchImpl: safeFetchBinary, log: moduleLog('plugins'),
-          verify: (buffer) => sha256Of(buffer) === String(hit.sha256 || '').toLowerCase()
-        });
-        if (!picked.ok) throw Object.assign(new Error(picked.error), { code: 'E_DOWNLOAD' });
-        return { buffer: picked.buffer };
-      };
-      const result = await installPlugin({
-        id, url: hit.url, sha256: hit.sha256, publisher: hit.publisher || '', signature: hit.signature || '',
-        publishers: getConfig().plugins?.publishers || {},
-        indexMeta: hit,
-        dataDir: DATA_DIR, fetchBinary: download, log: moduleLog('plugins'), previewOnly: true
-      });
-      return json(res, 200, { ok: true, ...result });
-    } catch (error) {
-      return json(res, 400, { ok: false, code: error?.code || '', error: String(error?.message || error) });
-    }
-  });
-
-  router.add('POST', '/api/plugins/install', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    // 在 try 的第一句声明：catch 里要用它，而 let 在 TDZ 里连 typeof 都会抛
-    let replaced = false;
-    try {
-      const id = String(body.id || '').trim();
-      let url = String(body.url || '').trim();
-      let sha256 = String(body.sha256 || '').trim();
-      let source = String(body.source || '').trim();
-      let publisher = '';
-      let signature = '';
-      let hitMirrors = [];
-      let hitMeta = null;
-      if (!url) {
-        if (!id) return json(res, 400, { ok: false, error: '要么给索引里的 id，要么给 url + sha256' });
-        const hit = (await loadPluginIndex()).plugins.find((item) => item.id === id);
-        if (!hit) return json(res, 404, { ok: false, error: `索引里没有 ${id}` });
-        hitMeta = hit;
-        if (hit.compatible === false) {
-          // 装上去也跑不起来（apiVersion / minVersion 对不上）—— 在动手之前就拦住，并说清原因
-          return json(res, 409, { ok: false, error: `这个插件在本机装不了：${hit.reason}` });
-        }
-        // 以索引为准取地址、校验和与签名（不信请求体里那份，索引是唯一真源）
-        url = hit.url;
-        sha256 = hit.sha256;
-        publisher = hit.publisher || '';
-        signature = hit.signature || '';
-        hitMirrors = Array.isArray(hit.mirrors) ? hit.mirrors : [];
-        source = `索引：${hit.source || '未命名'}`;
-      } else if (!source) {
-        source = '手动填写的地址';
-      }
-      const mirrorConfig = pluginMirrorConfig();
-      const download = async (target, maxBytes) => {
-        const picked = await fetchBinaryWithMirrors({
-          url: target, mirrors: hitMirrors, prefixes: mirrorConfig.prefixes,
-          maxBytes, fetchImpl: safeFetchBinary, log: moduleLog('plugins'),
-          // sha256 校验放进候选循环：镜像回 200 + 错误页/旧包时，只有这里能继续试下一条；
-          // 拖到换入前才校验的话，坏候选已经被记成"这条通"，之后每次都先走它
-          verify: (buffer) => sha256Of(buffer) === String(sha256 || '').toLowerCase()
-        });
-        if (!picked.ok) throw Object.assign(new Error(picked.error), { code: 'E_DOWNLOAD' });
-        return { buffer: picked.buffer };
-      };
-      // 只有真的走到"换入前"才代表旧进程被停过；下载/验签/解包失败时不必重排（重排会停掉
-      // 其它插件的进程、打断它们正在进行的工具调用）
-      const result = await installPlugin({
-        id, url, sha256, source, hostVersion: PKG.version, publisher, signature,
-        // 发布者公钥来自本机配置（不是索引 —— 索引给自己签名等于没签）
-        publishers: getConfig().plugins?.publishers || {},
-        dataDir: DATA_DIR, fetchBinary: download, log: moduleLog('plugins'),
-        // 权限面变化时，管理员先在预览里确认；这里校验确认哈希，防止"确认的是旧 diff"
-        expectedDiffHash: String(body.expectedDiffHash || ''),
-        force: body.force === true,
-        // 索引是唯一真源：安装时用它核对"包实际声明的权限"有没有超出索引展示的范围
-        indexMeta: hitMeta,
-        allowIndexMismatch: body.allowIndexMismatch === true,
-        // 升级时先停掉旧进程再换目录（Windows 上 rename 存活进程的 cwd 会失败）
-        beforeReplace: (pluginId) => { replaced = true; return pluginRegistry.stopOne(pluginId); }
-      });
-      auditWrite('plugins.install', `plugins:${result.id}`, { req, version: result.version, upgraded: result.upgraded });
-      // 权限面变了：清对象级批准/待批，并关闭所有写动作开关（保留配额计数，防止用升级刷额度）
-      if (result.upgraded && result.diff?.permissionChanged) {
-        const reset = resetPluginGrants(DATA_DIR, result.id);
-        try {
-          const manifest = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'plugins', result.id, 'plugin.json'), 'utf8'));
-          const actions = (Array.isArray(manifest.approvals) ? manifest.approvals : [])
-            .map((item) => String(item.action || '')).filter(Boolean);
-          if (actions.length) {
-            updateConfig({
-              plugins: { switches: { [result.id]: Object.fromEntries(actions.map((action) => [action, false])) } }
-            });
-          }
-        } catch (error) {
-          log(`[plugins] 升级后关闭写开关失败（相关授权已清空）：${error?.message ?? error}`);
-        }
-        auditWrite('plugins.upgrade', `plugins:${result.id}`, {
-          req, version: result.version, areas: result.diff.areas, summary: result.diff.summary, reset
-        });
-      }
-      // 装完重排一次：让控制台立刻看到新插件（默认未授权，不会自动跑）
-      await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list() });
-    } catch (error) {
-      // 上面为了能换目录才停旧进程：只有真的动过目录失败时才需要按原配置放回去。
-      // 下载超时/sha 不符这类失败发生在换入之前，此时重排纯属误伤（会打断其它插件在途的工具调用）
-      if (replaced) await pluginRegistry.reconfigure().catch(() => {});
-      // 指纹不符时先怀疑"索引是旧的"：目录缓存 10 分钟，而发布方（或用户自己）可能刚更新过索引 ——
-      // 这时包没错、是索引旧了，回一句"校验失败"会让人以为包坏了。清掉缓存让下次读到新的，并把话说明白。
-      //（2026-10-16 实测：索引仓库刚推上去，服务器侧装的还是旧索引，install 就这么失败了。）
-      if (error?.code === 'E_SHA_MISMATCH') {
-        // 清成空壳：key='' 让下一次必然重拉；旧 result 留着也没人读（读的是 key 匹配的那份），
-        // 保留它只会让人以为"旧数据还有用"
-        pluginIndexCache = { key: '', at: 0, result: { plugins: [], skipped: [], sources: [] } };
-        return json(res, 409, {
-          ok: false,
-          code: error.code,
-          error: `${error.message}。目录可能刚更新过（控制台手里的目录最多旧 10 分钟）—— 已刷新，再点一次安装即可。`
-        });
-      }
-      if (['E_UPGRADE_CONFIRM', 'E_UPGRADE_CONFIRM_STALE', 'E_DOWNGRADE', 'E_SAME_VERSION', 'E_INDEX_MISMATCH'].includes(error?.code)) {
-        return json(res, 409, {
-          ok: false, code: error.code, error: error.message, diff: error.diff || null
-        });
-      }
-      return pluginError(res, error);
-    }
-  });
-
-  router.add('POST', '/api/plugins/install-file', async (req, res) => {
-    // "别人发我一个包 / 我自己打了一个包"的最短路径。走 JSON + base64 是为了复用同一条请求体读取
-    // 与错误通道（body 上限单独放宽到 8MB —— 插件包本身限 5MB，base64 膨胀约 1/3）。
-    // 本地文件安装的 sha256 是**算出来给用户核对**的，不是要用户提供：内容就是身份。
-    const body = await readBody(req, 8 * 1024 * 1024).catch((error) => {
-      if (Number(error?.httpStatus) === 413) return { __tooLarge: true };
-      return {};
-    });
-    if (body?.__tooLarge) {
-      return json(res, 413, { ok: false, error: `文件太大：插件包上限 ${MAX_PLUGIN_ARCHIVE_BYTES / 1024 / 1024}MB` });
-    }
-    let replaced = false;
-    try {
-      const encoded = String(body.base64 || '');
-      if (!encoded) return json(res, 400, { ok: false, error: '没有收到文件内容' });
-      const buffer = Buffer.from(encoded, 'base64');
-      if (!buffer.length) return json(res, 400, { ok: false, error: '文件内容解不出来（不是合法的 base64？）' });
-      const fileName = path.basename(String(body.fileName || 'package.tar.gz')).slice(0, 120) || 'package.tar.gz';
-      const result = await installPlugin({
-        tarball: buffer, dataDir: DATA_DIR, hostVersion: PKG.version,
-        source: `本地文件：${fileName}`,
-        publishers: getConfig().plugins?.publishers || {},
-        // 本地包也可能在升级一个正在跑的插件；权限面变化时与其他安装入口同一道确认门槛。
-        // 调用方可以先不带哈希、拿 409 里的 diff.diffHash 带回来重试。
-        expectedDiffHash: String(body.expectedDiffHash || '').trim(),
-        // 同上：本地包也可能是在升级一个正在跑的插件
-        beforeReplace: (pluginId) => { replaced = true; return pluginRegistry.stopOne(pluginId); },
-        log: moduleLog('plugins')
-      });
-      auditWrite('plugins.install-file', `plugins:${result.id}`, { req, version: result.version, upgraded: result.upgraded, fileName });
-      await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, sha256: sha256Of(buffer), fileName, ...pluginRegistry.list() });
-    } catch (error) {
-      // 换入阶段失败时旧进程已被停掉：按原配置放回去（更早的失败没停过任何进程，不重排）
-      if (replaced) await pluginRegistry.reconfigure().catch(() => {});
-      if (['E_UPGRADE_CONFIRM', 'E_UPGRADE_CONFIRM_STALE'].includes(error?.code)) {
-        return json(res, 409, {
-          ok: false, code: error.code, error: error.message, diff: error.diff || null
-        });
-      }
-      return pluginError(res, error);
-    }
-  });
-
-  router.add('POST', '/api/plugins/rollback', async (req, res) => {
-    // 升级后悔药：回退到上一次升级前的版本（备份是升级时自动留的，见 install.js）
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body.id || '').trim();
-    try {
-      await pluginRegistry.stopOne(id);       // 先收进程再换目录（Windows 上不能 rename 存活进程的 cwd）
-      const result = rollbackPlugin({ id, dataDir: DATA_DIR, log: moduleLog('plugins') });
-      auditWrite('plugins.rollback', `plugins:${id}`, { req, version: result.version });
-      await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list() });
-    } catch (error) {
-      // 回退失败时**也要**重排一次：stopOne 已经把进程收掉了，不重排的话这个插件会一直停在
-      // "已停"直到下次配置变更或重启 —— 用户只看到一条"回退失败"，不知道插件被一并停掉了
-      await pluginRegistry.reconfigure().catch(() => {});
-      return pluginError(res, error);
-    }
-  });
-
-  router.add('POST', '/api/plugins/uninstall', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    // 破坏性操作统一 confirm 门槛（与全站口径一致）
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '卸载插件需要 body.confirm === true' });
-    const id = String(body.id || '').trim();
-    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
-    try {
-      // 先停掉这个插件的进程再挪目录：子进程的 cwd 就是插件目录，Windows 上"作为存活进程 cwd 的
-      // 目录"不能被 rename（EPERM/EBUSY），会出现"点卸载报错、插件还在"。Linux 上虽然能挪，
-      // 但让一个已卸载插件的进程继续跑也没有道理。
-      await pluginRegistry.stopOne(id);
-      // 卸载 = 这个安装实例结束：enabledIds/动作开关、对象级批准、凭据、待批与备份都不能
-      // 留给同 id 的下一个包（2026-10 审查 P1）。配置先改，避免卸载后重装即自动运行。
-      const plugins = getConfig().plugins || {};
-      const enabledIds = (Array.isArray(plugins.enabledIds) ? plugins.enabledIds : [])
-        .filter((value) => value !== id);
-      const switches = { ...(plugins.switches || {}) };
-      delete switches[id];
-      const purgeData = body?.purgeData === true;
-      const nextPlugins = { enabledIds, switches: { __replace__: switches } };
-      if (purgeData) {
-        const settings = { ...(plugins.settings || {}) };
-        delete settings[id];
-        nextPlugins.settings = { __replace__: settings };
-      }
-      updateConfig({ plugins: nextPlugins });
-      const result = uninstallPlugin({ id, dataDir: DATA_DIR, purgeData });
-      clearPluginGrants(DATA_DIR, id);
-      clearPluginSecrets(DATA_DIR, id);
-      auditWrite('plugins.uninstall', `plugins:${id}`, { req, purgeData, dataPurged: result.dataPurged });
-      await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list() });
-    } catch (error) {
-      // stopOne 已经把进程收掉了：卸载失败（Windows 上目录被占用等）时按原配置放回去，
-      // 否则插件会一直停在"已停"直到下次配置变更或重启（与 rollback 的 catch 同口径）
-      await pluginRegistry.reconfigure().catch(() => {});
-      return pluginError(res, error);
-    }
-  });
-
-  router.add('GET', '/api/skills', async (req, res) => {
-    const registry = getSkillRegistry();
-    const cfg = getConfig().skills || {};
-    const known = new Set(registry.list().map((skill) => skill.id));
-    const enabledIds = new Set((Array.isArray(cfg.enabledIds) ? cfg.enabledIds : [])
-      .map((id) => String(id || '').trim()).filter((id) => known.has(id)));
-    const staleEnabledIds = (Array.isArray(cfg.enabledIds) ? cfg.enabledIds : [])
-      .map((id) => String(id || '').trim()).filter((id) => id && !known.has(id));
-    const perChat = cfg.perChat && typeof cfg.perChat === 'object' ? cfg.perChat : {};
-    return json(res, 200, {
-      ok: true,
-      enabled: cfg.enabled === true,
-      enabledIds: [...enabledIds],
-      staleEnabledIds,
-      perChat,
-      skills: registry.list().map((skill) => ({
-        ...skill,
-        enabled: enabledIds.has(skill.id),
-        perChat: Object.fromEntries(Object.entries(perChat)
-          .filter(([, ids]) => Array.isArray(ids) && ids.includes(skill.id))
-          .map(([chatKey]) => [chatKey, true]))
-      })),
-      errors: registry.errors
-    });
-  });
-  router.add('GET', '/api/skills/market', async (req, res, params, url) => {
-    try {
-      const result = await listMarketSkills({ force: url.searchParams.get('refresh') === '1' });
-      return json(res, 200, { ...result, indexUrl: marketIndexUrl() });
-    } catch (error) {
-      return json(res, 502, { ok: false, error: String(error?.message ?? error), indexUrl: marketIndexUrl() });
-    }
-  });
-  router.add('GET', '/api/skills/market/preview', async (req, res, params, url) => {
-    const id = String(url.searchParams.get('id') || '').trim();
-    if (!id) return json(res, 400, { ok: false, error: '缺少技能 id' });
-    try { return json(res, 200, await previewMarketSkill(id, { full: url.searchParams.get('full') === '1' })); }
-    catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', '/api/skills/market/install', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const result = await installMarketSkill({
-        id: body.id,
-        expectedSha256: body.expectedSha256,
-        confirm: body.confirm === true
-      });
-      auditWrite('skills.market.install', `skill:${result.skill?.id || body.id}`, { req, version: result.skill?.version || '', updated: result.updated === true });
-      emit('skills-update', { phase: 'market-install', id: result.skill?.id || body.id });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', '/api/skills/market/uninstall', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const result = await uninstallMarketSkill({ id: body.id, confirm: body.confirm === true });
-      auditWrite('skills.market.uninstall', `skill:${result.id}`, { req });
-      emit('skills-update', { phase: 'market-uninstall', id: result.id });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-
-  router.add('GET', '/api/skills/:id', async (req, res, params) => {
-    const registry = getSkillRegistry();
-    const skill = registry.get(params.id);
-    if (!skill) return json(res, 404, { ok: false, error: '技能不存在' });
-    const cfg = getConfig().skills || {};
-    const perChat = cfg.perChat && typeof cfg.perChat === 'object' ? cfg.perChat : {};
-    return json(res, 200, {
-      ok: true,
-      skill: {
-        ...skill,
-        instructions: skill.instructions,
-        enabled: (Array.isArray(cfg.enabledIds) ? cfg.enabledIds : []).includes(skill.id),
-        perChat: Object.fromEntries(Object.entries(perChat)
-          .filter(([, ids]) => Array.isArray(ids) && ids.includes(skill.id))
-          .map(([chatKey]) => [chatKey, true]))
-      }
-    });
-  });
-
-  router.add('POST', '/api/skills/reload', async (req, res) => {
-    const registry = getSkillRegistry();
-    registry.reload();
-    auditWrite('skills.reload', 'skills', { req, skills: registry.list().length, errors: registry.errors.length });
-    return json(res, 200, { ok: true, skills: registry.list(), errors: registry.errors });
-  });
-  router.add('POST', '/api/skills/state', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const registry = getSkillRegistry();
-      const known = new Set(registry.list().map((skill) => skill.id));
-      const enabled = body.enabled === true;
-      const enabledIds = [];
-      const seen = new Set();
-      for (const raw of Array.isArray(body.enabledIds) ? body.enabledIds : []) {
-        const id = String(raw || '').trim();
-        if (!id || seen.has(id)) continue;
-        // 技能目录被删除/manifest 变坏时，配置里可能还留着 id。这里丢掉而不是 400，
-        // 否则 UI 没有对应的勾选框可取消，整页会永远保存失败。
-        if (!known.has(id)) continue;
-        seen.add(id);
-        enabledIds.push(id);
-      }
-      const perChat = {};
-      if (body.perChat && typeof body.perChat === 'object' && !Array.isArray(body.perChat)) {
-        for (const [chatKey, ids] of Object.entries(body.perChat)) {
-          if (!/^(group|private):\d+$/.test(chatKey) || !Array.isArray(ids)) continue;
-          const list = [];
-          for (const raw of ids) {
-            const id = String(raw || '').trim();
-            if (!id || !known.has(id)) continue;
-            if (!list.includes(id)) list.push(id);
-          }
-          perChat[chatKey] = list;
-        }
-      }
-      updateConfig({ skills: { enabled, enabledIds, perChat: { __replace__: perChat } } });
-      auditWrite('skills.state', 'skills', { req, enabled, count: enabledIds.length, perChat: Object.keys(perChat).length });
-      emit('skills-update', { enabled, enabledIds, perChat });
-      return json(res, 200, { ok: true, enabled, enabledIds, perChat });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message || error) });
-    }
-  });
-
-  router.add('GET', '/api/memory/search', async (req, res, params, url) => {
-    const query = String(url.searchParams.get('query') || '').trim().slice(0, 120);
-    if (!query) return json(res, 400, { ok: false, error: 'query 不能为空' });
-    const chatKey = String(url.searchParams.get('chatKey') || '').trim();
-    if (chatKey && !/^(group|private):\d+$/.test(chatKey)) {
-      return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
-    }
-    const limit = Math.max(1, Math.min(20, Number(url.searchParams.get('limit')) || 8));
-    try {
-      const found = memory.search(chatKey, query, { limit });
-      return json(res, 200, {
-        ok: true,
-        query,
-        chatKey,
-        total: found.total,
-        mode: found.index?.available ? 'fts5' : 'fallback',
-        results: (found.results || []).map(({ sourceChatKeys: _sources, ...entry }) => entry)
-      });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message || error) });
-    }
-  });
-
-  router.add('GET', '/api/memory-files', async (req, res) => {
-    const files = memory.listChats().map((chatKey) => {
-      const members = memory.members(chatKey);
-      const handoff = memory.getHandoff(chatKey);
-      const impressionCount = members.reduce((n, m) => n + m.impressions.length, 0);
-      return {
-        chatKey,
-        impressionCount,
-        memberCount: members.length,
-        hasHandoff: Boolean(handoff),
-        handoffExpiresAt: handoff?.expiresAt || 0,
-        updatedAt: Math.max(
-          Number(handoff?.updatedAt) || 0,
-          0,
-          ...members.map((m) => Number(m.updatedAt) || 0)
-        )
-      };
-    });
-    // 白名单里的群没有记忆也要显示
-    const seen = new Set(files.map((f) => f.chatKey));
-    // 补上白名单里还没有记忆的会话（缺字段也要有默认值，前端统一处理）
-    for (const gid of idList(getConfig().allow?.groups)) {
-      const key = `group:${String(gid)}`;
-      if (!seen.has(key)) {
-        files.push({
-          chatKey: key, impressionCount: 0, memberCount: 0,
-          hasHandoff: false, handoffExpiresAt: 0, updatedAt: 0, consolidating: false
-        });
-      }
-    }
-    for (const uid of idList(getConfig().allow?.private)) {
-      const key = `private:${String(uid)}`;
-      if (!seen.has(key)) {
-        files.push({
-          chatKey: key, impressionCount: 0, memberCount: 0,
-          hasHandoff: false, handoffExpiresAt: 0, updatedAt: 0, consolidating: false
-        });
-      }
-    }
-    // 带上"正在整理"状态：切页签后前端靠它恢复提示，
-    // 否则用户切走再切回，完全看不出整理是在跑还是已经中断。
-    const busy = orchestrator.consolidating;
-    for (const f of files) f.consolidating = busy.has(f.chatKey);
-    files.sort((a, b) => b.updatedAt - a.updatedAt);
-    return json(res, 200, { files, consolidating: [...busy], stats: memory.stats() });
-  });
-  router.add('POST', '/api/memory-files/consolidate', async (req, res) => {
-    try {
-      const body = await readBody(req).catch(() => ({}));
-      const chatKey = String(body.chatKey || '');
-      if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
-
-      // 可选：只整理指定的群友（QQ 号数组）。不传 = 整理全群。
-      // 传了但记忆里还没有此人时，会从聊天记录里新建印象。
-      let userIds = null;
-      if (body.userIds != null) {
-        const arr = Array.isArray(body.userIds) ? body.userIds : [body.userIds];
-        userIds = arr.map((u) => String(u ?? '').trim()).filter((u) => /^\d{1,15}$/.test(u));
-        if (!userIds.length) return json(res, 400, { ok: false, error: 'userIds 需为 QQ 号数组' });
-      }
-      // 手动触发：跳过门槛/冷却检查，且对零印象的人启用"新建印象"模式
-      const force = body.force !== false;
-
-      if (orchestrator.consolidating.has(chatKey)) return json(res, 409, { ok: false, error: '该群已在整理中' });
-      orchestrator.consolidating.add(chatKey);
-      emit('memory-update', { chatKey, phase: 'consolidate-start', userIds });
-      orchestrator.consolidateMemoryForChat(chatKey, { userIds, force })
-        .then((result) => {
-          emit('memory-update', { chatKey, phase: 'consolidate-done', ...(result || {}) });
-        })
-        .catch((error) => {
-          emit('memory-update', { chatKey, phase: 'consolidate-error', error: String(error?.message ?? error) });
-        })
-        .finally(() => orchestrator.consolidating.delete(chatKey));
-      return json(res, 202, { ok: true, started: true });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-
-  router.add('GET', /^\/api\/memory-files\/(group|private)_(\d+)$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    return json(res, 200, {
-      ...memory.query(chatKey),
-      members: memory.members(chatKey),
-      handoff: memory.getHandoff(chatKey)
-    });
-  });
-  router.add('PUT', /^\/api\/memory-files\/(group|private)_(\d+)\/handoff$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const handoff = memory.setHandoff(chatKey, body, { sourceSessionId: 'console' });
-      emit('memory-update', { chatKey, phase: handoff ? 'handoff-update' : 'handoff-clear' });
-      return json(res, 200, { ok: true, handoff });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', /^\/api\/memory-files\/(group|private)_(\d+)\/handoff$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    memory.clearHandoff(chatKey);
-    emit('memory-update', { chatKey, phase: 'handoff-clear' });
-    return json(res, 200, { ok: true });
-  });
-  router.add('DELETE', /^\/api\/memory-files\/global\/members\/(\d{1,15})$/, async (req, res, params) => {
-    // 破坏性操作统一 confirm 门槛（与全站口径一致）：global 版跨所有会话删除。
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '删除人物记忆需要 body.confirm === true' });
-    const content = String(body?.content ?? '').trim();
-    // 带 content = 只删这一条；不带 = 删除这个人的全部印象（原有语义）。
-    const removed = content
-      ? memory.remove('', 'memberImpression', { userId: params[1], content })
-      : memory.removeMember('', params[1]);
-    emit('memory-update', { chatKey: '' });
-    return json(res, 200, { ok: true, removed });
-  });
-  router.add('PUT', /^\/api\/memory-files\/(group|private)_(\d+)\/members\/(\d+)$/, async (req, res, params) => {
-    const chatKey = `${params[1]}:${params[2]}`;
-    const body = await readBody(req).catch(() => ({}));
-    try {
-      const member = memory.editMemberImpression(chatKey, {
-        userId: params[3],
-        name: String(body.name ?? ''),
-        // 只在显式传了 note 时才动备注：缺席＝保留现值（省略即删除会把称呼静默清掉，2026-10-13 审查）
-        ...(Object.prototype.hasOwnProperty.call(body, 'note') ? { note: body.note ?? '' } : {}),
-        impressions: body.impressions ?? []
-      });
-      emit('memory-update', { chatKey });
-      return json(res, 200, { ok: true, member });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', /^\/api\/memory-files\/(group|private)_(\d+)\/members\/(\d+)$/, async (req, res, params) => {
-    // 同上：删除成员印象也要 confirm（该路径的快照对 name-only 成员缺位，误删更难恢复）。
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '删除成员印象需要 body.confirm === true' });
-    const chatKey = `${params[1]}:${params[2]}`;
-    memory.removeMember(chatKey, params[3]);
-    emit('memory-update', { chatKey });
-    return json(res, 200, { ok: true });
-  });
-
-  // ── 长期语义记忆（实验模块，数据与向量服务归 LivingMemoryRuntime 所有） ─────
-  const livingMemoryScopes = (values) => [...new Set((Array.isArray(values) ? values : [values])
-    .map((value) => String(value || '').trim())
-    .filter((value) => /^(group|private):\d+$/.test(value) || value === 'owner-global'))];
-  router.add('GET', '/api/living-memory/status', async (req, res) => {
-    try {
-      const status = await livingMemory.status();
-      return json(res, 200, { ok: true, config: getConfig().livingMemory || {}, status });
-    } catch (error) {
-      // 服务暂未部署/令牌未配不是控制台 500：页面要能显示配置并解释为什么不可用。
-      return json(res, 200, { ok: true, config: getConfig().livingMemory || {}, status: { ok: false, error: String(error?.message ?? error) } });
-    }
-  });
-  router.add('GET', '/api/living-memory/memories', async (req, res, params, url) => {
-    const scopes = livingMemoryScopes(url.searchParams.getAll('scopeKey'));
-    if (!scopes.length) return json(res, 400, { ok: false, error: '至少提供一个 scopeKey' });
-    try {
-      const result = await livingMemory.list({
-        scopeKeys: scopes,
-        status: url.searchParams.get('status') || '',
-        type: url.searchParams.get('type') || '',
-        query: url.searchParams.get('query') || '',
-        limit: Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50)),
-        offset: Math.max(0, Number(url.searchParams.get('offset')) || 0)
-      });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 502, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', '/api/living-memory/recall-test', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const chatKey = String(body.chatKey || '').trim();
-    if (!/^(group|private):\d+$/.test(chatKey) && chatKey !== 'owner-global') return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
-    const query = String(body.query || '').trim();
-    if (!query) return json(res, 400, { ok: false, error: '请输入测试问题或关键词' });
-    try {
-      const result = await livingMemory.recallTest({ chatKey, query, limit: body.limit });
-      return json(res, 200, { ok: true, ...result });
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', '/api/living-memory/memories', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const scopeKey = String(body.scopeKey || '').trim();
-    if (!livingMemoryScopes([scopeKey]).length) return json(res, 400, { ok: false, error: 'scopeKey 格式错误' });
-    // 白名单而不是展开请求体：allowSensitive / status / 任意未知键都不能从控制台绕过服务端策略。
-    const payload = {
-      scopeKey,
-      type: body.type,
-      summary: body.summary,
-      content: body.content,
-      importance: body.importance,
-      confidence: body.confidence,
-      tags: body.tags,
-      entities: body.entities,
-      relations: body.relations,
-      source: { origin: 'manual-console', createdAt: Date.now() }
-    };
-    try {
-      const result = await livingMemory.create(payload);
-      emit('living-memory-update', { chatKey: scopeKey, phase: 'manual-create', memoryId: result?.memory?.id || '' });
-      auditWrite('living-memory.create', `living-memory:${scopeKey}`, { req, type: payload.type || 'episode' });
-      return json(res, 201, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('GET', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)$/, async (req, res, params) => {
-    try { return json(res, 200, await livingMemory.get(params[1])); }
-    catch (error) { return json(res, 404, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('DELETE', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)$/, async (req, res, params) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '删除长期记忆需要 body.confirm === true' });
-    try {
-      const result = await livingMemory.remove(params[1]);
-      auditWrite('living-memory.delete', `living-memory:${params[1]}`, { req });
-      emit('living-memory-update', { phase: 'delete', memoryId: params[1] });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/archive$/, async (req, res, params) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '归档长期记忆需要 body.confirm === true' });
-    try {
-      const result = await livingMemory.archive(params[1]);
-      auditWrite('living-memory.archive', `living-memory:${params[1]}`, { req });
-      emit('living-memory-update', { phase: 'archive', memoryId: params[1] });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('POST', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/restore$/, async (req, res, params) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '恢复长期记忆需要 body.confirm === true' });
-    try {
-      const result = await livingMemory.unarchive(params[1]);
-      auditWrite('living-memory.restore', `living-memory:${params[1]}`, { req });
-      emit('living-memory-update', { phase: 'restore', memoryId: params[1] });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
-  });
-  router.add('GET', '/api/living-memory/graph', async (req, res, params, url) => {
-    const scopes = livingMemoryScopes(url.searchParams.getAll('scopeKey'));
-    if (!scopes.length) return json(res, 400, { ok: false, error: '至少提供一个 scopeKey' });
-    try {
-      const result = await livingMemory.graph({
-        scopeKeys: scopes,
-        memoryId: String(url.searchParams.get('memoryId') || ''),
-        limit: Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 160))
-      });
-      return json(res, 200, result);
-    } catch (error) { return json(res, 502, { ok: false, error: String(error?.message ?? error) }); }
-  });
-
-  router.add('GET', '/api/providers', async (req, res) => {
-    const providers = currentProviders().map((p) => ({
-      id: p.id,
-      displayName: p.displayName,
-      baseURL: p.baseURL,
-      apiKey: '',              // 不把真实 Key 暴露给 UI；有 Key 用 hasKey 表示
-      apiKeyFrom: p.apiKeyFrom || '',
-      needsBaseUrl: p.needsBaseUrl === true,
-      hasKey: !!p.apiKey,
-      anthropicOrigin: p.anthropicOrigin === true,
-      models: p.models,
-      modelNames: p.modelNames || {},
-      preset: p.preset || '',
-      thinkingProbe: p.thinkingProbe || null
-    }));
-    return json(res, 200, { providers });
-  });
-  router.add('GET', '/api/providers/key', async (req, res, params, url) => {
-    if (!keyEndpointAllowed(req)) {
-      return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
-    }
-    const pid = String(url.searchParams.get('providerId') || '');
-    const p = currentProviders().find((x) => x.id === pid);
-    return json(res, 200, { apiKey: p?.apiKey || '' });
-  });
-  router.add('POST', '/api/asr/models', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const baseUrl = String(body.baseUrl || cfgNow.asr?.baseUrl || '').trim();
-      const submitted = String(body.apiKey ?? '').trim();
-      const trimSlash = (value) => String(value || '').trim().replace(/[/]+$/, '').toLowerCase();
-      const knownBase = trimSlash(cfgNow.asr?.baseUrl);
-      const target = trimSlash(baseUrl);
-      const apiKey = (submitted && submitted !== '******')
-        ? submitted
-        : (target && target === knownBase ? asrApiKey(cfgNow) : '');
-      const all = await fetchModelsFrom(baseUrl, apiKey);
-      // 用户要求：只取语音模型。列表里通常混着几百个 LLM，全给出来等于找不到东西。
-      // 正向：转写类（whisper / sensevoice / ASR / speech-to-text / 转写…）。
-      //   ⚠️ 关键词表必然不完备：硅基流动的 XingChenGSR 是语音识别，名字里却没有 asr
-      //   （用户 2026-09-26 反馈"明明有 8 个只给 5 个"）。所以除了补关键词，
-      //   还要把"被排除的 TTS"如实回报给界面 —— 用户能看出少的是哪几个、为什么少。
-      const isAsrModel = (id) => /whisper|sensevoice|teleasr|funaudio|asr|gsr|paraformer|transcri|transcribe|audio.?to.?text|speech.?to.?text|recogni|stt|speech/i.test(id);
-      // 反向：TTS（文字转语音）不是我们要的 —— 把 CosyVoice、tts-1、voice-clone 之类列进来只会误导。
-      const isTtsModel = (id) => /tts|text.?to.?speech|cosyvoice|voice.?clone|voice.?design|speech.?synth|music|sing/i.test(id);
-      const speech = all.filter((id) => isAsrModel(id) && !isTtsModel(id)).sort((a, b) => a.localeCompare(b));
-      const tts = all.filter((id) => isTtsModel(id)).sort((a, b) => a.localeCompare(b));
-      // 一家都没认出来时退回全量（宁可给多，也别让人以为"拉不到"），并如实说明
-      const models = speech.length ? speech : [...all].sort((a, b) => a.localeCompare(b));
-      return json(res, 200, {
-        ok: true,
-        models,
-        speechOnly: speech.length > 0,
-        speechCount: speech.length,
-        // 被排除的语音合成模型：界面据此说明"少的那几个是什么"（只给前 3 个名字，别把提示撑满）
-        ttsCount: tts.length,
-        ttsSample: tts.slice(0, 3),
-        total: all.length
-      });
-    } catch (error) {
-      return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/asr/install-status', async (req, res) => {
-    if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
-    return json(res, 200, asrInstallSnapshot());
-  });
-  router.add('POST', '/api/asr/uninstall', async (req, res) => {
-    if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
-    // 与全站其它破坏性端点同一口径：必须显式 confirm —— 这是不可逆删除（约 500MB 模型与构建产物），
-    // 之前唯一的防线是前端对话框，body 可为空的直接请求会把它们全删掉（2026-10-07 复审 P3）。
-    const body = await readBody(req);
-    if (body?.confirm !== true) return json(res, 409, { error: '删除本机转写需要显式确认' });
-    if (asrInstall.running) return json(res, 409, { error: '安装还在进行中，等它跑完再删' });
-    try {
-      const removed = removeLocalAsrFiles();
-      // 破坏性操作留一行日志：以后能查"什么时候、删了哪个目录、放了多少空间"
-      log(`[asr] 已完整卸载本机转写：${removed.managedDir}（释放 ${Math.round((removed.freedBytes || 0) / 1048576)}MB）`);
-      return json(res, 200, { ok: true, ...removed, status: asrInstallSnapshot() });
-    } catch (error) {
-      return json(res, 500, { error: `删除失败：${String(error?.message ?? error)}` });
-    }
-  });
-  router.add('POST', '/api/asr/install', async (req, res) => {
-    if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
-    if (isContainerRuntime()) {
-      return json(res, 409, {
-        error: '容器模式不支持在容器内编译 whisper.cpp（镜像里没有 git/cmake/编译工具）。'
-          + '请改用托管 ASR，或构建包含 whisper.cpp 的自定义镜像。'
-      });
-    }
-    try {
-      const started = startAsrInstall();
-      auditWrite('asr.install', '', { req, after: started });
-      return json(res, 202, started);
-    } catch (error) {
-      auditWrite('asr.install', '', { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, 409, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/asr-key', async (req, res, params, url) => {
-    if (!keyEndpointAllowed(req)) {
-      return json(res, 403, { error: '请求来源不被信任，已拒绝读取明文密钥。' });
-    }
-    const field = String(url.searchParams.get('field') || 'apiKey');
-    const allowed = { apiKey: 'apiKey', secretId: 'secretId', secretKey: 'secretKey' };
-    if (!Object.hasOwn(allowed, field)) return json(res, 400, { error: `未知字段：${field}` });
-    const cfgNow = getConfig();
-    const cred = asrCredentials(cfgNow);
-    // 表单里刚切换、还没保存时，「显示」要回显**目标槽位**那把（与界面上的掩码同源）：
-    // 直接按已保存配置解析会把上一家的明文显示在新服务名下（2026-10-02 全量审查实测），
-    // 用户点一下「显示」再保存就把那家 Key 绑给了新的服务。目标槽位与当前槽位不一致时
-    // 只认"明确属于目标槽位"的（映射 + 归属钉匹配），归属未知的不给别家回显。
-    const slot = String(url.searchParams.get('slot') || '').trim().toLowerCase();
-    if (slot && slot !== String(cred.slot || '').toLowerCase()) {
-      const target = asrCredentialForSlot(cfgNow.asr, field, slot);
-      return json(res, 200, { apiKey: target.owned ? target.value : '' });
-    }
-    // 回读的是**当前这家实际会用的**那一把（活动槽，或"这家存过的"）
-    return json(res, 200, { apiKey: cred[field] || '' });
-  });
-  router.add('POST', '/api/providers/fetch-models', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const baseUrl = String(body.baseUrl || cfgNow.api.baseUrl || '');
-      const submitted = String(body.apiKey ?? '').trim();
-      // 掩码 / 空 → 用服务端已保存的 Key，但仅限配置里已知的地址（见 storedKeyAllowedFor）。
-      const apiKey = (submitted && submitted !== '******')
-        ? submitted
-        : (storedKeyAllowedFor(cfgNow, baseUrl) ? String(cfgNow.api.apiKey || '') : '');
-      const models = await fetchModelsFrom(baseUrl, apiKey);
-      return json(res, 200, { ok: true, models });
-    } catch (error) {
-      return json(res, 502, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers/test-one', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const result = await testOneProvider({
-        providerId: String(body.providerId ?? ''),
-        baseUrl: String(body.baseUrl ?? ''),
-        apiKey: String(body.apiKey ?? '')
-      });
-      return json(res, 200, { ok: true, result });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers/test-chat', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const submitted = String(body.apiKey ?? '').trim();
-      const baseUrl = String(body.baseUrl ?? '');
-      // 掩码 / 空 → 说明客户端没有新 Key，用服务端已保存的；但只发往配置里已知的地址
-      // （见 storedKeyAllowedFor：否则等于把明文 Key 送到调用方指定的任意主机）。
-      const apiKey = (submitted && submitted !== '******')
-        ? submitted
-        : (storedKeyAllowedFor(cfgNow, baseUrl) ? resolveApiKey(cfgNow) : '');
-      const result = await testModelChat({
-        baseUrl,
-        apiKey,
-        model: String(body.model ?? '')
-      });
-      return json(res, 200, { ok: true, result });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers/probe-thinking', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      // 支持用"未保存的当前选择"实测：thinking 传字符串或按用途对象；
-      // extraBody 传对象。类型不合法一律忽略（回落到已保存配置）。
-      const thinkingInput = (typeof body.thinking === 'string'
-        || (body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)))
-        ? body.thinking : undefined;
-      const extraInput = (body.extraBody && typeof body.extraBody === 'object' && !Array.isArray(body.extraBody))
-        ? body.extraBody : undefined;
-      const baseUrlIn = String(body.baseUrl ?? '');
-      const submitted = String(body.apiKey ?? '').trim();
-      // 与「测试连通性」「获取列表」同一条守卫：掩码/空 Key 时只把服务端已存的明文 Key
-      // 发给配置里已知的地址——不能因为调用方随手填个地址就把 Key 送出去（终审发现漏了这条）。
-      const apiKeyResolved = (submitted && submitted !== '******')
-        ? submitted
-        : (storedKeyAllowedFor(getConfig(), baseUrlIn || getConfig().api.baseUrl) ? resolveApiKey(getConfig()) : '');
-      const result = await probeThinking({
-        providerId: String(body.providerId ?? ''),
-        model: String(body.model ?? ''),
-        thinking: thinkingInput,
-        extraBody: extraInput,
-        baseUrl: baseUrlIn,
-        apiKey: apiKeyResolved
-      });
-      return json(res, 200, { ok: true, result });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const r = upsertProvider({
-        baseUrl: String(body.baseUrl ?? ''),
-        apiKey: String(body.apiKey ?? ''),
-        models: body.models || [],
-        preset: String(body.preset ?? '')
-      });
-      auditWrite('providers.upsert', String(r.provider?.id ?? ''), { req, after: sanitizeProvider(r.provider) });
-      return json(res, 200, { ok: true, ...r, provider: sanitizeProvider(r.provider) });
-    } catch (error) {
-      auditWrite('providers.upsert', '', { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers/models', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const p = addModelsToProvider(String(body.providerId ?? ''), body.models || []);
-      if (!p) return json(res, 404, { ok: false, error: '提供商不存在' });
-      auditWrite('providers.models.add', String(body.providerId ?? ''), { req, after: sanitizeProvider(p) });
-      return json(res, 200, { ok: true, provider: sanitizeProvider(p) });
-    } catch (error) {
-      auditWrite('providers.models.add', '', { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', '/api/providers/models', async (req, res) => {
-    try {
-      const body = await readBody(req);
-      const p = removeModelFromProvider(String(body.providerId ?? ''), String(body.modelId ?? ''));
-      if (!p) return json(res, 404, { ok: false, error: '提供商或模型不存在' });
-      auditWrite('providers.models.remove', String(body.providerId ?? ''), { req, after: sanitizeProvider(p) });
-      return json(res, 200, { ok: true, provider: sanitizeProvider(p) });
-    } catch (error) {
-      auditWrite('providers.models.remove', '', { req, ok: false, error: String(error?.message ?? error) });
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/providers/set-key', async (req, res) => {
-    const body = await readBody(req);
-    const updated = setProviderKey(String(body.providerId ?? ''), String(body.apiKey ?? ''));
-    if (!updated) return json(res, 404, { ok: false, error: '提供商不存在' });
-    // 只记 hasKey（明文 Key 由 core 的脱敏链兜底，即使误传也不会落盘）
-    auditWrite('providers.key.set', String(body.providerId ?? ''), { req, after: { hasKey: !!updated.apiKey } });
-    return json(res, 200, { ok: true, hasKey: !!updated.apiKey });
-  });
-  router.add('POST', '/api/providers/test-all', async (req, res) => {
-    const results = await testAllProviders(currentProviders());
-    const okCount = Object.values(results).filter((r) => r.ok).length;
-    return json(res, 200, { ok: true, results, okCount, total: Object.keys(results).length });
-  });
   router.add('POST', '/api/vision/scan', async (req, res) => {
     // 读体放在守卫**之前**：检查与置位之间有 await 时，两个并发请求会双双通过 409 守卫、
     // 把要花钱的模型探测跑两遍并交错覆盖结果（2026-10-03 全量审查）。顺序与 /api/memory-files/consolidate 一致。
@@ -4495,421 +2708,20 @@ export function createApp({
       .finally(() => { visionScan.running = false; });
     return json(res, 202, { ok: true, started: true });
   });
-  router.add('GET', '/api/tts/key', async (req, res) => {
-    const cfgNow = getConfig();
-    // 显示当前这家的明文 Key（与模型 API 的「显示密钥」同一道守卫：本机控制台或带令牌）
-    if (!keyEndpointAllowed(req)) return json(res, 403, { ok: false, error: '只能在控制台里查看密钥' });
-    const svcId = String(new URL(req.url, 'http://127.0.0.1').searchParams.get('service') || '');
-    const key = ttsKeyFor(cfgNow.tts, svcId);
-    return json(res, 200, { ok: true, apiKey: key });
-  });
-  router.add('POST', '/api/tts/models', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const provider = String(body.provider || cfgNow.tts?.provider || 'openai').trim().toLowerCase();
-      if (provider !== 'openai') {
-        // 火山（v1/v3）与 MiniMax 没有"列模型"的公开接口：模型名/音色按服务商文档内置。
-        // 这里如实说明该填什么，而不是回空列表让界面显示"共 0 个"（2026-09-28 用户实测反馈）。
-        const svc = ttsServiceOfBaseUrl(body.baseUrl || cfgNow.tts?.baseUrl || '')
-          || TTS_SERVICES.find((s) => s.provider === provider);
-        return json(res, 200, {
-          ok: true,
-          models: [],
-          ttsOnly: false,
-          unsupported: true,
-          total: 0,
-          note: svc?.note || '这一家没有可拉的模型列表：按服务商文档填模型名与音色。'
-        });
-      }
-      const baseUrl = String(body.baseUrl || cfgNow.tts?.baseUrl || '').trim();
-      const submitted = String(body.apiKey ?? '').trim();
-      const norm = (v) => String(v || '').trim().replace(/[/]+$/, '').toLowerCase();
-      const apiKey = (submitted && submitted !== '******')
-        ? submitted
-        : (norm(baseUrl) === norm(cfgNow.tts?.baseUrl) ? ttsKeyFor(cfgNow.tts) : '');
-      const all = await fetchModelsFrom(baseUrl, apiKey);
-      const isTtsModel = (id) => {
-        const name = String(id);
-        if (/whisper|sensevoice|asr|recognition|stt|transcri/i.test(name)) return false;   // ASR 不是 TTS
-        return /tts|text.?to.?speech|speech.?synth|cosyvoice|moss|voice/i.test(name);
-      };
-      const models = all.filter(isTtsModel).sort((a, b) => a.localeCompare(b));
-      return json(res, 200, {
-        ok: true,
-        models: models.length ? models : [...all].sort((a, b) => a.localeCompare(b)),
-        ttsOnly: models.length > 0,
-        total: all.length
-      });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/tts/test', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const text = String(body.text ?? '').trim().slice(0, 120) || '你好呀，我是群里的小鲸鱼，这是一条试听。';
-      if (cfgNow.tts?.enabled !== true) return json(res, 400, { ok: false, error: '语音回复未启用（勾上并保存后再试听）' });
-      const { buffer, format } = await synthesizeSpeech({ cfg: cfgNow.tts, text });
-      return json(res, 200, { ok: true, format, audio: buffer.toString('base64') });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
+  registerMediaSettingsRoutes(router, { json, readBody, getConfig, keyEndpointAllowed });
+
+  registerPriceRoutes(router, {
+    json, readBody, getConfig, updateConfig, auditWrite, modelPricesPayload
   });
 
-  // 显示「图片生成」当前生效的明文 Key（与 TTS/模型 API 同一道守卫：本机控制台或带令牌）。
-  // 2026-09-30 审查：界面上有「显示」按钮却没有这条路由，点了没反应、已存的 Key 读不回来。
-  router.add('GET', '/api/imagegen/presets', async (req, res) => json(res, 200, { ok: true, services: IMAGEGEN_SERVICES }));
+  registerOnebotRoutes(router, { json, getConfig, onebot });
 
-  router.add('GET', '/api/imagegen/key', async (req, res, params, url) => {
-    if (!keyEndpointAllowed(req)) return json(res, 403, { ok: false, error: '只能在控制台里查看密钥' });
-    const cfgNow = getConfig();
-    // 同 /api/asr-key：表单里换到**别的主机**（还没保存）时，回显那个主机存过的那把；
-    // 按已保存配置解析会把当前那家的明文显示在新选的主机名下（2026-10-02 全量审查）。
-    const askedHost = String(url.searchParams.get('host') || '').trim().toLowerCase();
-    const effHost = imageGenEffectiveHost(cfgNow.imageGen, cfgNow.api);
-    if (askedHost && askedHost !== effHost) {
-      return json(res, 200, { ok: true, apiKey: imageGenKeyOwnedBy(cfgNow.imageGen, askedHost), reused: false, error: '' });
-    }
-    const auth = resolveImageGenAuth({
-      imageGen: cfgNow.imageGen,
-      api: cfgNow.api,
-      apiKey: resolveApiKey(cfgNow)
-    });
-    // 「同域复用」时 auth.key 回的是**聊天模型那把 Key**：不能填进「图片生成」的输入框 ——
-    // 保存只挡 '******'，一旦回显，用户点一次「保存设置」就把模型 Key 固化成 imageGen
-    // 自有的 Key，"只发给同域"这条守卫从此对它失效（2026-10-01 审查 P2）。
-    // 复用本来就是"留空即生效"，不需要明文；真要读模型 Key 去「模型 API」那边读。
-    return json(res, 200, {
-      ok: true,
-      apiKey: auth.reused ? '' : (auth.key || ''),
-      reused: auth.reused === true,
-      error: auth.error || ''
-    });
+  registerPersonaRoutes(router, {
+    json, readBody, getConfig, updateConfig, keyEndpointAllowed, store, memory, orchestrator, log
   });
 
-  router.add('POST', '/api/imagegen/test', async (req, res) => {
-    const cfgNow = getConfig();
-    try {
-      const body = await readBody(req);
-      const prompt = String(body.prompt ?? '').trim().slice(0, 200) || '一只橘猫戴着草帽坐在海边，卡通风格';
-      if (cfgNow.imageGen?.enabled !== true) return json(res, 400, { ok: false, error: '图片生成未启用（勾上并保存后再试）' });
-      if (!imageGenAvailable(cfgNow)) return json(res, 400, { ok: false, error: '还没配好：至少要填模型；地址留空表示与聊天模型同域' });
-      // 试画不落库、不占闸门（它是"验证配置对不对"，不是真用）；计费由服务商算，所以提示里写明。
-      const { buffer } = await generateImage({
-        cfg: cfgNow,
-        apiCfg: cfgNow.api,
-        apiKey: resolveApiKey(cfgNow),
-        prompt
-      });
-      // 按实际字节写 MIME：各家回的不一样（智谱 CogView 回 JPEG），写死 png 的话
-      // 右键「图片另存为」会存成"扩展名 .png 的 JPEG"。
-      const mime = imageType(buffer) || 'image/png';
-      return json(res, 200, {
-        ok: true,
-        bytes: buffer.length,
-        mime,
-        image: `data:${mime};base64,${buffer.toString('base64')}`
-      });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
+  registerSearchRoutes(router, { json, readBody, getConfig, updateConfig });
 
-  router.add('POST', '/api/model-prices/probe', async (req, res) => {
-    const cfgNow = getConfig();
-    const body = await readBody(req);
-    const target = String(body.url || cfgNow.api?.baseUrl || '').trim();
-    const probe = await probeChannelPrices({
-      url: target,
-      usdRate: body.usdRate,
-      fetchImpl: undefined,
-      timeoutMs: Math.min(30000, Math.max(3000, Number(body.timeoutMs) || 12000))
-    });
-    return json(res, 200, {
-      ok: probe.ok,
-      kind: probe.kind,
-      sourceUrl: probe.sourceUrl,
-      usdRate: probe.usdRate,
-      group: probe.group,
-      groupRatio: probe.groupRatio,
-      modelCount: probe.modelCount,
-      skipped: probe.skipped,
-      tried: probe.tried,
-      error: probe.error,
-      vendor: vendorOfConfig(cfgNow) || '',
-      prices: capPrices(probe.prices || {})
-    });
-  });
-  router.add('POST', '/api/channel-prices', async (req, res) => {
-    const body = await readBody(req);
-    const vendor = String(body.vendor || '').trim();
-    const feedUrl = String(body.url || '').trim();
-    if (!vendor) return json(res, 400, { error: '缺少渠道名（vendor）' });
-    if (!/^https?:\/\//i.test(feedUrl)) return json(res, 400, { error: '价目表 URL 必须以 http(s):// 开头' });
-    // 先写配置（意图），再拉一次（结果）
-    const current = getConfig();
-    const feeds = Array.isArray(current.api?.channelPriceFeeds) ? current.api.channelPriceFeeds : [];
-    const auditBeforeFeeds = structuredClone(feeds);   // feeds 是配置里的活引用，先拍审计快照
-    const next = feeds.filter((f) => String(f?.vendor || '').trim() !== vendor);
-    next.push({ vendor, url: feedUrl });
-    updateConfig({ api: { ...(current.api || {}), channelPriceFeeds: next } });
-    const status = await refreshChannelFeed(vendor, feedUrl);
-    auditWrite('channel-prices.save', vendor, { req, before: auditBeforeFeeds, after: next });
-    return json(res, 200, { ok: true, feeds: status });
-  });
-  router.add('POST', '/api/channel-prices/refresh', async (req, res) => {
-    const body = await readBody(req);
-    const vendor = String(body.vendor || '').trim();
-    const current = getConfig();
-    const feeds = Array.isArray(current.api?.channelPriceFeeds) ? current.api.channelPriceFeeds : [];
-    const hit = feeds.find((f) => String(f?.vendor || '').trim() === vendor);
-    if (!hit) return json(res, 404, { error: `没有这个渠道的价目表：${vendor}` });
-    const status = await refreshChannelFeed(vendor, String(hit.url || '').trim());
-    return json(res, 200, { ok: true, feeds: status });
-  });
-  router.add('POST', '/api/channel-prices/remove', async (req, res) => {
-    const body = await readBody(req);
-    const vendor = String(body.vendor || '').trim();
-    if (!vendor) return json(res, 400, { error: '缺少渠道名（vendor）' });
-    const current = getConfig();
-    const feeds = Array.isArray(current.api?.channelPriceFeeds) ? current.api.channelPriceFeeds : [];
-    updateConfig({
-      api: {
-        ...(current.api || {}),
-        channelPriceFeeds: feeds.filter((f) => String(f?.vendor || '').trim() !== vendor)
-      }
-    });
-    const status = removeChannelFeed(vendor);
-    return json(res, 200, { ok: true, feeds: status });
-  });
-  router.add('POST', '/api/model-prices/refresh', async (req, res) => {
-    const st = await refreshPriceFeed(getConfig().api?.priceRemoteUrl || '');
-    return json(res, 200, { ok: st.ok, ...modelPricesPayload() });
-  });
-  router.add('GET', '/api/onebot/groups', async (req, res) => {
-    try {
-      const list = await onebot.call('get_group_list');
-      const groups = (Array.isArray(list) ? list : (list?.data ?? []))
-        .map((g) => ({ id: String(g.group_id), name: String(g.group_name ?? g.group_id) }));
-      return json(res, 200, { groups });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/onebot/friends', async (req, res) => {
-    try {
-      const list = await onebot.call('get_friend_list');
-      const friends = (Array.isArray(list) ? list : (list?.data ?? []))
-        .map((f) => ({ id: String(f.user_id), name: String(f.remark || f.nickname || f.user_id) }));
-      return json(res, 200, { friends });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  // QQ 内置语音音色目录（控制台「平台能力」页的「音色」下拉用）。协议端是按群返回的，
-  // 这里默认取第一个白名单群（QQ 的 AI 音色是官方固定目录，各群一致）；可用 ?groupId= 指定。
-  router.add('GET', '/api/onebot/ai-characters', async (req, res, params, url) => {
-    const groupId = String(url.searchParams.get('groupId') || getConfig().allow?.groups?.[0] || '').trim();
-    if (!groupId) return json(res, 400, { error: '还没有可用的群：先在「聊天白名单」里加一个群，或用 ?groupId= 指定' });
-    try {
-      const characters = await onebot.getAiCharacters(groupId);
-      return json(res, 200, { groupId, characters });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/persona-templates', async (req, res) => {
-    const { PERSONAS } = await import('../personas.js');
-    const builtins = Object.entries(PERSONAS).map(([id, p]) => ({
-      id, name: p.name, text: p.text, behaviorProfile: p.behaviorProfile || 'legacy', builtin: true
-    }));
-    const customs = (getConfig().customPersonas || []).map((p, i) => ({
-      id: `custom_${i}`,
-      name: p.name,
-      text: p.text,
-      customRules: p.customRules || '',
-      behaviorProfile: p.behaviorProfile || 'legacy',
-      builtin: false
-    }));
-    return json(res, 200, { templates: [...builtins, ...customs] });
-  });
-  router.add('POST', '/api/persona-templates', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const name = String(body.name ?? '').trim().slice(0, 50);
-    const text = String(body.text ?? '').trim();
-    if (!name || !text) return json(res, 400, { ok: false, error: '人设名称和角色设定都不能为空' });
-    const { normalizeBehaviorProfile } = await import('../personas.js');
-    let behaviorProfile;
-    try {
-      behaviorProfile = normalizeBehaviorProfile(body.behaviorProfile);
-    } catch (error) {
-      return json(res, 400, { ok: false, error: error.message });
-    }
-    // customRules 允许为空
-    const entry = { name, text, behaviorProfile };
-    if (String(body.customRules ?? '').trim()) entry.customRules = String(body.customRules).trim();
-    const next = [...(getConfig().customPersonas || []), entry];
-    updateConfig({ customPersonas: next });
-    return json(res, 200, { ok: true, templates: next });
-  });
-  router.add('POST', '/api/persona/reset-handoffs', async (req, res) => {
-    if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
-    const body = await readBody(req).catch(() => ({}));
-    // 破坏性操作统一 confirm 门槛（与删表情/删记忆那批接口同款）
-    if (body?.confirm !== true) {
-      return json(res, 409, { error: '清空交接是破坏性操作：请带 confirm=true 再调用（控制台按钮已带）' });
-    }
-    // 范围要含"只有交接、还没有聊天记录"的会话（记忆目录里可能有 group_*/private_*）
-    const chats = [...new Set([...store.listChats(), ...(memory.listChats?.() || [])])];
-    let closed = 0;
-    for (const chatKey of chats) {
-      try { memory.clearHandoff(chatKey); } catch { /* 单个会话失败不阻断其余 */ }
-      try { if (store.closeConversationThread(chatKey, 'persona-changed')) closed += 1; } catch { /* 没有线程就跳过 */ }
-    }
-    // 在途运行会在结束时把"它那一轮"的交接写回来（那一轮用的是换卡前的提示词）：
-    // 明确告诉调用方，必要时过一会儿再点一次（2026-09-27 审查 P2）
-    const runs = Number(orchestrator?.activeRuns?.size ?? 0) || 0;   // chatKey -> sessionId
-    log(`[persona] 换了人设：已清空 ${chats.length} 个会话的交接与线程状态`
-      + (runs > 0 ? `（另有 ${runs} 个运行进行中，结束后会写回它们那轮的交接，可稍后再清一次）` : ''));
-    return json(res, 200, {
-      ok: true,
-      chats: chats.length,
-      threadsClosed: closed,
-      activeRuns: runs,
-      note: runs > 0 ? '有正在进行的会话：它们结束时会写回换卡前那轮的交接，建议过几分钟再清一次' : ''
-    });
-  });
-  router.add('GET', '/api/search-providers', async (req, res) => {
-    const list = (getConfig().webSearch?.providers || []).map((p) => ({
-      id: p.id,
-      name: p.name,
-      type: p.type,
-      baseUrl: p.baseUrl,
-      model: p.model,
-      count: p.count,
-      timeoutMs: p.timeoutMs,
-      hasApiKey: Boolean(String(p.apiKey || '').trim())   // 不返回明文
-    }));
-    return json(res, 200, { providers: list });
-  });
-  router.add('POST', '/api/search-providers', async (req, res) => {
-    try {
-      const body = await readBody(req).catch(() => ({}));
-      const baseUrl = String(body.baseUrl ?? '').trim();
-      const type = String(body.type ?? 'openai').trim() === 'bing' ? 'bing' : 'openai';
-      if (!baseUrl) return json(res, 400, { ok: false, error: '接口地址不能为空' });
-      const list = [...(getConfig().webSearch?.providers || [])];
-      const existing = list.find((p) => p.baseUrl === baseUrl && p.type === type);
-      let entry;
-      if (existing) {
-        existing.name = String(body.name ?? existing.name ?? '').trim() || existing.name;
-        existing.baseUrl = baseUrl;
-        existing.type = type;
-        existing.model = String(body.model ?? existing.model ?? '').trim();
-        existing.count = Math.min(20, Math.max(1, Number(body.count) || existing.count || 6));
-        existing.timeoutMs = Math.max(5000, Number(body.timeoutMs) || existing.timeoutMs || 20000);
-        // 掩码/空 = 保持原 Key 不变
-        const submitted = String(body.apiKey ?? '').trim();
-        if (submitted && submitted !== '******') existing.apiKey = submitted;
-        entry = existing;
-      } else {
-        entry = {
-          id: `sp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-          name: String(body.name ?? '').trim() || baseUrl,
-          type,
-          baseUrl,
-          apiKey: String(body.apiKey ?? '').trim() === '******' ? '' : String(body.apiKey ?? '').trim(),
-          model: String(body.model ?? '').trim(),
-          count: Math.min(20, Math.max(1, Number(body.count) || 6)),
-          timeoutMs: Math.max(5000, Number(body.timeoutMs) || 20000)
-        };
-        list.push(entry);
-      }
-      updateConfig({ webSearch: { providers: list } });
-      return json(res, 200, {
-        ok: true,
-        provider: { ...entry, apiKey: '', hasApiKey: Boolean(String(entry.apiKey || '').trim()) }
-      });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('DELETE', '/api/search-providers', async (req, res) => {
-    try {
-      const body = await readBody(req).catch(() => ({}));
-      const id = String(body.id ?? '').trim();
-      if (!id) return json(res, 400, { ok: false, error: '缺少 id' });
-      const list = (getConfig().webSearch?.providers || []).filter((p) => String(p.id) !== id);
-      updateConfig({ webSearch: { providers: list } });
-      // 若当前正选中被删的那项，回落 bing，避免搜索直接报错
-      const cur = String(getConfig().webSearch?.provider || '');
-      if (cur === `custom:${id}`) {
-        updateConfig({ webSearch: { provider: 'bing' } });
-      }
-      return json(res, 200, { ok: true });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/search-providers/test', async (req, res) => {
-    const startedAt = Date.now();
-    try {
-      const body = await readBody(req).catch(() => ({}));
-      const provId = String(body.providerId ?? '').trim();
-      const r = await customSearch('qq agent 测试', provId || null);
-      return json(res, 200, {
-        ok: true,
-        result: {
-          ok: true,
-          count: r.results.length,
-          sample: r.results[0]?.title || '',
-          latencyMs: Date.now() - startedAt
-        }
-      });
-    } catch (error) {
-      return json(res, 200, {
-        ok: true,
-        result: { ok: false, note: String(error?.message ?? error), latencyMs: Date.now() - startedAt }
-      });
-    }
-  });
-  router.add('POST', '/api/web-search/test', async (req, res) => {
-    const startedAt = Date.now();
-    try {
-      const body = await readBody(req).catch(() => ({}));
-      const query = String(body.query ?? '').trim().slice(0, 120);
-      if (!query) return json(res, 400, { ok: false, error: '请输入要测试的搜索词' });
-      const result = await webSearch(query, { meme: body.meme === true });
-      const sources = Array.isArray(result.sources) && result.sources.length
-        ? result.sources
-        : [String(getConfig().webSearch?.provider || 'bing')];
-      return json(res, 200, {
-        ok: true,
-        query,
-        meme: body.meme === true,
-        sources,
-        supplemented: sources.some((source) => source !== 'bing'),
-        count: result.results.length,
-        latencyMs: Date.now() - startedAt,
-        results: result.results.slice(0, 8).map((item) => {
-          const url = String(item?.url ?? '');
-          return {
-            title: sanitizeUserText(String(item?.title ?? '')).slice(0, 200),
-            url: /^https?:\/\//i.test(url) ? url.slice(0, 500) : '',
-            snippet: sanitizeUserText(String(item?.snippet ?? '')).slice(0, 400)
-          };
-        })
-      });
-    } catch (error) {
-      return json(res, 200, {
-        ok: false,
-        error: String(error?.message ?? error).slice(0, 300),
-        latencyMs: Date.now() - startedAt
-      });
-    }
-  });
   router.add('POST', '/api/test/api', async (req, res) => {
     const startedAt = Date.now();
     try {
@@ -4935,1160 +2747,30 @@ export function createApp({
       chatKey
     });
   });
-  router.add('GET', '/api/status', async (req, res) => {
-    const dayKey = todayKey();
-    const sessionUsage = sessions.todayUsage(dayKey);
-    const dailyStats = buildUsageStats({ range: 'today' });
-    const totals = dailyStats.totals;
-    const usage = {
-      dayKey,
-      // token / 次数从 usage-today + 运行中会话直接取（实时）；cost 仍来自会话文件聚合，
-      // 最多滞后 USAGE_CACHE_TTL_MS（Issue #45：不能让顶栏轮询驱动全量扫盘）。
-      promptTokens: sessionUsage.promptTokens,
-      completionTokens: sessionUsage.completionTokens,
-      totalTokens: sessionUsage.totalTokens,
-      cachedTokens: sessionUsage.cachedTokens,
-      runs: sessionUsage.runs,
-      webSearchCount: sessionUsage.webSearchCount,
-      // 改进方案 #8：当日估算金额与未计价运行数（budgetStatus 的口径来源）
-      estimatedYuan: Number(sessionUsage.estimatedYuan) || 0,
-      unpricedRuns: Number(sessionUsage.unpricedRuns) || 0
-    };
-    const cfgNow = getConfig();
-    // 省 Token 模式的"用户值 / 生效值"对照表：控制台设置页直接渲染，避免两边各写一份上限数字
-    const tokenSaver = tokenSaverEffective(cfgNow);
-    const currentVendor = vendorOfConfig(cfgNow) || '';
-    const currentPrice = resolveModelPrice(cfgNow.api?.model, cfgNow, null, { vendor: currentVendor });
-    const currentTier = currentPrice.peak
-      ? priceAt(currentPrice, Date.now())
-      : currentPrice;
-    const cost = {
-      cost: totals.cost,
-      source: currentPrice.source,
-      calculation: 'per-call',
-      breakdown: totals.breakdown,
-      // 口径：实付（用户自己填的价）/ 估算（官方表、兜底）/ 未定价
-      kind: currentPrice.kind || 'estimate',
-      billing: currentPrice.billing || 'token',
-      costMode: costModeOf(cfgNow).mode,
-      costMultiplier: costModeOf(cfgNow).multiplier,
-      costMonthlyFee: costModeOf(cfgNow).monthlyFee,
-      fallbackCalls: totals.fallbackCalls || 0,
-      billingAmount: Number(currentPrice.amount) || 0,
-      billingPeriod: currentPrice.period === 'day' ? 'day' : 'month',
-      actualCost: totals.actualCost || 0,
-      estimateCost: totals.estimateCost || 0,
-      flatCost: (totals.flatItems || []).reduce((sum, item) => (
-        item.period === 'month' ? sum + (Number(item.amount) || 0) : sum
-      ), 0),
-      flatCalls: totals.flatCalls || 0,
-      localCalls: totals.localCalls || 0,
-      prices: {
-        in: currentTier.in,
-        out: currentTier.out,
-        cached: currentTier.cached
-      },
-      matched: currentPrice.matched,
-      // 未定价 = 当前模型没有单价（不是免费）；界面据此提示"含未定价调用"
-      unpriced: currentPrice.unpriced === true,
-      confidence: currentPrice.confidence || '',
-      via: currentPrice.via || '',
-      peak: Boolean(currentTier.peak),
-      hasPeakTiers: totals.hasPeakModel,
-      peakCost: totals.peakCost,
-      offPeakCost: totals.offPeakCost,
-      exactCalls: totals.exactCalls,
-      calls: totals.runs
-    };
-    return json(res, 200, {
-      onebot: {
-        connected: onebot.connected,
-        everConnected: onebot.everConnected,
-        error: onebot.lastConnectError,
-        lastEventAt: Number(onebot.lastEventAt) || 0,
-        lastHeartbeatAt: Number(onebot.lastHeartbeatAt) || 0,
-        self: onebot.selfInfo ? { userId: onebot.selfId, nickname: onebot.selfNickname } : null
-      },
-      orchestrator: orchestrator.statusSummary(),
-      incidentPilot: incidentPilotStatus(),
-      usage,
-      // 改进方案 #8：当日预算状态（enabled/limit/spent/exceeded/onExceed/unpricedRuns）
-      budget: budgetStatus(cfgNow, usage),
-      // 改进方案 #6：最近一次运行的 trace id（拿它去 journalctl / 日志文件捞整条链路）
-      lastTraceId: lastTraceId(),
-      cost,
-      // 与 usage 同口径（实时）：cached/prompt；totals 的命中率来自滞后的会话聚合
-      cacheHitRate: usage.promptTokens ? Math.min(1, usage.cachedTokens / usage.promptTokens) : 0,
-      webSearchCount: usage.webSearchCount || 0,
-      // 前端构建戳：轮询时发现它变了 → 前端提示"控制台已更新，点击刷新"
-      uiBuild: uiBuildStamp(UI_DIR),
-      // 进程运行期间 config.json 被外部改过：磁盘版本已备份，控制台据此提示
-      configConflict: getConfigConflict(),
-      // 当前版本号（package.json 的 version）：控制台侧栏与控制页的版本徽标用它。
-      // 之前控制页只显示部署提交号（sha），用户看不出"这是哪个版本"。
-      version: PKG.version,
-      // 省 Token 模式：模式 + 每项的"用户值 / 生效值"（设置页渲染用）
-      tokenSaver,
-      ...(cfgNow.timeControl?.enabled ? {
-        timeControl: timeControlState(cfgNow.timeControl)
-      } : {}),
-      paused: orchestrator.paused,
-      pauseReason: orchestrator.pauseReason ?? null
-    });
-  });
-  router.add('GET', '/api/usage/stats', async (req, res, params, url) => {
-    try {
-      const raw = String(url.searchParams.get('range') || url.searchParams.get('days') || '7');
-      const stats = buildUsageStats({ range: raw });
-      return json(res, 200, { ok: true, range: raw, ...stats });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/usage/breakdown', async (req, res, params, url) => {
-    try {
-      const raw = String(url.searchParams.get('range') || '7');
-      const dim = String(url.searchParams.get('dim') || '');
-      const key = String(url.searchParams.get('key') || '');
-      const by = String(url.searchParams.get('by') || '');
-      const r = buildUsageBreakdown({ range: raw, dim, key, by });
-      return json(res, 200, { ok: true, ...r });
-    } catch (error) {
-      return json(res, 500, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/config', async (req, res) => {
-    const cfgNow = getConfig();
-    // 不把任何真实 Key 暴露给前端：递归清空所有密钥类字段，用 hasKey 表示"有密钥"。
-    // 注意：不要用手工逐字段列举——之前漏了 5 个搜索 Key 和 2 个 SnowLuma 令牌，
-    // 加新 provider 时还会继续漏。这里按字段名模式统一处理。
-    const safe = safeConfigWithAsrStatus(cfgNow);
-    return json(res, 200, safe);
-  });
-  router.add('POST', '/api/config', async (req, res) => {
-    const patch = await readBody(req);
-    // readBody 可能很慢（设置页整包可达数 MB），期间别的保存/接口写入可能已经落盘。
-    // 快照必须取在读完之后：下面 tts/imageGen/asr 的 keys、voices 都是"服务端维护的映射"，
-    // 用旧快照重建会把并发请求刚写进去的 Key 静默抹掉。
-    const cfgNow = getConfig();
-    // 审计（#5）：getConfig() 返回引用，patch 应用后会被就地改写 —— 必须先拍快照，
-    // 否则 before 会被写成 after（等于没记；方案附录 J.2）。与合并用同一份快照，
-    // 避免把并发请求的改动算到本次请求头上。
-    const auditBefore = structuredClone(cfgNow);
-    // ── 整节替换（{ __replace__: X }）会把"映射由服务端维护"整条绕过：deepMerge 直接换成
-    //    客户端对象，我们算好的 keys 被丢掉，客户端于是能把 keys 映射写进配置（2026-10-02
-    //    全量审查实测：`{asr:{__replace__:{keys:{'openai|evil…':{apiKey:'ATK'}}}}}` 落盘成功）。
-    //    这里把服务端算好的映射**钉回替换对象**：整节替换语义保留，但 keys 仍归服务端。
-    const stampServerKeys = (section, nextKeys) => {
-      const node = patch?.[section];
-      if (!node || typeof node !== 'object' || Array.isArray(node)) return;
-      const replaced = node.__replace__;
-      if (replaced && typeof replaced === 'object' && !Array.isArray(replaced)) replaced.keys = nextKeys;
-      node.keys = nextKeys;
-    };
-    // 整节替换下 deepMerge 只取替换体，节点层的删改/读取都落不到最终配置上 —— 凡是要"动这一节"
-    // 的地方都取**有效体**：有对象替换体就用它，否则用节点本身。不这样，替换体里的归属钉会直接
-    // 生效（delete 删不到）、`api.__replace__.baseUrl` 也让 pin 读不到新地址（2026-10-02 推前复审实测）。
-    const sectionBody = (node) => (node && typeof node === 'object' && !Array.isArray(node)
-      && node.__replace__ && typeof node.__replace__ === 'object' && !Array.isArray(node.__replace__)
-      ? node.__replace__
-      : node);
-    // ── api 的两个"逃生口"文本域：提交内容与当前值的**脱敏形态**逐字相同时，当作没改 ──
-    // extraBody / thinkingParams 在界面上是文本域，用脱敏视图回填、保存时原样 __replace__ 提交。
-    // 脱敏会把对象形态的密钥字段换成 hasXxx（F6 的修复），于是"打开设置页什么都不改直接保存"
-    // 就会把真配置覆盖成 {normal:'ok', hasAuthorization:true} —— 用户的自定义请求头没了，
-    // 还多一个 hasAuthorization 进请求体（2026-10-04 复审 P2 实测）。
-    // 判据与 Key 字段的掩码语义同款：脱敏视图原样回传 = "没动过"。
-    // 用户真要删某个字段时提交内容与脱敏形态不同（少了那项），照样生效 —— 不影响"清空"。
-    // ⚠️ 光有"逐字相同→没改"还不够（2026-10-04 复审 P2）：用户在**同一个框里改了别的字段**
-    // 再保存，提交内容 ≠ 脱敏形态 → 守卫不删 → hasXxx 占位照样整键落盘 —— 真请求头被替换掉、
-    // hasAuthorization 还会以最高优先级并进每一次模型请求。所以凡是提交里出现 hasXxx、
-    // 而服务端现值里有对应的真键，就把真值**回填**回去（等价于"掩码 = 保持原值"的 Key 语义）。
-    const unmaskSubmitted = (submitted, current) => {
-      // 数组也要逐元素回填：`{headers:[{authorization:…}]}` 这种形态，脱敏后元素里只剩
-      // `hasAuthorization`，不回填就会带着占位整段替换掉真值 —— 真 Key 静默丢失
-      //（2026-10-05 复审实测：__replace__ 提交后盘上只剩 hasAuthorization）。
-      // 按下标配对是启发式：用户重排数组元素时可能把旧值填到别的元素上（占位键本来就是
-      // 脱敏产物，宁可保错也不能丢）。
-      if (Array.isArray(submitted)) {
-        const curArr = Array.isArray(current) ? current : [];
-        return submitted.map((item, i) => unmaskSubmitted(item, curArr[i]));
-      }
-      if (!submitted || typeof submitted !== 'object') return submitted;
-      const cur = (current && typeof current === 'object' && !Array.isArray(current)) ? current : {};
-      const out = { ...submitted };
-      for (const key of Object.keys(out)) {
-        const value = out[key];
-        if (/^has[A-Z]/.test(key)) {
-          const realKey = key.charAt(3).toLowerCase() + key.slice(4);
-          // 大小写不敏感地找服务端真实键名：extraBody 里常见 `Authorization` / `X-Api-Key`，
-          // 脱敏生成 hasAuthorization，反推出来却是小写 authorization —— 直接 hasOwn 匹配不到，
-          // 真值不回填、占位也不删，最后整段 __replace__ 落盘，真实请求头被静默丢掉。
-          const lower = realKey.toLowerCase();
-          const currentKey = Object.keys(cur).find((k) => k.toLowerCase() === lower) || '';
-          const submittedHasReal = Object.keys(out).some((k) => k.toLowerCase() === lower);
-          // ⚠️ 提交里同时带了真值（用户在这个框里填了新 Key）时**真值优先**：无条件回填
-          // 服务端旧值会把刚填的新 Key 悄悄丢掉（2026-10-04 复审 P2）。
-          if (!submittedHasReal && currentKey) out[realKey] = structuredClone(cur[currentKey]);
-          if (currentKey) delete out[key];
-          continue;
-        }
-        if (value && typeof value === 'object' && Object.hasOwn(cur, key)) {
-          out[key] = unmaskSubmitted(value, cur[key]);
-        }
-      }
-      return out;
-    };
-    if (patch?.api && typeof patch.api === 'object') {
-      const apiGuard = sectionBody(patch.api);
-      const sanitizedApi = sanitizeConfigSecrets({ api: cfgNow.api || {} }).api || {};
-      for (const field of ['extraBody', 'thinkingParams']) {
-        const raw = apiGuard[field];
-        if (raw === undefined) continue;
-        const isReplace = raw && typeof raw === 'object' && !Array.isArray(raw) && '__replace__' in raw;
-        const submitted = isReplace ? raw.__replace__ : raw;
-        if (stableJson(submitted) === stableJson(sanitizedApi[field])) {
-          // 视图原样回传 = 用户没动这个框 → 整项当没改（快速路径）。
-          // ⚠️ 两种形态都要 delete：非 __replace__ 时前端会在「JSON 解析失败/填了数组」
-          // 的回退分支里原样回传脱敏视图（ui/pages/settings-save.js "已保留原值"），
-          // 把它 clone 进 patch 就等于把视图里的 hasXxx 占位**落盘**，
-          // 之后每次模型请求都被 Object.assign(body, extraBody) 带上
-          //（2026-10-05 复审实测：盘上出现 hasAuthorization:true）。
-          delete apiGuard[field];
-          continue;
-        }
-        // 用户改了内容：把视图里的 hasXxx 占位换回服务端真值再落盘
-        const healed = unmaskSubmitted(submitted, cfgNow.api?.[field]);
-        if (isReplace) raw.__replace__ = healed;
-        else apiGuard[field] = healed;
-      }
-    }
-    // imageGen.extraBody 是同一个"文本域回填脱敏视图"的坑：Moss 的自定义参数也可能
-    // 叫 authorization/token 之类，GET 时会被脱敏成 hasXxx。打开设置页原样保存一次
-    // 不能把真值换成占位，否则每个生图请求都会带上 hasAuthorization。
-    if (patch?.imageGen && typeof patch.imageGen === 'object') {
-      const imgGuard = sectionBody(patch.imageGen);
-      // 发送格式只认两个值；手改配置或旧前端传来的其它值一律回落默认（表情），
-      // 免得以后新增枚举时旧值在运行期变成"既不是图片也不是表情"的第三种状态。
-      if (imgGuard.sendAs !== undefined && imgGuard.sendAs !== 'image' && imgGuard.sendAs !== 'sticker') {
-        imgGuard.sendAs = 'sticker';
-      }
-      const raw = imgGuard.extraBody;
-      if (raw !== undefined) {
-        const isReplace = raw && typeof raw === 'object' && !Array.isArray(raw) && '__replace__' in raw;
-        const submitted = isReplace ? raw.__replace__ : raw;
-        const sanitizedImageGen = sanitizeConfigSecrets({ imageGen: cfgNow.imageGen || {} }).imageGen || {};
-        if (stableJson(submitted) === stableJson(sanitizedImageGen.extraBody)) {
-          delete imgGuard.extraBody;
-        } else {
-          const healed = unmaskSubmitted(submitted, cfgNow.imageGen?.extraBody);
-          if (isReplace) raw.__replace__ = healed;
-          else imgGuard.extraBody = healed;
-        }
-      }
-    }
-    // 控制台保存总会带上显式的 provider（来自服务预设）：等于用户确认过这一家，
-    // 清掉"升级默认值"的标记，让环境变量 Key 恢复生效（2026-09-26 审查 P2）。
-    // 要删在**有效体**上：整节替换时节点层的 delete 落不到最终配置上，替换体里那份
-    // providerDefaulted 会一路进 deepMerge 落盘，永久屏蔽 ASR_API_KEY 环境变量（2026-10-04 复审 P2）。
-    if (patch?.asr && typeof patch.asr === 'object') delete sectionBody(patch.asr).providerDefaulted;
-    // tts 的 Key 与 asr 同款语义：留空/掩码占位 = 保持原值（掩码回写会把真 Key 冲掉）
-    if (patch?.tts && typeof patch.tts === 'object') {
-      const ttsBody = sectionBody(patch.tts);
-      // 服务端派生位（GET 时下发的布尔/归属口径）：不回写配置（2026-09-29 审查 P2，
-      // 之前 keyServices/currentService 会随保存被持久化进 config.json）
-      delete ttsBody.hasApiKey;
-      delete ttsBody.keyServices;
-      delete ttsBody.currentService;
-      // 归属钉同样由服务端算：客户端直接送 apiKeyService 就能把别家的旧 Key 改绑到当前这家，
-      // 而 ttsKeyFor 会照新归属把它发出去（与 asr/imageGen 同一条防线，这里原先漏了）
-      delete ttsBody.apiKeyService;
-      delete ttsBody.hasApiKeyService;
-      // 前端只送"这一家新填的 Key"（apiKeyInput）与当前服务：合并进 keys 映射，
-      // 绝不接受整份 keys 覆盖（那会把别家的 Key 冲掉）。空/掩码 = 保持不变。
-      const keyInput = String(ttsBody.apiKeyInput ?? '').trim();
-      delete ttsBody.apiKeyInput;
-      delete ttsBody.keys;
-      // voices 映射由服务端维护：客户端只送当前 voice，不能整份覆盖别家的记忆。
-      delete ttsBody.voices;
-      // Key 归属 = UI 选中那家（service），地址反查只作兜底。之前只按地址认：
-      // 「自定义/自建」的地址不在预设表里 → 落到 provider 字符串 'openai'，
-      // 运行时又读不到 keys['openai']（2026-09-29 审查 P0）
-      const uiService = ttsServiceById(String(ttsBody.service || '').trim())?.id || '';
-      delete ttsBody.service;
-      // 显式送了 baseUrl（哪怕是空串）就按本次的算：切到「自定义」时前端会清空地址，
-      // 用 `ttsBody.baseUrl || 旧地址` 会把这一单错误归到上一家（voice/Key 都会存错）。
-      const baseForLookup = Object.hasOwn(ttsBody, 'baseUrl')
-        ? String(ttsBody.baseUrl || '').trim()
-        : String(cfgNow.tts?.baseUrl || '').trim();
-      const svc = ttsServiceOfBaseUrl(baseForLookup);
-      // UI 选中的预设优先于地址反查：自定义网关可能填了和某家预设相同的地址。
-      const targetId = uiService || svc?.id || String(ttsBody.provider || cfgNow.tts?.provider || 'openai');
-      // 每家上次用的音色：客户端切预设时只送当前这一家的 voice，服务端按 targetId 记住；
-      // 切回来时 UI 从 voices[这家] 恢复，不会把上一家的音色（如 MiMo 的 Chloe）发给豆包。
-      const nextTtsVoices = { ...(cfgNow.tts?.voices || {}) };
-      const submittedVoice = String(ttsBody.voice ?? '').trim();
-      if (submittedVoice) nextTtsVoices[targetId] = submittedVoice;
-      ttsBody.voices = nextTtsVoices;
-      const nextTtsKeys = keyInput && keyInput !== '******'
-        ? { ...(cfgNow.tts?.keys || {}), [targetId]: keyInput }
-        : { ...(cfgNow.tts?.keys || {}) };
-      ttsBody.keys = nextTtsKeys;
-      stampServerKeys('tts', nextTtsKeys);
-      // 老客户端/手写配置不带 provider：按地址反查预设，免得火山/MiniMax 的地址走了 openai 兼容实现
-      if (!ttsBody.provider && ttsBody.baseUrl) {
-        const svc = ttsServiceOfBaseUrl(ttsBody.baseUrl);
-        if (svc?.provider) ttsBody.provider = svc.provider;
-      }
-      const submittedKey = String(ttsBody.apiKey ?? '').trim();
-      if (!submittedKey || submittedKey === '******') delete ttsBody.apiKey;
-      // ── 单槽 Key 的归属（2026-10-03）── 必须放在上面那句之后：它把 apiKeyInput 清掉、
-      //    再判"这次有没有真提交"；而"空/掩码 = 保持原值"那句会把我下面置的空串 delete 掉。
-      //
-      // ── 归档必须**无条件先跑**（与 imageGen/asr 同一口径，2026-10-04 复审 P1）──
-      // 存量实例的 Key 只存在于 tts.apiKey 这一个字段里（keys 映射是控制台从 2026-09-29 起
-      // 才写的）。之前归档写在"没填新 Key"那个分支里，于是"切服务 **并** 填一把新 Key"
-      // 这条最常见的路径完全绕过了归档：那把旧 Key 留在单槽里、归属钉却被改成新服务 ——
-      // 等用户再切回原服务且没填 Key 时，归属比较判成"别家的"，而 keys[原归属] 已被新 Key
-      // 占位 → 不归档 → 直接置空 → **旧 Key 永久丢失**，控制台再也找不回来。
-      const prevTtsKey = String(cfgNow.tts?.apiKey || '').trim();
-      // 归属比较必须用"改动前"的配置：改完之后 current 已经变成新服务，拿它比会判成"就是这家的"。
-      const ownerNow = String(cfgNow.tts?.apiKeyService || '').trim() || ttsServiceOf(cfgNow.tts)?.id || '';
-      if (prevTtsKey && ownerNow && ownerNow !== targetId && !String(nextTtsKeys[ownerNow] || '').trim()) {
-        nextTtsKeys[ownerNow] = prevTtsKey;
-        ttsBody.keys = nextTtsKeys;
-        stampServerKeys('tts', nextTtsKeys);
-      }
-      if (keyInput && keyInput !== '******') {
-        // 新填的这把归属就是这一家（切回它时兜底才认）。单槽**同步换成新 Key**：
-        // 只改钉不换槽的话，单槽里留的是上一家的 Key，归属钉却指着这一家 —— 与 asr/imageGen
-        // 写入时"单槽装新值 + 钉指新归属"的口径反着来（2026-10-04 复审 P1）。
-        ttsBody.apiKey = keyInput;
-        ttsBody.apiKeyService = targetId;
-      } else if (prevTtsKey && ownerNow !== targetId) {
-        // 切到**没存过 Key** 的服务且没填 → 不沿用上一家的单槽 Key（与 asr/imageGen 同一口径）。
-        // ⚠️ 置空串才是"清空"：delete 只是"这次不提交"（空/掩码 = 保持原值）。
-        ttsBody.apiKey = '';
-        ttsBody.apiKeyService = '';
-      }
-    }
-    // imageGen 的 Key：与 tts 同款语义（留空/掩码 = 保持原值）。前端已按此过滤，
-    // 这里再兜一层 —— 配置是外部可编辑的，别让一次手写的空串把 Key 冲掉。
-    // （派生结论 available/hasApiKey 的剥离在 migrateConfig：那是所有写入路径的必经口，
-    //   也顺带兜住读盘 —— 与 asr 同款，见 IMAGEGEN_DERIVED_KEYS 的说明）
-    if (patch?.imageGen && typeof patch.imageGen === 'object') {
-      const imgBody = sectionBody(patch.imageGen);
-      // 服务端派生的布尔/归属口径：不回写配置
-      delete imgBody.keyStale;
-      delete imgBody.keyHosts;
-      // keys 映射由服务端维护：客户端只送"这一家新填的 Key"（apiKey），绝不接受整份覆盖
-      // （那会把别家存过的 Key 冲掉 —— 与 tts.keys 同款口径，2026-10-02）。
-      // apiKeyHost 同款：归属钉一律由服务端按"本次提交的地址/凭据"重算 —— 客户端直接送它
-      // 就能把旧 Key 的归属改到别的主机，等于绕过归属守卫（2026-10-02 全量审查实测）。
-      delete imgBody.keys;
-      delete imgBody.apiKeyHost;
-      // 目标主机：按本次提交的地址算（没有就用当前地址；留空 = 跟聊天模型同家）。
-      // ⚠️ 模型地址要用**本次 patch 之后**的值：同一次 POST 里既改 api.baseUrl 又填图 Key 时，
-      // 用改动前的地址会把 Key 钉到旧主机（运行期按新地址找不到它；换回旧主机时又把它发给旧主机）。
-      // 2026-10-02 全量审查实测的"保存期归属与运行期不一致"；`api.__replace__.baseUrl` 同样算数。
-      const apiBody = sectionBody(patch.api);
-      const nextApiBase = apiBody && apiBody.baseUrl !== undefined ? apiBody.baseUrl : cfgNow.api?.baseUrl;
-      const keyTargetHost = pinImageGenKeyHost(
-        { baseUrl: imgBody.baseUrl ?? cfgNow.imageGen?.baseUrl ?? '' },
-        nextApiBase
-      );
-      const nextKeys = { ...(cfgNow.imageGen?.keys || {}) };
-      // 归档：当前活动槽那把先记到它自己的主机名下 —— 老配置只有单槽（升级上来的实例），
-      // 不归档就会在"切到别家并新填一把"时被覆盖丢掉，切回来再也取不回。
-      const prevKey = String(cfgNow.imageGen?.apiKey || '').trim();
-      const prevHost = String(cfgNow.imageGen?.apiKeyHost || '').trim().toLowerCase();
-      if (prevKey && prevKey !== '******' && prevHost && !String(nextKeys[prevHost] || '').trim()) {
-        nextKeys[prevHost] = prevKey;
-      }
-      const submittedKey = String(imgBody.apiKey ?? '').trim();
-      if (submittedKey && submittedKey !== '******') {
-        // 新填的 Key：记为当前活动 Key（归属钉照旧）＋ 存进"这家存过的"映射，切回来能自动取回
-        if (keyTargetHost) nextKeys[keyTargetHost] = submittedKey;
-        imgBody.keys = nextKeys;
-        pinImageGenKeyHost(imgBody, nextApiBase);
-      } else {
-        // 留空/掩码 = "用这家存过的"（2026-10-02 用户要求）：切到哪家就取哪家存过的那把 ——
-        // 存过就取回（连归属一起）；没存过就**不动现有的那把**：它由归属钉挡住使用
-        // （不会发给别家），留着切回去还能用，界面按 keyHosts 显示"这家还没存过"。
-        delete imgBody.apiKey;
-        const resolved = imageGenKeyResolve(
-          {
-            ...(cfgNow.imageGen || {}),
-            keys: nextKeys,
-            ...(imgBody.baseUrl !== undefined ? { baseUrl: imgBody.baseUrl } : {})
-          },
-          keyTargetHost
-        );
-        if (resolved.value) {
-          imgBody.apiKey = resolved.value;
-          // 明确属于这个主机的才写回归属钉/补映射；"没记归属"的老单槽只用值、不认领
-          if (resolved.owned) {
-            nextKeys[keyTargetHost] = resolved.value;
-            imgBody.keys = nextKeys;
-            imgBody.apiKeyHost = keyTargetHost;
-          }
-        }
-      }
-      stampServerKeys('imageGen', nextKeys);
-    }
-    // ASR 的凭据：与 tts/imageGen 同款语义（2026-10-02 用户要求："切换服务预设时 Key 跟着切换"）。
-    // 三种凭据（apiKey / secretId / secretKey，后者两家与讯飞百度共用字段）各按"槽位"记忆，
-    // 槽位口径见 asrCredentialSlot：OpenAI 兼容按地址主机分家，其余按 provider。
-    if (patch?.asr && typeof patch.asr === 'object') {
-      const asrBody = sectionBody(patch.asr);
-      delete asrBody.keySlots;                // 服务端派生的视图口径：不回写配置
-      delete asrBody.keys;                    // 映射由服务端维护，绝不接受整份覆盖
-      const curAsr = cfgNow.asr || {};
-      // ⚠️ provider 必须在**写盘前**校验：它直接决定槽位名（asrCredentialSlot）。
-      // 客户端送 `provider:"constructor"` 时槽位名就成了 "constructor"，而落盘的
-      // keys['constructor'] 之后会让 asrKeySlots 取到 Object.prototype.constructor 并抛错，
-      // **每一次读 /api/config 都 500**，且没有任何 API 能删掉那个槽位（2026-10-04 复审 P2 实测）。
-      // ASR_PROVIDERS 之外的取值一律当"没改这一项"，沿用当前配置（坏输入最该被忽略）。
-      const submittedProvider = String(asrBody.provider ?? '').trim().toLowerCase();
-      const currentProvider = String(curAsr.provider || 'openai').trim().toLowerCase();
-      const nextProvider = (submittedProvider && ASR_PROVIDERS.includes(submittedProvider))
-        ? submittedProvider
-        : currentProvider;
-      if (asrBody.provider !== undefined && submittedProvider !== nextProvider) {
-        delete asrBody.provider;   // 非法值/空串都别带进 deepMerge（空 = "这次没改这一项"）
-      }
-      const nextBaseUrl = asrBody.baseUrl !== undefined ? asrBody.baseUrl : (curAsr.baseUrl || '');
-      const targetSlot = asrCredentialSlot(nextProvider, nextBaseUrl);
-      const nextKeys = { ...(curAsr.keys || {}) };
-      // 槽位条目必须是对象：手改成标量（"keys":{"tencent":"SCALAR"}）时 `{...'SCALAR'}` 会摊成
-      // 字符索引的垃圾键写进配置（2026-10-02 推前复审）。migrateConfig 只归一化顶层映射，这里兜条目。
-      // 目标槽与归档槽共用这一个守卫：只给目标槽加的话，归档路径仍会把标量摊成 {0:'S',1:'C',…}
-      // 写进 config.json（同一段代码两套标准 = 漏改，2026-10-04 复审 P1）。
-      const entryOf = (value) => (value && typeof value === 'object' && !Array.isArray(value)
-        ? { ...value } : {});
-      const prevEntry = nextKeys[targetSlot];
-      const slotEntry = entryOf(prevEntry);
-      const credentials = [
-        ['apiKey', 'apiKeyProvider', 'apiKeyHost'],
-        ['secretId', 'secretIdProvider', ''],
-        ['secretKey', 'secretKeyProvider', '']
-      ];
-      // 归属钉同款：一律由服务端按"本次提交的 provider/地址/凭据"重算 —— 客户端直接送它，
-      // 就能把别家的旧凭据改绑到当前这家（或反过来），绕过归属守卫（2026-10-02 全量审查实测）。
-      for (const [, providerField, hostField] of credentials) {
-        delete asrBody[providerField];
-        if (hostField) delete asrBody[hostField];
-      }
-      // 归档：活动槽里"这家还没有副本"的凭据先记到它自己的槽名下 —— 老配置只有单槽，
-      // 切到别家新填凭据时会覆盖它，不归档就丢了（切回来取不回）。
-      for (const [kind, providerField, hostField] of credentials) {
-        const value = String(curAsr[kind] || '').trim();
-        if (!value || value === '******') continue;
-        // 只归档**归属明确**的那把（pin 非空）：归属未知的老凭据没有"自己的家"可记，而且用
-        // 当前 provider 去猜会在同一次保存里被"取回"分支当成这家的凭据认领（推前复审实测：
-        // 讯飞/百度的 secretKey 会被写回归属钉并塞进目标槽）
-        const owner = String(curAsr[providerField] || '').trim().toLowerCase();
-        if (!owner) continue;
-        const host = hostField
-          ? (String(curAsr[hostField] || '').trim().toLowerCase() || asrEndpointHost(curAsr.baseUrl))
-          : '';
-        const slot = asrCredentialSlotOf(owner, host);
-        const entry = entryOf(nextKeys[slot]);
-        if (!String(entry[kind] || '').trim()) entry[kind] = value;
-        nextKeys[slot] = entry;
-      }
-      for (const [kind, providerField, hostField] of credentials) {
-        const submitted = String(asrBody[kind] ?? '').trim();
-        if (submitted && submitted !== '******') {
-          // 新填的凭据：写进"这家存过的"映射 + 更新归属钉（切回来能自动取回）
-          if (targetSlot) slotEntry[kind] = submitted;
-          asrBody[providerField] = nextProvider;
-          if (hostField) asrBody[hostField] = nextProvider === 'openai' ? asrEndpointHost(nextBaseUrl) : '';
-          continue;
-        }
-        // 留空/掩码 = "用这家存过的"：取到就填回；**明确属于这家的**才写回归属钉/补映射 ——
-        // "归属未知"的老凭据只用值、不认领（认领会把别家的凭据洗成这家的，2026-10-02 全量审查；
-        // migrateConfig 的注释警告的正是这条路）。没取到就不动现有的：那把给别家存的，
-        // 归属钉挡着不会被使用（切回去还能用）。
-        delete asrBody[kind];
-        const resolved = asrCredentialResolve(
-          { ...curAsr, keys: nextKeys, baseUrl: nextBaseUrl },
-          kind,
-          nextProvider,
-          nextBaseUrl
-        );
-        if (!resolved.value) continue;
-        asrBody[kind] = resolved.value;
-        if (!resolved.owned) continue;
-        slotEntry[kind] = resolved.value;                // 取回的同时把映射补全（只补明确属于这家的）
-        asrBody[providerField] = nextProvider;
-        if (hostField) asrBody[hostField] = nextProvider === 'openai' ? asrEndpointHost(nextBaseUrl) : '';
-      }
-      if (targetSlot && Object.keys(slotEntry).length) nextKeys[targetSlot] = slotEntry;
-      asrBody.keys = nextKeys;
-      stampServerKeys('asr', nextKeys);
-    }
-    // 人设真的改了就打一个时间戳：提示词据此在接下来 24 小时里提醒模型
-    // "历史里的旧口癖/自称不作数"（换卡后它会被自己的旧发言锚住，实测能锚一天以上）
-    if (patch?.persona && typeof patch.persona === 'object') {
-      const before = cfgNow.persona || {};
-      // 时间戳只由服务端写：客户端送来的 changedAt 一律丢弃（否则可以伪造/永久压住"刚换过人设"的提醒）
-      delete patch.persona.changedAt;
-      const changed = ['roleText', 'templateId', 'behaviorProfile', 'customRules', 'botName',
-        'selfNickname', 'participation']
-        .some((key) => String(patch.persona[key] ?? before[key] ?? '') !== String(before[key] ?? ''));
-      if (changed) patch.persona.changedAt = Date.now();
-    }
-    // 按群人设同理：哪个群的卡/正文变了，就给那个条目打时间戳（只影响该群，不误报全局）
-    if (patch?.personaPerChat && typeof patch.personaPerChat === 'object') {
-      const beforeMap = cfgNow.personaPerChat || {};
-      const afterMap = patch.personaPerChat.__replace__ ?? patch.personaPerChat;
-      if (afterMap && typeof afterMap === 'object' && !Array.isArray(afterMap)) {
-        // 按键名排序后比较：保存时字段顺序会变（删了再赋值），用原生 JSON.stringify 会把
-        // "没改"误判成"改了"，每保存一次都刷新 changedAt
-        const stable = (value) => {
-          const obj = { ...(value || {}) };
-          delete obj.changedAt;
-          return JSON.stringify(Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b))));
-        };
-        for (const [key, entry] of Object.entries(afterMap)) {
-          if (!entry || typeof entry !== 'object') continue;
-          delete entry.changedAt;                 // 时间戳只由服务端写
-          const old = beforeMap[key];
-          if (stable(entry) !== stable(old)) entry.changedAt = Date.now();
-          else if (old?.changedAt) entry.changedAt = old.changedAt;
-        }
-      }
-    }
-    const previousProactive = JSON.stringify(cfgNow.proactive || {});
-    const previousDailyMoments = JSON.stringify(cfgNow.dailyMoments || {});
-    const previousLifeFeed = JSON.stringify(cfgNow.lifeFeed || {});
-    const previousQzoneInteractions = JSON.stringify(cfgNow.qzoneInteractions || {});
-    const previousIdentityPilot = JSON.stringify(cfgNow.identityPilot || {});
-    const previousPlugins = JSON.stringify(cfgNow.plugins || {});
-    const previousPersona = JSON.stringify(cfgNow.persona || {});
-    const previousSlangPilot = JSON.stringify(cfgNow.slangPilot || {});
-    const previousIncidentPilot = JSON.stringify(cfgNow.incidentPilot || {});
-    const previousIdentitySources = JSON.stringify({
-      allow: cfgNow.allow || {},
-      deny: cfgNow.deny || {},
-      allowAllWhenEmpty: cfgNow.allowAllWhenEmpty === true,
-      blocklist: cfgNow.blocklist || {}
-    });
-    const previousModes = new Map(
-      store.listChats().map((chatKey) => [chatKey, conversationConfigForChat(chatKey).mode])
-    );
-    delete patch.runtime;
-    if (patch.server) {
-      // 整节替换（`__replace__`）时 delete 删的是节点层，替换体里的 token 会直接落盘 ——
-      // 服务重启后 authorize 读不到令牌（控制台全部登出），下次 start() 还会因"绑非回环却无令牌"
-      // 直接 throw 起不来（2026-10-03 全量审查）。归属与派生位一律取**有效体**处理。
-      const serverBody = sectionBody(patch.server);
-      // 2026-10-06 复审：替换体里的 token 必被剥（下面 delete，令牌只走专用端点）→ 整节替换后
-      // server.token 必空，而运行中的套接字不随配置重绑 —— 绑 0.0.0.0 时这一保存会把监听降级为
-      // "无令牌 + Host 头判本机"的免鉴权模式。运行期套接字仍在非回环地址上时，拒绝一切 server 整节替换。
-      const serverReplacing = patch.server.__replace__ && typeof patch.server.__replace__ === 'object'
-        && !Array.isArray(patch.server.__replace__);
-      if (serverReplacing && boundServerHost && !['127.0.0.1', 'localhost', '::1'].includes(boundServerHost)) {
-        // 直接回 409 而不是 throw：统一异常处理器会把一切抛错记成 error 级 incident，
-        // 而这是"管理员存了个会被拒的配置"的**预期内拒绝**，不该刷异常面板
-        //（2026-10-06 生产实测踩到：一次守卫验证就在 journal 和异常面板各留了一条 error）。
-        return json(res, 409, {
-          ok: false,
-          error: '控制台正绑定在非回环地址上运行，整节替换 server 段会清空令牌且套接字不会重新绑定；请改用普通保存，或先停机改配置'
-        });
-      }
-      delete serverBody.token;
-      delete serverBody.hasToken;
-    }
-    // webSearch：自定义搜索服务列表 providers 是**密钥数组**，而 deepMerge 对数组是整体替换 ——
-    // 界面回传的是脱敏副本（apiKey 被删、hasApiKey 被加），直接提交会把每家的 Key 冲掉
-    // （2026-10-03 全量审查）。这里按 id 与服务端对齐：客户端没带新值就沿用服务端那把。
-    if (patch?.webSearch && typeof patch.webSearch === 'object') {
-      const wsBody = sectionBody(patch.webSearch);
-      if (Array.isArray(wsBody.providers)) {
-        const stored = new Map((cfgNow.webSearch?.providers || [])
-          .map((item) => [String(item?.id || ''), item]));
-        wsBody.providers = wsBody.providers
-          .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
-          .map((item) => {
-            const next = { ...item };
-            delete next.hasApiKey;
-            const submitted = String(next.apiKey ?? '').trim();
-            if (!submitted || submitted === '******') {
-              const prev = stored.get(String(next.id || ''));
-              if (prev && String(prev.apiKey || '').trim()) next.apiKey = prev.apiKey;
-              else delete next.apiKey;
-            }
-            return next;
-          });
-      }
-      // 派生位（sanitize 生成的 hasApiKey）由 migrateConfig 统一剔 —— 它是所有写入路径的必经口，
-      // 路由层再剥一遍是冗余（同一语义写两处，反而会让人以为两边口径不同）。
-    }
-    // MCP env/args：界面拿到的是 ****** 掩码，提交时按 server id + key/下标恢复服务端原值；
-    // 用户把某个 key 删掉/填空则按新值落盘，不会被旧值偷偷补回来。
-    if (patch?.mcp && typeof patch.mcp === 'object') {
-      const mcpBody = sectionBody(patch.mcp);
-      if (Array.isArray(mcpBody.servers)) {
-        const stored = new Map((cfgNow.mcp?.servers || []).map((server) => [String(server?.id || ''), server]));
-        mcpBody.servers = mcpBody.servers.map((server) => {
-          const prev = stored.get(String(server?.id || ''));
-          if (!prev) return server;
-          const env = { ...(server.env || {}) };
-          for (const [key, value] of Object.entries(env)) {
-            if (String(value) === '******' && prev.env?.[key]) env[key] = prev.env[key];
-          }
-          const args = Array.isArray(server.args)
-            ? server.args.map((arg, index) => (arg === '******' && prev.args?.[index] ? prev.args[index] : arg))
-            : server.args;
-          return { ...server, env, args };
-        });
-      }
-    }
-    let next;
-    const force = new URL(req.url, 'http://127.0.0.1').searchParams.get('force') === '1';
-    try {
-      next = updateConfig(patch, { force });
-    } catch (error) {
-      auditWrite('config.update', 'config', { req, before: auditBefore, ok: false, error: String(error?.message ?? error) });
-      if (error?.code === 'CONFIG_CONFLICT') {
-        return json(res, 409, {
-          ok: false,
-          code: 'CONFIG_CONFLICT',
-          error: String(error.message || '配置文件已被外部修改'),
-          configConflict: error.configConflict || getConfigConflict()
-        });
-      }
-      // updateConfig 的校验错误自带 httpStatus=400（见 config-legacy 的 invalidConfig）；
-      // 文件系统/内部错误没有这个标记，按 500 处理并进异常面板。
-      throw error;
-    }
-    auditWrite('config.update', 'config', { req, before: auditBefore, after: next, changed: changedTopKeys(auditBefore, next) });
-    store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
-    store.setSynchronous(next.store?.sqliteSynchronous);
-    sessions.setPersistIntervalMs(next.store?.sessionPersistMs);
-    if (patch?.mcp) {
-      try { await mcpManager.reload(); }
-      catch (error) { moduleLog('mcp')('配置保存后重载失败:', error); }
-    }
-    let closedThreads = 0;
-    for (const [chatKey, previousMode] of previousModes) {
-      if (conversationConfigForChat(chatKey).mode !== previousMode) {
-        if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
-      }
-    }
-    if (closedThreads) emit('chat-update', '*');
-    if (JSON.stringify(next.proactive || {}) !== previousProactive) {
-      if (next.proactive?.enabled) orchestrator.startProactiveLoop();
-      else orchestrator.stopProactiveLoop();
-    }
-    if (JSON.stringify(next.dailyMoments || {}) !== previousDailyMoments) {
-      dailyMoments.reconfigure();
-    }
-    if (JSON.stringify(next.lifeFeed || {}) !== previousLifeFeed) {
-      lifeFeed.reconfigure();
-    }
-    if (JSON.stringify(next.qzoneInteractions || {}) !== previousQzoneInteractions) {
-      qzoneInteractions.reconfigure();
-    }
-    if (JSON.stringify(next.groupDigest || {}) !== JSON.stringify(cfgNow.groupDigest || {})) {
-      groupDigest.reconfigure();
-    }
-    if (JSON.stringify(next.adminBriefing || {}) !== JSON.stringify(cfgNow.adminBriefing || {})
-      || String(next.admin?.ownerUin || '') !== String(cfgNow.admin?.ownerUin || '')) {
-      // 管理员 QQ 后补上时也要重新排程（否则要等进程重启才会有定时器）
-      adminBriefing.reconfigure();
-    }
-    // 插件配置动了（总开关 / enabledIds / 插件自己的 settings）→ 重排：停掉再按新配置起。
-    // 不 await：控制台保存不该等插件起进程（宿主内部自己 try/catch 并记日志）。
-    if (JSON.stringify(next.plugins || {}) !== previousPlugins) {
-      Promise.resolve(pluginRegistry.reconfigure())
-        .catch((error) => log('[plugins] 重排失败：', error?.message ?? error));
-    }
-    if (JSON.stringify(next.incidentPilot || {}) !== previousIncidentPilot) {
-      try {
-        syncIncidentPilot();
-        for (const chatKey of store.listChats()) orchestrator.enforceChatControl(chatKey);
-      } catch (error) {
-        const reverted = updateConfig({
-          incidentPilot: { ...(next.incidentPilot || {}), enabled: false }
-        });
-        return json(res, 500, {
-          ok: false,
-          error: `异常处理实验启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-          config: safeConfigWithAsrStatus(reverted)
-        });
-      }
-    }
-    const identityChanged = JSON.stringify(next.identityPilot || {}) !== previousIdentityPilot;
-    const identitySourcesChanged = JSON.stringify({
-      allow: next.allow || {},
-      deny: next.deny || {},
-      allowAllWhenEmpty: next.allowAllWhenEmpty === true,
-      blocklist: next.blocklist || {}
-    }) !== previousIdentitySources;
-    const personaChanged = JSON.stringify(next.persona || {}) !== previousPersona;
-    if (
-      identityChanged
-      || (identityPilotEnabled(next) && (identitySourcesChanged || personaChanged))
-    ) {
-      try {
-        await syncIdentityPilot({
-          reindex: identitySourcesChanged,
-          reconfigure: identityChanged || identitySourcesChanged || personaChanged
-        });
-      } catch (error) {
-        const reverted = updateConfig({
-          identityPilot: { ...(next.identityPilot || {}), enabled: false }
-        });
-        return json(res, 500, {
-          ok: false,
-          error: `统一身份库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-          config: safeConfigWithAsrStatus(reverted)
-        });
-      }
-    }
-    if (JSON.stringify(next.slangPilot || {}) !== previousSlangPilot) {
-      try {
-        await syncSlangPilot();
-      } catch (error) {
-        const reverted = updateConfig({
-          slangPilot: { ...(next.slangPilot || {}), enabled: false }
-        });
-        return json(res, 500, {
-          ok: false,
-          error: `黑话语料库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
-          config: safeConfigWithAsrStatus(reverted)
-        });
-      }
-    }
-    initPriceFeed(next.api?.priceRemoteUrl || '');   // 远程价格表 URL 可能改了（内部幂等）
-    initChannelPrices(next.api?.channelPriceFeeds || []);   // 渠道价目表同理
-    emit('status', { configUpdated: true });
-    return json(res, 200, { ok: true, config: safeConfigWithAsrStatus(next), configConflict: getConfigConflict() });
+  registerStatusRoutes(router, {
+    json, getConfig, sessions, onebot, orchestrator, incidentPilotStatus,
+    effects, uiDir: UI_DIR, version: PKG.version, getConfigConflict,
+    buildUsageStats, buildUsageBreakdown
   });
 
-  // 配置冲突时用户选择“重新加载磁盘配置”：丢内存快照、重新读盘，并按与保存路径相同的
-  // 口径重排所有缓存配置的子系统；单个子系统起不来只记警告，不把整次重载判失败。
-  router.add('POST', '/api/config/reload', async (req, res) => {
-    // 只读地看一眼磁盘版本做前置校验：不调用 loadConfig()，避免它更新基线后让后续保存
-    // 把这份被拒绝的配置当成“自己的版本”静默覆盖。
-    let diskToken = '';
-    try {
-      const disk = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8').replace(/^\uFEFF/, ''));
-      diskToken = String(disk?.server?.token || '');
-    } catch (error) {
-      if (error?.code !== 'ENOENT') {
-        return json(res, 409, {
-          ok: false,
-          code: 'CONFIG_RELOAD_REJECTED',
-          error: `磁盘 config.json 解析失败，未重载：${String(error?.message ?? error)}`
-        });
-      }
-    }
-    // 运行期套接字固定在 start() 的绑定地址上；重载一份没令牌的配置会让远程控制台立即失联。
-    if (boundServerHost && !['127.0.0.1', 'localhost', '::1'].includes(boundServerHost) && !diskToken) {
-      return json(res, 409, {
-        ok: false,
-        code: 'CONFIG_RELOAD_REJECTED',
-        error: '磁盘配置没有控制台令牌，而控制台已绑定在非回环地址；重新加载会让远程控制台全部失联，请先恢复 server.token 再重载'
-      });
-    }
-
-    const previous = getConfig();
-    const previousModes = new Map(
-      store.listChats().map((chatKey) => [chatKey, conversationConfigForChat(chatKey).mode])
-    );
-    const next = reloadConfig();
-    const warnings = [];
-    const warn = (label, error) => {
-      const text = `${label}：${String(error?.message ?? error)}`;
-      warnings.push(text);
-      if (error instanceof Error) moduleLog('config')(text, error);
-      else moduleLog('config')(text);
-    };
-
-    store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
-    store.setSynchronous(next.store?.sqliteSynchronous);
-    sessions.setPersistIntervalMs(next.store?.sessionPersistMs);
-
-    let closedThreads = 0;
-    for (const [chatKey, previousMode] of previousModes) {
-      if (conversationConfigForChat(chatKey).mode !== previousMode) {
-        if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
-      }
-    }
-    if (closedThreads) emit('chat-update', '*');
-
-    if (JSON.stringify(next.proactive || {}) !== JSON.stringify(previous.proactive || {})) {
-      if (next.proactive?.enabled) orchestrator.startProactiveLoop();
-      else orchestrator.stopProactiveLoop();
-    }
-    if (JSON.stringify(next.dailyMoments || {}) !== JSON.stringify(previous.dailyMoments || {})) {
-      dailyMoments.reconfigure();
-    }
-    if (JSON.stringify(next.lifeFeed || {}) !== JSON.stringify(previous.lifeFeed || {})) {
-      lifeFeed.reconfigure();
-    }
-    if (JSON.stringify(next.qzoneInteractions || {}) !== JSON.stringify(previous.qzoneInteractions || {})) {
-      qzoneInteractions.reconfigure();
-    }
-    if (JSON.stringify(next.groupDigest || {}) !== JSON.stringify(previous.groupDigest || {})) {
-      groupDigest.reconfigure();
-    }
-    if (JSON.stringify(next.adminBriefing || {}) !== JSON.stringify(previous.adminBriefing || {})
-      || String(next.admin?.ownerUin || '') !== String(previous.admin?.ownerUin || '')) {
-      adminBriefing.reconfigure();
-    }
-    if (JSON.stringify(next.plugins || {}) !== JSON.stringify(previous.plugins || {})) {
-      // 与保存路径一致：不 await，控制台重载不该等第三方插件子进程起完。
-      Promise.resolve(pluginRegistry.reconfigure())
-        .catch((error) => warn('插件重排失败', error));
-    }
-    if (JSON.stringify(next.mcp || {}) !== JSON.stringify(previous.mcp || {})) {
-      try { await mcpManager.reload(); }
-      catch (error) { warn('MCP 重载失败', error); }
-    }
-
-    if (JSON.stringify(next.incidentPilot || {}) !== JSON.stringify(previous.incidentPilot || {})) {
-      try {
-        syncIncidentPilot();
-        for (const chatKey of store.listChats()) orchestrator.enforceChatControl(chatKey);
-      } catch (error) {
-        warn('异常处理实验重排失败', error);
-      }
-    }
-    const identityChanged = JSON.stringify(next.identityPilot || {}) !== JSON.stringify(previous.identityPilot || {});
-    const identitySourcesChanged = JSON.stringify({
-      allow: next.allow || {},
-      deny: next.deny || {},
-      allowAllWhenEmpty: next.allowAllWhenEmpty === true,
-      blocklist: next.blocklist || {}
-    }) !== JSON.stringify({
-      allow: previous.allow || {},
-      deny: previous.deny || {},
-      allowAllWhenEmpty: previous.allowAllWhenEmpty === true,
-      blocklist: previous.blocklist || {}
-    });
-    const personaChanged = JSON.stringify(next.persona || {}) !== JSON.stringify(previous.persona || {});
-    if (identityChanged || (identityPilotEnabled(next) && (identitySourcesChanged || personaChanged))) {
-      try {
-        await syncIdentityPilot({
-          reindex: identitySourcesChanged,
-          reconfigure: identityChanged || identitySourcesChanged || personaChanged
-        });
-      } catch (error) {
-        warn('统一身份库重排失败', error);
-      }
-    }
-    if (JSON.stringify(next.slangPilot || {}) !== JSON.stringify(previous.slangPilot || {})) {
-      try { await syncSlangPilot(); }
-      catch (error) { warn('黑话语料库重排失败', error); }
-    }
-    initPriceFeed(next.api?.priceRemoteUrl || '');
-    initChannelPrices(next.api?.channelPriceFeeds || []);
-
-    auditWrite('config.reload', 'config', { req, changed: changedTopKeys(previous, next) });
-    emit('status', { configUpdated: true });
-    return json(res, 200, {
-      ok: true,
-      config: safeConfigWithAsrStatus(next),
-      configConflict: getConfigConflict(),
-      ...(warnings.length ? { warnings } : {})
-    });
+  registerConfigRoutes(router, {
+    json, readBody, getConfig, updateConfig, auditWrite, emit, log,
+    store, orchestrator, sessions, mcpManager, pluginRegistry,
+    dailyMoments, lifeFeed, qzoneInteractions, groupDigest, adminBriefing,
+    safeConfigWithAsrStatus,
+    syncIncidentPilot, syncIdentityPilot, syncSlangPilot,
+    getConfigConflict, getBoundServerHost: () => boundServerHost,
+    dataDir: DATA_DIR, configLog: moduleLog('config'), mcpLog: moduleLog('mcp'), stableJson
   });
 
-  router.add('POST', '/api/group-game/stop', async (req, res) => {
-    // 管理员在控制台结束某一局（局跑歪/要收场时用）：与模型调 group_game stop 走同一入口
-    const body = await readBody(req);
-    const chatKey = String(body?.chatKey || '').trim();
-    if (!/^group:[^:\s]+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 要写成 group:<群号>' });
-    const out = await groupGame.stop(chatKey, '管理员在控制台结束');
-    if (!out?.ok) return json(res, 404, { ok: false, error: out?.error || '这个群没有进行中的游戏' });
-    return json(res, 200, { ok: true });
-  });
-  router.add('POST', '/api/group-digest/run', async (req, res) => {
-    try {
-      const result = await groupDigest.runOnce();
-      return json(res, 200, { ok: true, ...result });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('POST', '/api/admin-briefing/run', async (req, res) => {
-    try {
-      const result = await adminBriefing.runOnce();
-      return json(res, 200, { ok: true, ...result });
-    } catch (error) {
-      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/reminders', async (req, res) => {
-    // 控制台的提醒管理页：待触发全量 + 最近完成的（fired/canceled/expired）。
-    // 已完成的每个会话只保留最近几条（DONE_KEEP），这里再全局截断一次。
-    if (!reminders) return json(res, 200, { ok: true, enabled: false, pending: [], recent: [] });
-    const enabled = getConfig().reminders?.enabled !== false;
-    const fmt = (it) => ({
-      id: it.id, chatKey: it.chatKey, text: it.text, status: it.status || 'pending',
-      at: it.at, createdAt: it.createdAt, finishedAt: it.finishedAt || null,
-      // 归属（谁提的/提醒谁）：控制台列表要显示"谁请你提醒谁"（2026-10-10 反馈）
-      from: String(it.createdBy || ''), to: String(it.targetName || ''),
-      // 周期信息（v2.1）：kind 与下一次触发点（re-arm 后的 at 就是下一期）
-      repeat: it.repeat?.kind || null
-    });
-    const pending = reminders.items
-      .filter((it) => it.status === 'pending')
-      .sort((a, b) => a.at - b.at)
-      .map(fmt);
-    const recent = reminders.items
-      .filter((it) => it.status && it.status !== 'pending')
-      .sort((a, b) => (b.finishedAt || b.at) - (a.finishedAt || a.at))
-      .slice(0, 30)
-      .map(fmt);
-    return json(res, 200, { ok: true, enabled, pending, recent });
-  });
-  router.add('POST', '/api/reminders/cancel', async (req, res) => {
-    // 管理员在控制台里取消：带 id + chatKey（与聊天里"算了别提醒了"同一存储操作）
-    const body = await readBody(req);
-    if (!reminders) return json(res, 400, { ok: false, error: '提醒功能不可用' });
-    const hit = reminders.cancel({ id: String(body?.id || ''), chatKey: String(body?.chatKey || '') });
-    if (!hit) return json(res, 404, { ok: false, error: '没找到这条待触发的提醒（可能已被触发或取消）' });
-    return json(res, 200, { ok: true, canceled: hit.id });
-  });
-  // ── 生活层（见闻）────────────────────────────────────────────────────
-  router.add('GET', '/api/life-feed/status', async (req, res) => {
-    lifeFeed.drainInbox?.();
-    return json(res, 200, { ok: true, ...lifeFeed.status() });
-  });
-  router.add('POST', '/api/life-feed/forage', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) {
-      return json(res, 400, { ok: false, error: '觅食会发起外部请求，请带 confirm:true' });
-    }
-    const result = await lifeFeed.forageNow({ reason: 'manual' });
-    return json(res, result.ok ? 200 : 409, result);
-  });
-  router.add('POST', '/api/life-feed/dismiss', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body?.bvid || body?.id || '').trim();
-    if (!id) return json(res, 400, { ok: false, error: '缺少 bvid' });
-    const result = lifeFeed.dismiss(id);
-    return json(res, result.ok ? 200 : 404, result);
-  });
-  router.add('POST', '/api/life-feed/more', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const id = String(body?.bvid || body?.id || '').trim();
-    if (!id) return json(res, 400, { ok: false, error: '缺少 bvid' });
-    const result = lifeFeed.feedback({ id, action: 'more_like_this' });
-    return json(res, result.ok ? 200 : 404, result);
-  });
-  router.add('POST', '/api/life-feed/clear', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 400, { ok: false, error: '清空候选需要 confirm:true' });
-    const result = lifeFeed.clearCandidates();
-    auditWrite('life-feed.clear', 'life-feed:candidates', { req, removed: result.removed });
-    return json(res, 200, result);
-  });
-  router.add('POST', '/api/life-feed/share', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 400, { ok: false, error: '请带 confirm:true' });
-    const chatKey = String(body?.chatKey || '').trim();
-    if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 不合法' });
-    const taken = lifeFeed.takeForShare(String(body?.bvid || body?.id || ''), { manual: true });
-    if (taken.error) return json(res, 404, { ok: false, error: taken.error });
-    const item = taken.item;
-    // 不直接发：交给主动发言链路，由模型用自己的语气说，人设/分条/限速/安静时段全部生效。
-    // B 站标题/UP 是第三方页面内容，必须去掉“【…】”这类段头伪装后再进【系统提醒】。
-    const itemSource = String(item.source || '');
-    const source = itemSource.startsWith('plugin:')
-      ? '插件见闻'
-      : (itemSource === 'rss' ? 'RSS 见闻' : 'B 站见闻');
-    const note = `【系统提醒】可以分享这条${source}：${sanitizeUserText(String(item.title ?? ''))}`
-      + `（UP：${sanitizeUserText(String(item.up ?? ''))}）${sanitizeUserText(String(item.url ?? ''))}。`
-      + `请调用 share_bilibili（bvid=${item.id}，comment=你的一句话）发送标题链接和封面，不要用 send_message 重复发链接。`
-      .slice(0, 600);
-    const wake = orchestrator.requestManualWake(chatKey, { wakeNote: note });
-    if (!wake.ok) {
-      // 没有真正进入发送链路：撤回 offer/排队记录，允许用户稍后重试。
-      lifeFeed.releaseShare(item.id);
-      return json(res, 409, { ok: false, error: wake.reason || '无法安排这次分享' });
-    }
-    auditWrite('life-feed.share', chatKey, { req, bvid: item.id });
-    return json(res, 200, { ok: true, status: 'queued', item });
-  });
+  // 群游戏结束 / 群日报 / 管理员早报 / 提醒 管理
+  registerManagerRoutes(router, { json, readBody, auditWrite, getConfig, groupGame, groupDigest, adminBriefing, reminders });
 
-  // ── 数据备份/恢复：真正停服的动作都放到 user manager 的 transient unit 里 ──
-  let maintenanceTask = '';
-  const backupDirPath = () => process.env.QQ_AGENT_BACKUP_DIR
-    || path.join(os.homedir(), 'qq-agent', 'backups');
-  const backupKeyPath = () => process.env.QQ_AGENT_BACKUP_KEY_FILE
-    || path.join(os.homedir(), '.config', 'qq-agent', 'backup.key');
-  const runOpsCommand = (args, timeoutMs = 15 * 60 * 1000) => new Promise((resolve) => {
-    const child = spawn(process.execPath, [path.join(ROOT, 'src', 'ops.js'), ...args], {
-      cwd: ROOT,
-      env: { ...process.env, QQ_AGENT_DATA_DIR: DATA_DIR }
-    });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* ignore */ }
-      finish({ ok: false, code: null, timedOut: true, stdout, stderr });
-    }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout = (stdout + chunk.toString()).slice(-20000); });
-    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-20000); });
-    child.on('error', (error) => finish({ ok: false, code: null, stdout, stderr: `${stderr}${error?.message || error}` }));
-    child.on('close', (code) => finish({ ok: code === 0, code, timedOut: false, stdout, stderr }));
-  });
-  /**
-   * 把会 stop 自身服务的 ops 命令排进独立 transient unit：
-   * 直接用 spawn 时 console 和 ops 在同一个 service cgroup，stop 会把自己一起杀掉。
-   * 延迟 3 秒执行，给 HTTP 响应留返回时间；transient service 不继承环境，关键变量显式 setenv。
-   */
-  const queueTransientOps = (kind, opsArgs) => {
-    if (process.platform !== 'linux') {
-      return { ok: false, error: '控制台执行只支持 Linux + systemd；请用 SSH 执行 ops 命令' };
-    }
-    const probe = spawnSync('systemd-run', ['--version'], { encoding: 'utf8' });
-    if (probe.status !== 0) {
-      return { ok: false, error: '本机没有可用的 systemd-run；请用 SSH 执行 ops 命令' };
-    }
-    const dataDirAbs = path.resolve(DATA_DIR);
-    // 服务名优先取部署元数据：deploy.sh --service <自定义名> 时硬编码的 qq-agent-linux
-    // 会让 ops 判成"服务未加载"，于是备份不停服务（tar 正在写的 SQLite）、恢复在服务运行时
-    // 换数据目录。与环境变量、AutoUpdateManager.deployment() 同一口径。
-    const deploymentService = (() => {
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(ROOT, '.deployment.json'), 'utf8'));
-        return String(meta?.service || '').trim();
-      } catch { return ''; }
-    })();
-    const service = process.env.QQ_AGENT_SERVICE || deploymentService || 'qq-agent-linux.service';
-    const unit = `qq-agent-${kind}-${Date.now()}`;
-    const setenv = (key, value) => `--setenv=${key}=${value}`;
-    const args = [
-      '--user', '--unit', unit, '--collect', '--on-active=3',
-      `--working-directory=${ROOT}`,
-      setenv('QQ_AGENT_DATA_DIR', dataDirAbs),
-      setenv('QQ_AGENT_SERVICE', service),
-      setenv('QQ_AGENT_BACKUP_DIR', backupDirPath()),
-      ...(process.env.QQ_AGENT_BACKUP_KEY_FILE
-        ? [setenv('QQ_AGENT_BACKUP_KEY_FILE', process.env.QQ_AGENT_BACKUP_KEY_FILE)]
-        : []),
-      ...(process.env.QQ_AGENT_BACKUP_KEY ? [setenv('QQ_AGENT_BACKUP_KEY', process.env.QQ_AGENT_BACKUP_KEY)] : []),
-      process.execPath, path.join(ROOT, 'src', 'ops.js'),
-      ...opsArgs.map((arg) => (arg === DATA_DIR ? dataDirAbs : arg))
-    ];
-    const queued = spawnSync('systemd-run', args, { cwd: ROOT, encoding: 'utf8', timeout: 10000 });
-    if (queued.status !== 0) {
-      return {
-        ok: false,
-        error: `任务排队失败：${String(queued.stderr || queued.stdout || '').trim().slice(0, 300) || 'systemd-run 失败'}`
-      };
-    }
-    maintenanceTask = unit;
-    const clear = setTimeout(() => { if (maintenanceTask === unit) maintenanceTask = ''; }, 60 * 60 * 1000);
-    if (clear.unref) clear.unref();
-    return { ok: true, unit };
-  };
-  router.add('GET', '/api/backup/status', async (req, res) => {
-    const dir = backupDirPath();
-    let files = [];
-    try {
-      files = fs.readdirSync(dir)
-        .filter((name) => /\.tar\.gz(?:\.enc)?$/.test(name))
-        .map((name) => {
-          const full = path.join(dir, name);
-          const stat = fs.statSync(full);
-          return { name, bytes: stat.size, mtime: stat.mtimeMs };
-        })
-        .sort((a, b) => b.mtime - a.mtime)
-        .slice(0, 20);
-    } catch { /* 目录不存在时返回空列表 */ }
-    return json(res, 200, {
-      ok: true,
-      dir,
-      keyExists: fs.existsSync(backupKeyPath()),
-      files,
-      restoreCli: files[0]
-        ? `node src/ops.js restore --from ${path.join(dir, files[0].name)} --confirm`
-        : ''
-    });
-  });
-  router.add('POST', '/api/backup/run', async (req, res) => {
-    if (maintenanceTask) return json(res, 409, { ok: false, error: `已有备份/恢复任务在排队（${maintenanceTask}）` });
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 400, { ok: false, error: '执行备份需要 confirm:true' });
-    if (maintenanceTask) return json(res, 409, { ok: false, error: `已有备份/恢复任务在排队（${maintenanceTask}）` });
-    const dir = backupDirPath();
-    try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { /* 失败交给 ops 报 */ }
-    maintenanceTask = 'pending';
-    const queued = queueTransientOps('backup', [
-      'backup', '--confirm', '--data', DATA_DIR, '--backup-dir', dir
-    ]);
-    if (!queued.ok) {
-      maintenanceTask = '';
-      return json(res, 500, { ok: false, error: queued.error });
-    }
-    auditWrite('backup.run', dir, { req, unit: queued.unit });
-    return json(res, 202, {
-      ok: true,
-      status: 'queued',
-      unit: queued.unit,
-      note: '备份已排队，约 3 秒后开始。服务会短暂停止并重启，控制台可能断开几秒，完成后刷新页面。'
-    });
-  });
-  router.add('POST', '/api/backup/verify', async (req, res) => {
-    const body = await readBody(req).catch(() => ({}));
-    const name = path.basename(String(body?.file || ''));
-    if (!/\.tar\.gz(?:\.enc)?$/.test(name)) return json(res, 400, { ok: false, error: '备份文件名不合法' });
-    const full = path.join(backupDirPath(), name);
-    if (!fs.existsSync(full)) return json(res, 404, { ok: false, error: '备份文件不存在' });
-    const result = await runOpsCommand(['restore', '--from', full, '--dry-run', '--data', DATA_DIR], 5 * 60 * 1000);
-    return json(res, result.ok ? 200 : 500, {
-      ok: result.ok,
-      code: result.code,
-      timedOut: result.timedOut,
-      output: `${result.stdout}${result.stderr}`.slice(-4000)
-    });
-  });
+  // 生活层（见闻）
+  registerLifeFeedRoutes(router, { json, readBody, lifeFeed, auditWrite, orchestrator });
 
-  router.add('POST', '/api/backup/restore', async (req, res) => {
-    if (maintenanceTask) {
-      return json(res, 409, { ok: false, error: `已有备份/恢复任务在排队（${maintenanceTask}），不要重复提交` });
-    }
-    const body = await readBody(req).catch(() => ({}));
-    if (body?.confirm !== true) return json(res, 400, { ok: false, error: '恢复需要 confirm:true' });
-    if (maintenanceTask) {
-      return json(res, 409, { ok: false, error: `已有备份/恢复任务在排队（${maintenanceTask}），不要重复提交` });
-    }
-    const name = path.basename(String(body?.file || ''));
-    if (!/\.tar\.gz(?:\.enc)?$/.test(name)) return json(res, 400, { ok: false, error: '备份文件名不合法' });
-    const full = path.join(backupDirPath(), name);
-    if (!fs.existsSync(full)) return json(res, 404, { ok: false, error: '备份文件不存在' });
-    maintenanceTask = 'pending';
-    const queued = queueTransientOps('restore', [
-      'restore', '--from', full, '--confirm', '--data', DATA_DIR
-    ]);
-    if (!queued.ok) {
-      maintenanceTask = '';
-      return json(res, 500, { ok: false, error: queued.error });
-    }
-    auditWrite('backup.restore', name, { req, unit: queued.unit });
-    return json(res, 202, {
-      ok: true,
-      status: 'queued',
-      unit: queued.unit,
-      note: '恢复已排队，约 3 秒后开始。服务会短暂停止并重启，控制台可能断开几秒，完成后刷新页面。'
-    });
-  });
+  // 数据备份/恢复（队列与维护状态都在模块内）
+  registerBackupRoutes(router, { json, readBody, auditWrite });
 
   router.add('GET', '/api/group-policy', async (req, res) => {
     const cfgNow = getConfig();
@@ -6232,81 +2914,9 @@ export function createApp({
       });
     }
   });
-  router.add('GET', '/api/models', async (req, res) => {
-    try {
-      const models = await listModels();
-      return json(res, 200, { models });
-    } catch (error) {
-      return json(res, 502, { error: String(error?.message ?? error) });
-    }
-  });
-  router.add('GET', '/api/sessions', async (req, res, params, url) => {
-    // 单次最多 2000 条；支持 offset 游标，避免控制台一次拉走全部历史。
-    const limit = Math.min(2000, Math.max(1, Number(url.searchParams.get('limit')) || 200));
-    const offset = Math.max(0, Math.floor(Number(url.searchParams.get('offset')) || 0));
-    const now = Date.now();
-    const threadCache = new Map();
-    const rows = sessions.listSummaries(offset + limit).slice(offset);
-    return json(res, 200, {
-      sessions: rows.map((session) => buildSessionView(session, store, { now, threadCache })),
-      offset,
-      limit,
-      nextOffset: offset + rows.length,
-      hasMore: rows.length >= limit
-    });
-  });
-  router.add('GET', '/api/chats', async (req, res) => {
-    const cfgNow = getConfig();
-    const chats = store.listChats().map((key) => {
-      const meta = store.getChatMeta(key);
-      return {
-        key,
-        ...meta,
-        lastDecision: orchestrator.decisionFor(key),
-        incidentControl: incidentPilot?.getChatControl(key) || null,
-        incidentDecision: incidentPilot?.chatDecision(key, meta) || null,
-        ...(cfgNow.timeControl?.enabled
-          ? { timeControl: timeControlState(cfgNow.timeControl, key) } : {})
-      };
-    })
-      .sort((a, b) => b.lastTs - a.lastTs);
-    // 附带群名，让 UI 能显示"群名（群号）"。
-    // 群名要调 OneBot 拿，可能慢或失败 —— 用 allSettled 保证绝不影响主流程：
-    // 拿不到的 chatName 为空，UI 自动退回只显示群号。
-    await Promise.allSettled(chats.map(async (c) => {
-      const m = /^group:(\d+)$/.exec(String(c.key || ''));
-      if (!m) { c.chatName = ''; return; }
-      try {
-        c.chatName = await Promise.race([
-          orchestrator.getChatName(m[1]),
-          new Promise((r) => setTimeout(() => r(''), 3000))   // 3s 超时保护
-        ]) || '';
-      } catch { c.chatName = ''; }
-    }));
-    return json(res, 200, { chats });
-  });
-  router.add('POST', '/api/pause', async (req, res) => {
-    const body = await readBody(req);
-    const wasPaused = orchestrator.paused;
-    orchestrator.setPaused(!!body.paused);
-    if (body.paused) slangPilot?.abortResearch('机器人已暂停');
-    else slangPilot?.resumeQueued();
-    if (wasPaused && !orchestrator.paused && !body.skipBacklog) {
-      // 恢复时自动补处理暂停期间积压的未读消息
-      orchestrator.drainBacklogAfterResume();
-    }
-    return json(res, 200, { ok: true, paused: orchestrator.paused });
-  });
-  router.add('DELETE', '/api/pause', async (req, res) => {
-    orchestrator.setPaused(false);
-    slangPilot?.resumeQueued();
-    const marked = {};
-    for (const chatKey of store.listChats()) {
-      const n = store.drainUnread(chatKey).length;
-      if (n > 0) marked[chatKey] = n;
-    }
-    emit('chat-update', '*');
-    return json(res, 200, { ok: true, paused: false, marked });
+  registerSessionRoutes(router, {
+    json, readBody, emit, getConfig, sessions, store, orchestrator, buildSessionView,
+    getIncidentPilot: () => incidentPilot, getSlangPilot: () => slangPilot
   });
 
   router.add('DELETE', /^\/api\/persona-templates\/(custom_\d+)$/, async (req, res, params) => {
@@ -6413,6 +3023,28 @@ export function createApp({
       if (!result || result.chatKey !== key) {
         return json(res, 404, { error: '未知写入不存在或已核对' });
       }
+      // run_id 可能就是副作用账本的 effect id（日报/提醒等）：admin 核对完 outbox 后
+      // 账本同步改判，否则「未知写入」标了已发送、日报仍显示 unknown 甚至会被强制重发。
+      // 只在该 run 的所有未知行都核对完、且管理员确认"已发送"时同步账本：
+      // 标 sent 是保守方向（宁可不去重发，也不重复发）；标 failed 交给日报的显式重试路径。
+      try {
+        if (result.runId && result.remaining === 0 && body.result === 'sent') {
+          // 账本可能停在 planned（发送后、结算前崩溃且 15 分钟内重启）或 unknown；
+          // settle 处理 planned，resolve 处理 unknown，两者互补才能覆盖全部非终态。
+          const settled = effects.settle(String(result.runId), 'sent', {
+            reason: 'outbox-reconcile', operationId: result.operationId, resolvedBy: 'manual'
+          });
+          if (!settled) {
+            effects.resolve(String(result.runId), 'sent', {
+              reason: 'outbox-reconcile', operationId: result.operationId
+            });
+          }
+        }
+      } catch { /* 账本改判失败不影响 outbox 核对结果 */ }
+      auditWrite('outbox.reconcile', key, {
+        req,
+        after: { operationId: result.operationId, runId: result.runId || '', result: body.result, remaining: result.remaining }
+      });
       emit('chat-update', key);
       return json(res, 200, { ok: true, result });
     } catch (error) {
@@ -6649,7 +3281,7 @@ export function createApp({
   async function start() {
     const serverCfg = getConfig().server;
     if (!['127.0.0.1', 'localhost', '::1'].includes(serverCfg.host) && !serverCfg.token) {
-      throw new Error('Console token required for LAN binding');
+      throw new Error('控制台绑定到非回环地址时必须设置 server.token（控制台令牌），否则远程访问无法鉴权');
     }
     // 先把 HTTP 服务拉起来，让窗口/浏览器立刻能加载页面（loading 壳）
     const basePort = Number(getConfig().server?.port) || 3210;
@@ -6665,6 +3297,10 @@ export function createApp({
       }
     }
     if (port == null) throw lastError ?? new Error('无法监听端口');
+    // 抢到端口才说明是唯一在跑的本实例：此时上一条命留下的 planned 不可能还在执行。
+    // 不等 15 分钟 TTL，否则重启落在发送窗口内会让日报/游戏播报被当成 in-flight 跳过当天。
+    effects.markStalePlanned({ olderThanMs: 0, minAgeMs: 0 });
+    effects.prune();
 
     await onebot.connect();
     if (
@@ -6747,7 +3383,8 @@ export function createApp({
   }
 
   async function stop() {
-    pluginsStarted = false;
+    try {
+      pluginsStarted = false;
     // 安装脚本别被落下：进程重启/停服时它是孤儿进程，会一直占着构建目录。
     // 只 kill 包装进程不够：它 spawnSync 出来的 cmake/make 会活下来继续写构建目录、与下一次安装并发
     // （超时那条路径早就按进程组杀了，这里同款处理，2026-09-26 审查）。
@@ -6806,7 +3443,12 @@ export function createApp({
       server.closeIdleConnections?.();
     });
     memory.close();
-    store.close();
+      store.close();
+    } finally {
+      // 锁释放放到最后：store/session/插件都收尾完，新实例才能起来写同一目录。
+      instanceLock?.release();
+      instanceLock = null;
+    }
   }
 
   return {
@@ -6848,6 +3490,8 @@ export function createApp({
     // 外部模块注册控制台路由的唯一入口（改进方案 #2 / J.1 的例外路由收口）：
     // 与内部路由共享同一套鉴权（auth 默认 true）、405 与未命中 404 语义。
     addRoute(method, routePath, handler, opts) { router.add(method, routePath, handler, opts); },
+    // 路由清单快照（getRoutes 与 addRoute 同一口径）：结构拆分时用它证明"注册集合没变"。
+    listRoutes() { return router.listRoutes(); },
     // 外部模块写审计（#5）：例外路由（manual-friend-review）用它留痕，语义与内部埋点一致
     // （旁路、脱敏、永不抛；见 core/audit-log.js）。
     auditWrite
@@ -7103,7 +3747,8 @@ const USAGE_CACHE_TTL_MS = 120000;  // Issue #45：60 → 120 秒。签名不再
 export function sessionsDirSignature() {
   const dir = path.join(DATA_DIR, 'sessions');
   try {
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
+    // 文件名集合（含压缩归档）：压缩会改名，签名随之变化一次，缓存失效后重算即可。
+    const files = listSessionFiles(dir).map((f) => path.basename(f.file)).sort();
     return crypto.createHash('sha1').update(files.join('\n')).digest('hex');
   } catch {
     return '';
@@ -7140,8 +3785,20 @@ function collectUsageRows({ range }) {
   }
 
   const dir = path.join(DATA_DIR, 'sessions');
-  let files = [];
-  try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch { return { rows: [], win, searchCount: 0, toolCounts: {} }; }
+  // 留档可能已被压缩成 .json.gz：统一走 listSessionFiles/readSessionFile，
+  // 否则"用量"会静默少算压缩掉的那几个月（同一 id 两种形态并存时只算明文那份）。
+  const byId = new Map();
+  try {
+    for (const entry of listSessionFiles(dir)) {
+      const cur = byId.get(entry.id);
+      if (!cur || (cur.compressed && !entry.compressed)) byId.set(entry.id, entry);
+    }
+  } catch {
+    // 目录读不了（EACCES/EBUSY）：返回空结果，不能让用量接口 500。
+    // 空结果会进缓存，TTL 到期后重试。
+    return { rows: [], win, searchCount: 0, toolCounts: {} };
+  }
+  const files = [...byId.values()];
   // mtime 预筛（2026-10-02）：窗口外的会话文件不必读 —— 749 个文件全读 + parse 约 1 秒，
   // 是"用量页打开要等一秒"的主因。会话文件的写入发生在运行期内/之后，mtime 只会晚于
   // startedAt，留 6 小时余量后按 mtime 跳过窗口外文件是安全的。
@@ -7155,13 +3812,13 @@ function collectUsageRows({ range }) {
   let searchCount = 0;
   const toolCounts = Object.create(null);
 
-  for (const f of files) {
-    const filePath = path.join(dir, f);
+  for (const entry of files) {
+    const filePath = entry.file;
     if (mtimeFloor > 0) {
       try { if (fs.statSync(filePath).mtimeMs < mtimeFloor) continue; } catch { continue; }
     }
-    let s;
-    try { s = JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { continue; }
+    const s = readSessionFile(filePath);
+    if (!s) continue;
     const started = Number(s.startedAt) || 0;
     if (!started) continue;
 
