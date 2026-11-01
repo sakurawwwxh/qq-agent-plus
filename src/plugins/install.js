@@ -91,6 +91,14 @@ export function parseTarGz(buffer) {
     const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/, '');
     const prefix = header.subarray(345, 500).toString('utf8').replace(/\0.*$/, '');
     const size = readOctal(header.subarray(124, 136));
+    // 负长度会让 offset 原地踏步（dataEnd=offset-512 + padding 又回到 offset），
+    // 主进程同步死循环 + entries 无限增长（2026-10-31 盲审 P2）。
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw fail('E_ARCHIVE', `归档条目长度非法：${size}`);
+    }
+    if (size > MAX_TOTAL_UNPACKED) {
+      throw fail('E_ARCHIVE', `单个条目超过解包上限 ${Math.round(MAX_TOTAL_UNPACKED / 1024 / 1024)}MB`);
+    }
     const typeByte = header[156];
     const type = String.fromCharCode(typeByte || 0x30);
     // 名字归一化：`tar -czf x .` 打出来的条目叫 `./x`，`tar -czf x dir/` 会带尾斜杠 ——
@@ -124,7 +132,9 @@ export function parseTarGz(buffer) {
     if (total > MAX_TOTAL_UNPACKED) throw fail('E_ARCHIVE', '解包后体积超过上限，已拒绝安装');
     if (type !== '5') entries.push({ name: full, type: 'file', data: raw.subarray(offset, dataEnd) });
     else entries.push({ name: full.replace(/\/$/, ''), type: 'dir', data: null });
-    offset = dataEnd + ((TAR_BLOCK - (size % TAR_BLOCK)) % TAR_BLOCK);
+    const nextOffset = dataEnd + ((TAR_BLOCK - (size % TAR_BLOCK)) % TAR_BLOCK);
+    if (nextOffset < offset) throw fail('E_ARCHIVE', '归档条目长度非法（解析无法前进）');
+    offset = nextOffset;
   }
   if (!entries.length) throw fail('E_ARCHIVE', '归档里没有任何文件');
   return entries;

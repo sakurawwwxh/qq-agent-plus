@@ -21,9 +21,10 @@
 //           peak/image/note/src 可选，与内置表条目同构。
 import fs from 'node:fs';
 import path from 'node:path';
-import { DATA_DIR } from '../core/config.js';
+import { DATA_DIR, getConfig } from '../core/config.js';
 import { setRemotePrices } from './model-prices.js';
 import { readJsonBounded } from '../core/http-body.js';
+import { fetchJsonSafe } from './safe-fetch-json.js';
 
 const CACHE_FILE = path.join(DATA_DIR, 'price-feed-cache.json');
 const FETCH_TIMEOUT_MS = 10000;
@@ -239,8 +240,11 @@ export function refreshPriceFeed(configured, options = {}) {
 }
 
 async function refreshOnce(configured, options = {}) {
-  const fetchImpl = options.fetchImpl || fetch;
+  // 生产路径走 safe-fetch（SSRF 防线）；fetchImpl 只给测试注入本地假实现。
+  const fetchImpl = options.fetchImpl || null;
   const timeoutMs = Number(options.timeoutMs) || FETCH_TIMEOUT_MS;
+  const allowPrivate = options.allowPrivate
+    ?? getConfig().security?.allowPrivatePriceHosts === true;
   const targets = priceFeedTargets(configured);
   status.url = String(configured ?? '').trim();
   status.fetchedAt = Date.now();
@@ -254,14 +258,18 @@ async function refreshOnce(configured, options = {}) {
   const failures = [];
   for (const url of targets) {
     try {
-      const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // 有界读（2MB）：超限与非法 JSON 分开报（2026-10-09 审查）
       let data;
-      try {
-        data = await readJsonBounded(res, 2 * 1024 * 1024);
-      } catch (error) {
-        throw new Error(error?.code === 'BODY_TOO_LARGE' ? '价格文件过大（超过 2MB）' : '返回的不是合法 JSON');
+      if (!fetchImpl) {
+        data = await fetchJsonSafe(url, { timeoutMs, allowPrivate });
+      } else {
+        const res = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // 有界读（2MB）：超限与非法 JSON 分开报（2026-10-09 审查）
+        try {
+          data = await readJsonBounded(res, 2 * 1024 * 1024);
+        } catch (error) {
+          throw new Error(error?.code === 'BODY_TOO_LARGE' ? '价格文件过大（超过 2MB）' : '返回的不是合法 JSON');
+        }
       }
       const norm = normalizePriceFeed(data);
       if (!norm) throw new Error('JSON 里没有可用的价格条目');

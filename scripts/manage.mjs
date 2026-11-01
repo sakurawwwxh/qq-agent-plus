@@ -96,7 +96,7 @@ if (['start', 'stop', 'restart', 'status'].includes(command)) {
   fs.mkdirSync(target, { recursive: true, mode: 0o700 });
   // 复制数据目录下的全部条目，只跳过可重建的临时物。写死清单会随功能增加而漏掉东西
   // （身份/关系/事故台账、daily-moments、群动态与主动发言状态都曾经在清单之外）。
-  const skip = new Set(['deploy-backups', 'update-work', 'update-repository.git']);
+  const skip = new Set(['deploy-backups', 'update-work', 'update-repository.git', '.server.lock']);
   for (const entry of fs.readdirSync(deploy.data, { withFileTypes: true })) {
     const { name } = entry;
     if (skip.has(name) || name.startsWith('.')) continue;

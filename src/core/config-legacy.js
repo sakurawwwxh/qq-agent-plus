@@ -300,6 +300,10 @@ export const DEFAULT_CONFIG = {
   // 安全例外（默认只放行 fake-ip 的 DNS 结果，其余全部关闭）
   security: {
     allowPrivateImageHosts: false,          // true 时图片下载允许内网地址（仅本地测试/自建图床）
+    // true 时价目类 URL（价格探测/渠道价目表/远程价格表）允许内网地址。
+    // 默认 false：这些 URL 由用户在控制台填写，必须走 safe-fetch 的 SSRF 防线；
+    // 只有确实要拉内网 one-api 的部署才打开（2026-10-31 复审）。
+    allowPrivatePriceHosts: false,
     // 代理软件（Clash/mihomo 等）的 fake-ip 模式会把任意域名解析到 198.18.0.0/15。
     // 只对「DNS 解析结果」放行这些网段；直接写 IP 的 URL 仍然拦，
     // 127/10/192.168/169.254 等真正的内网地址也仍然拦。需要 fake-ip6 时
@@ -867,6 +871,12 @@ export const DEFAULT_CONFIG = {
     // 运行中会话 JSON 的落盘间隔（毫秒）。会话文件含完整记录、越跑越大，2 秒一次会把
     // 小云盘的 IOPS 打满（Issue #45）；10 秒一次最多丢 10 秒运行中进度，finish 仍立即落盘。
     sessionPersistMs: 10000,
+    // 多少天前结束的留档压成 .json.gz（压缩比通常 8–10 倍）。0 = 不压缩。
+    // 读取方已全部兼容压缩归档；只在每日保留期调度里跑，不占启动时间。
+    sessionCompressAfterDays: 30,
+    // 留档目录总量上限（MB）。超出后按最旧优先删（运行中/等待中永不删）。0 = 不限制。
+    // 默认 1024MB 足够单群跑很多年；多群/大提示词的部署不会再无声无息吃满磁盘。
+    sessionMaxTotalMb: 1024,
     // messages.sqlite 的 synchronous：FULL（默认，最稳）/ NORMAL（WAL 下同样防损坏，
     // 但掉电可能丢最近几条提交；磁盘 IOPS 紧张时可选）。见 Issue #45。
     sqliteSynchronous: 'FULL'
@@ -924,7 +934,12 @@ export const DEFAULT_CONFIG = {
     port: 3210,
     host: '127.0.0.1',
     strictPort: true,
-    token: ''                 // 留空 = 只监听 127.0.0.1
+    token: '',                // 留空 = 只监听 127.0.0.1
+    // 反代（nginx/宝塔）地址白名单：只有 TCP 对端命中这里时，才采信
+    // x-forwarded-for/x-real-ip 作为登录限流键；空数组 = 不信任任何转发头。
+    trustedProxies: [],
+    // 同一数据目录只允许一个实例；陈旧 pid 会自动接管（<DATA_DIR>/.server.lock）。
+    singleInstanceLock: true
   },
   ui: {
     // ── 外观（2026-10-08 v3，七轴）────────────────────────────────────────────
@@ -1842,7 +1857,9 @@ const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && 
 function deepMerge(base, override) {
   if (override === null || override === undefined) return structuredClone(base);
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return structuredClone(override);
-  const out = Array.isArray(base) ? [...base] : { ...base };
+  // 必须深拷贝：未命中 patch 的分支若与 base 共享引用，migrateConfig/归一化会在
+  // 写盘前就地改写它们；写盘失败回滚 previousConfig 时，内存配置已被污染（2026-10-31 审查 P2）。
+  const out = structuredClone(base);
   for (const [key, value] of Object.entries(override)) {
     // 整体替换约定：{ __replace__: X } → 该键直接用 X，不做递归合并。
     // 用于映射型字段（如 api.modelPrices）需要"删掉旧键"的场景 ——

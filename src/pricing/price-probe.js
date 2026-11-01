@@ -12,6 +12,8 @@
 // 所有失败都以 { ok:false, error } 返回，不抛异常。
 import { normalizePriceFeed } from './price-feed.js';
 import { readJsonBounded } from '../core/http-body.js';
+import { getConfig } from '../core/config.js';
+import { fetchJsonSafe } from './safe-fetch-json.js';
 
 const DEFAULT_USD_RATE = 7.2;
 const DEFAULT_TIMEOUT_MS = 10000;
@@ -122,8 +124,11 @@ export function oneApiPricesToTable(payload, usdRate) {
  *   tried:string[], error:string}>}
  */
 export async function probeChannelPrices(options = {}) {
-  const fetchImpl = options.fetchImpl || fetch;
+  // 生产路径走 safe-fetch（SSRF 防线）；fetchImpl 只给测试注入本地假实现。
+  const fetchImpl = options.fetchImpl || null;
   const timeoutMs = Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS;
+  const allowPrivate = options.allowPrivate
+    ?? getConfig().security?.allowPrivatePriceHosts === true;
   const candidates = probeCandidates(options.url);
   const tried = [];
   const result = {
@@ -146,6 +151,7 @@ export async function probeChannelPrices(options = {}) {
 
   const fetchJson = async (url) => {
     tried.push(url);
+    if (!fetchImpl) return fetchJsonSafe(url, { timeoutMs, allowPrivate });
     const res = await fetchImpl(url, {
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(timeoutMs)

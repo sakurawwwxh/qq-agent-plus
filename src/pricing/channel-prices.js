@@ -15,6 +15,7 @@ import { setChannelPrices } from './model-prices.js';
 import { normalizePriceFeed } from './price-feed.js';
 import { probeChannelPrices } from './price-probe.js';
 import { readJsonBounded } from '../core/http-body.js';
+import { fetchJsonSafe } from './safe-fetch-json.js';
 
 const FILE = path.join(DATA_DIR, 'channel-prices.json');
 const CACHE_VERSION = 1;
@@ -160,24 +161,31 @@ export async function refreshChannelFeed(vendor, url, options = {}) {
     if (removedAt[v]) delete removedAt[v];
   }
   const wasConfigured = configured;
-  const fetchImpl = options.fetchImpl || fetch;
+  // 生产路径走 safe-fetch（SSRF 防线）；fetchImpl 只给测试注入本地假实现。
+  const fetchImpl = options.fetchImpl || null;
   const timeoutMs = Number(options.timeoutMs) || FETCH_TIMEOUT_MS;
+  const allowPrivate = options.allowPrivate
+    ?? getConfig().security?.allowPrivatePriceHosts === true;
   let loaded = null;   // { prices, url, dropped }
   let error = '';
 
   // ① 先按"价目 JSON"直接拉：用户自己配的地址通常是这种（in/out 价目或倍率表）。
   try {
-    const res = await fetchImpl(target, {
-      headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // 有界读（2MB）：价目文件不该无上限；超限与非法 JSON 分开报，别把"太大"说成"不合法"（2026-10-09 审查）
     let payload;
-    try {
-      payload = await readJsonBounded(res, 2 * 1024 * 1024);
-    } catch (error) {
-      throw new Error(error?.code === 'BODY_TOO_LARGE' ? '价目文件过大（超过 2MB）' : '返回的不是合法 JSON');
+    if (!fetchImpl) {
+      payload = await fetchJsonSafe(target, { timeoutMs, allowPrivate });
+    } else {
+      const res = await fetchImpl(target, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // 有界读（2MB）：价目文件不该无上限；超限与非法 JSON 分开报，别把"太大"说成"不合法"（2026-10-09 审查）
+      try {
+        payload = await readJsonBounded(res, 2 * 1024 * 1024);
+      } catch (error) {
+        throw new Error(error?.code === 'BODY_TOO_LARGE' ? '价目文件过大（超过 2MB）' : '返回的不是合法 JSON');
+      }
     }
     const norm = normalizePriceFeed(payload);
     if (!norm || !Object.keys(norm.prices).length) throw new Error('没有可用的价格条目（需要 in/out 价目或倍率表）');
@@ -188,7 +196,7 @@ export async function refreshChannelFeed(vendor, url, options = {}) {
     //    而且是 one-api 的倍率表（要按汇率/分组换算），直接拉 Base URL 只会拿到
     //    404 或 HTML。探测成功后记下真正命中的地址，下次少走一遍。
     try {
-      const probe = await probeChannelPrices({ url: target, timeoutMs, fetchImpl: options.fetchImpl });
+      const probe = await probeChannelPrices({ url: target, timeoutMs, fetchImpl: options.fetchImpl, allowPrivate });
       if (probe.ok && Object.keys(probe.prices || {}).length) {
         loaded = {
           prices: probe.prices,

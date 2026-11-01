@@ -160,6 +160,22 @@ export class ChatStore {
       CREATE INDEX IF NOT EXISTS thread_turns_lookup
         ON thread_turns(thread_id, sequence);
       CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY);
+      -- 出站副作用账本（docs/EFFECT-LEDGER.md）：所有"对外做了一件事"的操作
+      -- 在执行前 planned、结果确定后结算；unknown 是终态，绝不自动重试。
+      -- 与 outbox 的区别：outbox 只覆盖走发送队列的消息，账本覆盖日报/提醒/游戏终局等
+      -- 业务动作，幂等键由业务给（如 digest:<群>:<日期>）。
+      CREATE TABLE IF NOT EXISTS effects (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        chat_key TEXT NOT NULL DEFAULT '',
+        idem_key TEXT NOT NULL,
+        state TEXT NOT NULL,
+        detail TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        settled_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS effects_kind_idem ON effects(kind, idem_key);
+      CREATE INDEX IF NOT EXISTS effects_state_created ON effects(state, created_at);
     `);
     ensureColumn(this.db, 'conversation_threads', 'mode', "TEXT NOT NULL DEFAULT 'threaded'");
     ensureColumn(this.db, 'conversation_threads', 'disposition', "TEXT NOT NULL DEFAULT 'active'");
@@ -1123,11 +1139,12 @@ export class ChatStore {
     };
   }
 
-  recent(chatKey, { limit = 80, offset = 0, includeSelf = true, readOnly = false, afterId = 0, beforeId = 0, scope = 'chat' } = {}) {
+  recent(chatKey, { limit = 80, offset = 0, includeSelf = true, readOnly = false, afterId = 0, beforeId = 0, fromId = null, scope = 'chat' } = {}) {
     // afterId：增量消费按 id **升序**取"游标之后最早的一批"；积压超过 limit 时下一轮继续，
     // 不能按 DESC 取最新 N 条再 reverse —— 那会把落在窗口外的最老消息静默跳过（游戏丢票）。
     // beforeId：控制台向上翻页，取"比这个 id 更老的最新 N 条"，仍按时间正序返回。
     // 非增量调用仍保持"最新 N 条、按时间正序返回"的既有语义。
+    // fromId：显式从"最老一条"开始正向取（全量导出用）；与 afterId 不同，0 也有意义。
     // scope='private'：只给"私聊共享上下文"用，读所有 private:*，按 ts 排序（跨会话没有可比 id）。
     // scope='all'：群聊与私聊共用上下文（issue #14 第二项），读所有会话，同样按 ts 排序。
     const after = Number(afterId) > 0 ? Number(afterId) : 0;
@@ -1145,6 +1162,12 @@ export class ChatStore {
         .all(Math.max(1, Number(limit) || 1), Math.max(0, Number(offset) || 0));
       return rows.reverse().map(entry);
     }
+    if (fromId !== null && fromId !== undefined) {
+      const rows = this.db.prepare(`SELECT * FROM messages WHERE chat_key=? ${filters}
+        AND id >= ? ORDER BY id ASC LIMIT ?`)
+        .all(chatKey, Math.max(0, Number(fromId) || 0), Math.max(1, Number(limit) || 1));
+      return rows.map(entry);
+    }
     if (after) {
       const rows = this.db.prepare(`SELECT * FROM messages WHERE chat_key=? ${filters}
         AND id > ? ORDER BY id ASC LIMIT ?`)
@@ -1161,6 +1184,20 @@ export class ChatStore {
       ORDER BY id DESC LIMIT ? OFFSET ?`)
       .all(chatKey, Math.max(1, Number(limit) || 1), Math.max(0, Number(offset) || 0));
     return rows.reverse().map(entry);
+  }
+
+  /** 某成员最近 N 条发言（时间正序；只读、不含自己）。记忆整理用来补充新证据。 */
+  recentBySender(chatKey, userId, limit = 30) {
+    const rows = this.db.prepare(`SELECT * FROM messages
+      WHERE chat_key=? AND self=0 AND sender_id=? ORDER BY id DESC LIMIT ?`)
+      .all(String(chatKey), String(userId), Math.max(1, Math.min(200, Number(limit) || 30)));
+    return rows.reverse().map(entry);
+  }
+
+  /** 该会话最老一条消息的 id（没有返回 0）。全量导出从这里正向分页。 */
+  firstMessageId(chatKey) {
+    const row = this.db.prepare('SELECT MIN(id) AS id FROM messages WHERE chat_key=?').get(String(chatKey));
+    return Number(row?.id) || 0;
   }
 
   /**

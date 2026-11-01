@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, getConfig } from '../core/config.js';
+import { vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { todayKey } from '../core/util.js';
 import { canRun } from '../core/access.js';
 import { chatCompletion, addUsage, emptyUsage } from '../llm/llm.js';
@@ -288,7 +289,8 @@ export class AdminBriefingManager {
         const usage = emptyUsage();
         addUsage(usage, r?.usage);
         usage.calls = 1;
-        this.sessions?.recordExternalUsage?.(usage, { model: r?.model || '' });
+        const vendor = r?.originBaseUrl ? vendorOfBaseUrl(getConfig(), r.originBaseUrl) : '';
+        this.sessions?.recordExternalUsage?.(usage, { model: r?.model || '', vendor });
       } catch { /* 记账失败不影响发送 */ }
 
       const text = String(r.message?.content || '').trim().slice(0, cfg.maxChars);

@@ -353,7 +353,7 @@ async function localTranscribe(cfg, pcm, signal) {
         + '`node scripts/install-asr-local.mjs` 即可；也可以把「识别服务」换成火山或 OpenAI 兼容服务');
   }
   const wavPath = join(tmpdir(), `qa-asr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
-  writeFileSync(wavPath, pcmToWav(pcm));
+  writeFileSync(wavPath, pcmToWav(pcm), { mode: 0o600 });
   try {
     return await localWhisperTranscribe(wavPath, {
       bin,
@@ -388,7 +388,7 @@ export async function audioBufferToPcm(buffer, { name = '', signal } = {}) {
   }
   const ext = /\.(m4a|mp3|wav|amr|aac|ogg|flac|wma|mp4|mov|avi|mkv|webm|silk)$/i.exec(String(name || ''))?.[1] || 'bin';
   const tmpFile = join(tmpdir(), `qa-audio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`);
-  writeFileSync(tmpFile, buffer);
+  writeFileSync(tmpFile, buffer, { mode: 0o600 });
   try {
     return await ffmpegToPcm(tmpFile, { signal });
   } finally {

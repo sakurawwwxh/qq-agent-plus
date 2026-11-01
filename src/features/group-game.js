@@ -3,6 +3,7 @@
 // 设计要点（docs/research/GAME_HOSTING_DESIGN.md）：私密信息（词/身份）只走私聊，公开摘要不含隐藏信息。
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { displayNameOf } from '../core/display-name.js';
 import { sanitizeUserText, ZONE_OFFSET_MS } from '../core/util.js';
@@ -22,9 +23,11 @@ const JOIN_RE = /(我玩|我要玩|我也玩|我来|我报名|报名|加我|带�
 const JOIN_NEG_RE = /不|别|勿|甭|算了|不用|拒绝/;
 
 export class GroupGameManager {
-  constructor({ store, sender, log = console.log, now = () => Date.now(), rng = Math.random, wake = null } = {}) {
+  constructor({ store, sender, effects = null, log = console.log, now = () => Date.now(), rng = Math.random, wake = null } = {}) {
     this.store = store;
     this.sender = sender;
+    // 出站副作用账本：终局播报一局只发一次；结果未知时停止自动重试
+    this.effects = effects;
     this.log = log;
     this.now = now;
     this.rng = rng;
@@ -496,6 +499,9 @@ export class GroupGameManager {
       };
       this.games.set(chatKey, {
         gameId: plugin.meta.id,
+        // 每局唯一：终局播报的幂等键用它。不能用 gameId —— 那是游戏类型，
+        // 同一个群第二局会被第一局的 sent 记录挡住，终局播报永久静默（2026-10-31 审查 P0）。
+        instanceId: crypto.randomUUID(),
         state,
         startedAt: now,
         lastSeenId: last.length ? Number(last[0].id) || 0 : 0,
@@ -524,6 +530,7 @@ export class GroupGameManager {
     const last = this.store.recent(chatKey, { limit: 1, includeSelf: true });
     const item = {
       gameId: plugin.meta.id,
+      instanceId: crypto.randomUUID(),
       state,
       startedAt: now,
       lastSeenId: last.length ? Number(last[0].id) || 0 : 0,
@@ -677,9 +684,36 @@ export class GroupGameManager {
           // 重启后不会立刻重打。
           if (Number(g.pendingEndRetryAt) > this.now()) continue;
           const name = PLUGINS.get(g.gameId)?.meta.name || '游戏';
+          const idemKey = `game:${chatKey}:${g.instanceId || g.startedAt || crypto.randomUUID()}`;
+          const began = this.effects?.begin({
+            kind: 'game-final',
+            chatKey,
+            idemKey,
+            detail: { gameId: g.gameId || '', instanceId: g.instanceId || '' }
+          });
+          if (began && (began.action === 'done' || began.action === 'review')) {
+            // 已送达（done）或上次结果未知（review）：都不再发，直接收尾
+            if (began.action === 'review') this.log(`[group-game] ${chatKey} 终局播报上次结果未知，停止自动重试`);
+            delete g.pendingEnd;
+            delete g.pendingEndRetryAt;
+            delete g.pendingEndRetryAttempts;
+            this.games.delete(chatKey);
+            this.#save();
+            continue;
+          }
+          if (began && began.action === 'in-flight') continue;
+          const effectId = began?.id || null;
           try {
-            await this.sender.sendTextBatch(chatKey, [`${name}结束：${g.pendingEnd}`.slice(0, 500)], {});
+            await this.sender.sendTextBatch(chatKey, [`${name}结束：${g.pendingEnd}`.slice(0, 500)], { runId: effectId });
+            if (effectId) this.effects.settle(effectId, 'sent', { retried: true });
           } catch (error) {
+            // 与发送队列同一口径：能证明没送达才算 failed；否则未知，绝不自动重发
+            const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : true;
+            if (effectId) {
+              this.effects.settle(effectId, uncertain ? 'unknown' : 'failed', {
+                error: String(error?.message ?? error).slice(0, 200)
+              });
+            }
             const attempts = Math.min(20, (Number(g.pendingEndRetryAttempts) || 0) + 1);
             g.pendingEndRetryAttempts = attempts;
             g.pendingEndRetryAt = this.now() + Math.min(20000 * 2 ** (attempts - 1), 10 * 60 * 1000);
@@ -791,11 +825,53 @@ export class GroupGameManager {
         } else if (effect.type === 'end') {
           const g = this.games.get(chatKey);
           const name = PLUGINS.get(g?.gameId)?.meta.name || '游戏';
+          // 没有 g 的孤儿 end 用随机键（只留痕，不参与去重）；正常路径一定带 instanceId
+          const gameKey = g ? (g.instanceId || g.startedAt || crypto.randomUUID()) : crypto.randomUUID();
+          const idemKey = `game:${chatKey}:${gameKey}`;
+          const began = this.effects?.begin({
+            kind: 'game-final',
+            chatKey,
+            idemKey,
+            detail: { gameId: g?.gameId || '', instanceId: g?.instanceId || '' }
+          });
+          if (began && began.action === 'done') {
+            // 这一局的终局播报已经送达过（另一条路径/上一命）→ 不重复发
+            if (g) delete g.pendingEnd;
+            continue;
+          }
+          if (began && began.action === 'review') {
+            // 上次结果未知：保留 pendingEnd 让重试分支按"未知"收尾，不再发送
+            if (g) g.pendingEnd = String(effect.result || '');
+            this.log(`[group-game] ${chatKey} 终局播报上次结果未知，停止自动重试`);
+            continue;
+          }
+          if (began && began.action === 'in-flight') {
+            // 另一条路径正在发这局的终局播报：挂起 pendingEnd，下个 tick 按账本 done/review 收尾，
+            // 不能直接丢弃（否则调用方看到没有 pendingEnd 就把局删了，播报静默消失）
+            if (g) {
+              g.pendingEnd = String(effect.result || '');
+              g.pendingEndRetryAt = this.now() + 20000;
+            }
+            continue;
+          }
+          const effectId = began?.id || null;
           try {
-            await this.sender.sendTextBatch(chatKey, [`${name}结束：${String(effect.result || '')}`.slice(0, 500)], {});
+            await this.sender.sendTextBatch(
+              chatKey,
+              [`${name}结束：${String(effect.result || '')}`.slice(0, 500)],
+              { runId: effectId }
+            );
+            if (effectId) this.effects.settle(effectId, 'sent');
             if (g) delete g.pendingEnd;
           } catch (error) {
             // 终局播报发不出去不能把局就地删掉 —— 挂起 pendingEnd 下个 tick 重试（2026-10-10 审查 C1）
+            // 但"结果未知"不再重发：账本记 unknown，重试分支看到 review 就收尾。
+            const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : true;
+            if (effectId) {
+              this.effects.settle(effectId, uncertain ? 'unknown' : 'failed', {
+                error: String(error?.message ?? error).slice(0, 200)
+              });
+            }
             if (g) g.pendingEnd = String(effect.result || '');
             throw error;
           }

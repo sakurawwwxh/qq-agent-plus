@@ -5,6 +5,7 @@
 // 工具命名去掉了 qq_ 前缀（更短，省 token）。
 import crypto from 'node:crypto';
 import { getConfig, imageGenAvailable, imageGenMaxPerHour } from '../core/config.js';
+import { classifyTransportFailure } from '../onebot/sender.js';
 import { imageType } from '../core/image-type.js';
 import { MAX_REMINDER_TEXT, nextAtFromHHMM, normalizeRepeat, nextOccurrenceAt } from '../core/reminders.js';
 import { synthesizeSpeech, ttsConfigured } from '../llm/tts.js';
@@ -346,6 +347,50 @@ function afterSent(run) {
     run();
   } catch (error) {
     console.warn('[tools] 消息已送达但记账失败（该条仍算已发出，不会上报失败）:', error?.message ?? error);
+  }
+}
+
+/**
+ * 直连协议端的写操作没有 outbox 兜底（超时/连接重置不会进 unknown），
+ * 这里只登记到副作用账本，让"结果未知"在控制台与诊断包里可见。
+ *
+ * 第一阶段只记录、不拦截：这些动作大体幂等（重复贴一次表情、重复设一次签名结果相同），
+ * 而且各自有 24h 闸门配额。观察到真实的 unknown 比例后再决定是否禁止自动重试
+ * （docs/EFFECT-LEDGER.md A5）。账本缺失或自身出错时绝不能影响工具调用本身。
+ */
+async function trackDirectWrite(ctx, kind, detail, run) {
+  const effects = ctx?.effects;
+  if (!effects || typeof effects.begin !== 'function') return run();
+  let began = null;
+  try {
+    began = effects.begin({
+      kind: `direct:${kind}`,
+      chatKey: ctx?.chatKey || '',
+      // 每次调用一个唯一的键：只做留痕，不参与去重（重复贴表情是用户/模型自己的选择）
+      idemKey: `direct:${kind}:${ctx?.chatKey || ''}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      detail
+    });
+  } catch { began = null; }
+  if (!began) return run();
+  try {
+    const result = await run();
+    try { effects.settle(began.id, 'sent'); } catch { /* 记账失败不影响结果 */ }
+    return result;
+  } catch (error) {
+    try {
+      // 与发送队列同一分类（classifyTransportFailure）：协议端明确拒绝/连接被拒/DNS 失败
+      // 这类**确定没发出去**的算 failed；超时/连接重置/5xx 可能已经生效的才算 unknown。
+      const { definite, uncertain } = classifyTransportFailure(error);
+      // 发送前的闸门（禁言/限频/被 abort）也属于"确定没发出去"：sender 抛的是普通 Error，
+      // 没有 outcome/beforeWrite，只能按稳定错误码识别（2026-10-31 交叉审查 P2）。
+      const preflight = error?.beforeWrite === true
+        || error?.code === 'GROUP_MUTED' || error?.code === 'SEND_RATE_LIMITED'
+        || error?.name === 'AbortError';
+      const state = error?.outcome === 'failed' || preflight
+        || (definite && !uncertain) ? 'failed' : 'unknown';
+      effects.settle(began.id, state, { error: String(error?.message ?? error).slice(0, 200) });
+    } catch { /* 同上 */ }
+    throw error;
   }
 }
 
@@ -1078,7 +1123,7 @@ export function buildToolDefs() {
           if (!gate.ok) return err(`这一小时贴的表情够多了（上限 ${reactLimit} 次），过一会儿再贴`);
           try {
             // 与 OneBotClient.reactToMessage 同一实现（wire 形状只留一处，2026-10-07 复审 P3）
-            await ctx.onebot.reactToMessage(mid, emojiId, args.set !== false, ctx.signal);
+            await trackDirectWrite(ctx, 'react', { mid, emojiId }, () => ctx.onebot.reactToMessage(mid, emojiId, args.set !== false, ctx.signal));
             actionDone(ctx, 'react');
           } catch (error) {
             reactionQuota.refund(ctx.chatKey, reservedAt);
@@ -1142,7 +1187,7 @@ export function buildToolDefs() {
           const reservedAt = Date.now();
           if (!profileQuota.tryConsume(ctx.chatKey, reservedAt).ok) return err(`今天的资料改动次数用完了（每天最多 ${profileLimit} 次）`);
           try {
-            await ctx.onebot.call('set_self_longnick', { long_nick: signature }, 15000, ctx.signal);
+            await trackDirectWrite(ctx, 'signature', { signature }, () => ctx.onebot.call('set_self_longnick', { long_nick: signature }, 15000, ctx.signal));
           } catch (error) {
             profileQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -1174,7 +1219,7 @@ export function buildToolDefs() {
           const reservedAt = Date.now();
           if (!profileQuota.tryConsume(ctx.chatKey, reservedAt).ok) return err(`今天的资料改动次数用完了（每天最多 ${profileLimit} 次）`);
           try {
-            await ctx.onebot.call('set_diy_online_status', { face_id: faceId, face_type: 1, wording }, 15000, ctx.signal);
+            await trackDirectWrite(ctx, 'status', { faceId, wording }, () => ctx.onebot.call('set_diy_online_status', { face_id: faceId, face_type: 1, wording }, 15000, ctx.signal));
           } catch (error) {
             profileQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -1236,7 +1281,7 @@ export function buildToolDefs() {
           const reservedAt = Date.now();
           if (!avatarQuota.tryConsume(ctx.chatKey, reservedAt).ok) return err(`这周的换头像次数用完了（每周最多 ${avatarLimit} 次）`);
           try {
-            await ctx.onebot.setAvatar(file, { signal: ctx.signal });
+            await trackDirectWrite(ctx, 'avatar', {}, () => ctx.onebot.setAvatar(file, { signal: ctx.signal }));
           } catch (error) {
             avatarQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -1276,7 +1321,7 @@ export function buildToolDefs() {
           const reservedAt = Date.now();
           if (!profileQuota.tryConsume(ctx.chatKey, reservedAt).ok) return err(`今天的资料改动次数用完了（每天最多 ${profileLimit} 次）`);
           try {
-            await ctx.onebot.setProfile({ nickname: nickname || undefined, personalNote, sex }, { signal: ctx.signal });
+            await trackDirectWrite(ctx, 'profile', {}, () => ctx.onebot.setProfile({ nickname: nickname || undefined, personalNote, sex }, { signal: ctx.signal }));
           } catch (error) {
             profileQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -1368,7 +1413,7 @@ export function buildToolDefs() {
           if (signedDayByChat.get(ctx.chatKey) === day) {
             return ok({ signed: false, note: '今天这个群已经签过了，不用再签。' });
           }
-          await ctx.onebot.call('set_group_sign', { group_id: Number(ctx.chatId) }, 15000, ctx.signal);
+          await trackDirectWrite(ctx, 'group-sign', { groupId: Number(ctx.chatId) }, () => ctx.onebot.call('set_group_sign', { group_id: Number(ctx.chatId) }, 15000, ctx.signal));
           signedDayByChat.set(ctx.chatKey, day);
           return ok({ signed: true, note: '已签到。' });
         } catch (error) {
@@ -1405,7 +1450,7 @@ export function buildToolDefs() {
           if (today.count >= TODO_PER_GROUP_PER_DAY) {
             return err(`今天这个群的群待办已经设了 ${TODO_PER_GROUP_PER_DAY} 条，够多了，明天再说。`);
           }
-          await ctx.onebot.call('set_group_todo', { group_id: Number(ctx.chatId), message_id: Number(mid) }, 15000, ctx.signal);
+          await trackDirectWrite(ctx, 'group-todo', { groupId: Number(ctx.chatId), mid }, () => ctx.onebot.call('set_group_todo', { group_id: Number(ctx.chatId), message_id: Number(mid) }, 15000, ctx.signal));
           today.mids.add(mid);
           today.count += 1;
           todoDayByChat.set(ctx.chatKey, today);
@@ -1533,9 +1578,9 @@ export function buildToolDefs() {
           if (!remarkQuota.tryConsume(ctx.chatKey, reservedAt).ok) return err(`今天的备注次数用完了（每天最多 ${remarkLimit} 次）`);
           try {
             if (userId) {
-              await ctx.onebot.call('set_friend_remark', { user_id: Number(userId), remark }, 15000, ctx.signal);
+              await trackDirectWrite(ctx, 'remark', { userId: Number(userId), remark }, () => ctx.onebot.call('set_friend_remark', { user_id: Number(userId), remark }, 15000, ctx.signal));
             } else {
-              await ctx.onebot.call('set_group_remark', { group_id: Number(ctx.chatId), remark }, 15000, ctx.signal);
+              await trackDirectWrite(ctx, 'remark', { groupId: Number(ctx.chatId), remark }, () => ctx.onebot.call('set_group_remark', { group_id: Number(ctx.chatId), remark }, 15000, ctx.signal));
             }
           } catch (error) {
             remarkQuota.refund(ctx.chatKey, reservedAt);
@@ -1793,9 +1838,9 @@ export function buildToolDefs() {
             return err(`这一小时的相册互动够多了（上限 ${albumLimit} 次），过一会儿再点。`);
           }
           try {
-            await ctx.onebot.call('set_group_album_media_like', {
+            await trackDirectWrite(ctx, 'album-like', { albumId, batchId, lloc }, () => ctx.onebot.call('set_group_album_media_like', {
               group_id: Number(ctx.chatId), album_id: albumId, batch_id: batchId, ...(lloc ? { lloc } : {})
-            }, 20000, ctx.signal);
+            }, 20000, ctx.signal));
           } catch (error) {
             albumWriteQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -1834,9 +1879,9 @@ export function buildToolDefs() {
             return err(`这一小时的相册互动够多了（上限 ${albumLimit} 次），过一会儿再评。`);
           }
           try {
-            await ctx.onebot.call('do_group_album_comment', {
+            await trackDirectWrite(ctx, 'album-comment', { albumId, lloc }, () => ctx.onebot.call('do_group_album_comment', {
               group_id: Number(ctx.chatId), album_id: albumId, lloc, content
-            }, 20000, ctx.signal);
+            }, 20000, ctx.signal));
           } catch (error) {
             albumWriteQuota.refund(ctx.chatKey, reservedAt);
             throw error;
@@ -2126,9 +2171,10 @@ export function buildToolDefs() {
           if (ctx.sender?.setCard) {
             // 只传 signal：名片写入不进 outbox，没有租约记账要配对（原先还传了 runId，
             // 而 setCard 并不消费它 —— 2026-10-05 复审顺手去掉）。
-            await ctx.sender.setCard(ctx.chatKey, card, { signal: ctx.signal });
+            // 但发送路径同样要进账本：否则生产上"群名片"这类写入完全没有可见性。
+            await trackDirectWrite(ctx, 'group-card', { card }, () => ctx.sender.setCard(ctx.chatKey, card, { signal: ctx.signal }));
           } else if (ctx.onebot?.setGroupCard) {
-            await ctx.onebot.setGroupCard(ctx.chatId, ctx.selfId, card, ctx.signal);
+            await trackDirectWrite(ctx, 'group-card', { card }, () => ctx.onebot.setGroupCard(ctx.chatId, ctx.selfId, card, ctx.signal));
           } else {
             return err('当前环境不支持改群名片');
           }
@@ -2166,7 +2212,7 @@ export function buildToolDefs() {
           const minutesValue = Number(rawMinutes);
           if (!Number.isInteger(minutesValue) || minutesValue < 0) return err('minutes 必须是 0 或正整数（0 = 解禁）');
           const minutes = Math.min(43200, minutesValue);
-          await ctx.onebot.setGroupBan(ctx.chatId, Number(targetCheck.target), minutes * 60, ctx.signal);
+          await trackDirectWrite(ctx, 'ban', { target: targetCheck.target, minutes }, () => ctx.onebot.setGroupBan(ctx.chatId, Number(targetCheck.target), minutes * 60, ctx.signal));
           return ok({ targetUserId: targetCheck.target, minutes, note: minutes ? '已禁言。' : '已解除禁言。' });
         } catch (error) {
           return sendErr(error, {}, `禁言失败：${String(error?.message ?? error).slice(0, 120)}`);
@@ -2192,7 +2238,7 @@ export function buildToolDefs() {
           if (!admin.ok) return err(admin.reason, { reportIncident: false });
           const targetCheck = moderationTargetError(ctx, args.targetUserId, admin.owner);
           if (targetCheck.error) return err(targetCheck.error, { reportIncident: false });
-          await ctx.onebot.kickGroupMember(ctx.chatId, Number(targetCheck.target), args.rejectAddRequest === true, ctx.signal);
+          await trackDirectWrite(ctx, 'kick', { target: targetCheck.target }, () => ctx.onebot.kickGroupMember(ctx.chatId, Number(targetCheck.target), args.rejectAddRequest === true, ctx.signal));
           return ok({ targetUserId: targetCheck.target, note: '已移出群。' });
         } catch (error) {
           return sendErr(error, {}, `移出群失败：${String(error?.message ?? error).slice(0, 120)}`);
@@ -2224,7 +2270,7 @@ export function buildToolDefs() {
             const admin = adminRequest(ctx, [/撤回|撤掉|删掉|删除消息/]);
             if (!admin.ok) return err(admin.reason, { reportIncident: false });
           }
-          await ctx.onebot.deleteMessage(Number(mid), ctx.signal);
+          await trackDirectWrite(ctx, 'delete-msg', { mid }, () => ctx.onebot.deleteMessage(Number(mid), ctx.signal));
           // 保留 sent 记录但标 recalled：reply-guard 仍有"确实发过"的证据，不会误补兜底。
           for (const item of ctx.session?.sent || []) {
             if (item?.messageId != null && String(item.messageId) === String(mid)) item.recalled = true;
@@ -2255,7 +2301,7 @@ export function buildToolDefs() {
           if (typeof args.enable !== 'boolean') return err('enable 必须是 true 或 false');
           const targetCheck = moderationTargetError(ctx, args.targetUserId, admin.owner);
           if (targetCheck.error) return err(targetCheck.error, { reportIncident: false });
-          await ctx.onebot.setGroupAdmin(ctx.chatId, Number(targetCheck.target), args.enable, ctx.signal);
+          await trackDirectWrite(ctx, 'set-admin', { target: targetCheck.target, enable: args.enable }, () => ctx.onebot.setGroupAdmin(ctx.chatId, Number(targetCheck.target), args.enable, ctx.signal));
           return ok({ targetUserId: targetCheck.target, enable: args.enable, note: '群管理员设置已更新。' });
         } catch (error) {
           return sendErr(error, {}, `设置群管理员失败：${String(error?.message ?? error).slice(0, 120)}`);

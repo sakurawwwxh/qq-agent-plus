@@ -404,7 +404,17 @@ export class ReminderStore {
     // #9：先把"早就过期、还没被巡检标掉"的项标成 expired（它们才是真占着 pending 名额的那批），
     // 再剪留档，最后判上限 —— 否则用户会因为一堆早该作废的提醒而被告知"满了"。
     let expiredNow = false;
-    for (const it of this.expired(now)) { it.status = 'expired'; it.finishedAt = now; expiredNow = true; }
+    for (const it of this.expired(now)) {
+      if (it.repeat) {
+        // 周期项不能整条作废：跳过这一期并 re-arm（与 orchestrator 的过期处理同口径）。
+        this.skipOccurrence(it.id, now);
+        expiredNow = true;
+        continue;
+      }
+      it.status = 'expired';
+      it.finishedAt = now;
+      expiredNow = true;
+    }
     this.#prune();
     if (expiredNow) this.#save();
     const pendingNow = () => this.items.filter((it) => it.status === 'pending');
@@ -487,6 +497,21 @@ export class ReminderStore {
    * 只改 at、不动 status：12 小时作废时钟随新 at 重新起算 —— 否则持续超预算的当天，
    * "保持到期等明天"的提醒会在迟到满 12 小时时被 expired() 静默作废，与"顺延到明天"相反。
    */
+  /**
+   * 本次 occurrence 的稳定 id：给副作用账本做幂等键用。
+   * 与 at 不同 —— deferTo/retryLater 会改 at，崩溃后顺延再派发时键必须还对得上。
+   * 周期项 markFired/reconcileRecurring 进入下一期时清空，下次派发重新生成。
+   */
+  ensureOccurrenceId(id) {
+    const hit = this.items.find((x) => x.id === id);
+    if (!hit) return '';
+    if (!hit.occurrenceId) {
+      hit.occurrenceId = crypto.randomBytes(6).toString('hex');
+      this.#save();
+    }
+    return hit.occurrenceId;
+  }
+
   deferTo(id, at) {
     const hit = this.items.find((x) => x.id === id && x.status === 'pending');
     if (!hit) return null;
@@ -530,6 +555,11 @@ export class ReminderStore {
     return hit;
   }
 
+  /** 跳过一期（迟到太久/被挡）：按周期 re-arm 到下一次，但不算正常触发。 */
+  skipOccurrence(id, now = Date.now()) {
+    return this.markFired(id, now);
+  }
+
   markFired(id, now = Date.now()) {
     const it = this.items.find((x) => x.id === id);
     if (!it) return null;
@@ -554,6 +584,8 @@ export class ReminderStore {
       it.at = next;
       it.originalAt = next;
       it.deliveryAttempts = 0;
+      // 下一期是新的 occurrence：账本里上一期的 sent/unknown 不能挡住它
+      delete it.occurrenceId;
       this.#save();
       return { ...it, rearmed: true, nextAt: next };
     }
@@ -582,6 +614,7 @@ export class ReminderStore {
       it.at = next;
       it.originalAt = next;
       it.deliveryAttempts = 0;
+      delete it.occurrenceId;   // 被跳过的那一期作废，下一期用新 occurrence
       touched.push({ id: it.id, skippedFrom: missed, nextAt: next });
     }
     if (touched.length) this.#save();

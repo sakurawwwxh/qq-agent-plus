@@ -522,9 +522,10 @@ function assertAllowedHost(url, domains, label = '地址') {
  * `maxBytes` 只给"结构化文件"用（插件索引随条目增多会长过网页那份上限）；
  * 网页抓取保持默认值，避免把整页塞进上下文。
  */
-export async function safeFetch(urlString, { maxBytes = 50000, signal, headers } = {}) {
+export async function safeFetch(urlString, { maxBytes = 50000, signal, headers, allowPrivate = false } = {}) {
   const cap = Math.max(1, Math.floor(Number(maxBytes) || 50000));
-  let { url, ip } = await validateFetchUrl(urlString);
+  // allowPrivate 只给"管理员明确配置的内网价目表/自建服务"用；默认一律拦内网。
+  let { url, ip } = await validateFetchUrl(urlString, { allowPrivate });
   let hopHeaders = headers;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     // signal 用于"整次抓取的总截止时间"：默认的 timeout 是**空闲超时**，对端每隔十几秒吐一个
@@ -533,7 +534,7 @@ export async function safeFetch(urlString, { maxBytes = 50000, signal, headers }
     if ([301, 302, 303, 307, 308].includes(result.statusCode)) {
       if (!result.redirect) throw new Error(`重定向缺少 Location: ${result.statusCode}`);
       const next = new URL(result.redirect, url).toString();
-      ({ url, ip } = await validateFetchUrl(next));
+      ({ url, ip } = await validateFetchUrl(next, { allowPrivate }));
       // 跨跳不携带凭据头（与 safeFetchRequest / safeFetchBinary 同口径）：
       // 不能让一个 302 把 Authorization/Cookie 带到别的站点，哪怕域名白名单放行了。
       hopHeaders = stripCredentialHeaders(hopHeaders);

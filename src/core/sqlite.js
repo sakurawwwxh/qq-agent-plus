@@ -38,7 +38,20 @@ export function assertSqliteAvailable() {
  */
 export function openDatabase(file, { readOnly = false } = {}) {
   assertSqliteAvailable();
-  const db = new nodeSqlite.DatabaseSync(file, readOnly ? { readOnly: true } : {});
+  let db;
+  try {
+    db = new nodeSqlite.DatabaseSync(file, readOnly ? { readOnly: true } : {});
+  } catch (error) {
+    // 只抛 "unable to open database file" 时运维看不出是哪个目录/什么权限（2026-10-31 审查 P2）：
+    // 补上路径与可操作提示，并保留原始 error 作为 cause。
+    const reason = String(error?.message ?? error);
+    const wrapped = new Error(
+      `打开 SQLite 失败：${file}（${reason}）。请确认目录存在、当前用户可写；只读模式还需文件存在。`
+    );
+    wrapped.code = error?.code || 'E_SQLITE_OPEN';
+    wrapped.cause = error;
+    throw wrapped;
+  }
   try {
     if (readOnly) {
       db.exec('PRAGMA busy_timeout=5000;');

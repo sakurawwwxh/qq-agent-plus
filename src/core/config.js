@@ -34,56 +34,71 @@ function hasOwn(object, key) {
   return Boolean(object && Object.prototype.hasOwnProperty.call(object, key));
 }
 
+function effectiveSectionBody(node) {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null;
+  const replaced = node.__replace__;
+  return replaced && typeof replaced === 'object' && !Array.isArray(replaced) ? replaced : node;
+}
+
 function normalizedRequestedAdmin(patch, current) {
-  const explicit = hasOwn(patch?.admin, 'ownerUin');
+  // 整段替换（{__replace__:{...}}）必须按"有效体"判断是否显式提交：
+  // 只看外层 hasOwn(ownerUin) 会让 `admin.__replace__={}` 绕过校验，
+  // 结果 autoUpdate 已启用却被清空管理员（2026-10-31 复审 P2）。
+  const node = patch?.admin;
+  const replaced = node && typeof node === 'object' && !Array.isArray(node)
+    && Object.hasOwn(node, '__replace__') && node.__replace__
+    && typeof node.__replace__ === 'object' && !Array.isArray(node.__replace__)
+    ? node.__replace__
+    : null;
+  const body = replaced || node;
+  const explicit = Boolean(replaced) || hasOwn(body, 'ownerUin');
   if (!explicit) return { explicit: false, ownerUin: globalAdminUin(current) };
-  const ownerUin = String(patch.admin.ownerUin || '').trim();
+  const ownerUin = String(body?.ownerUin || '').trim();
   if (ownerUin && !/^\d{5,15}$/.test(ownerUin)) {
     throw new Error('管理员 QQ 必须为 5 到 15 位数字');
   }
   return { explicit: true, ownerUin };
 }
 
+/** 把补丁段写回“有效体”：`{__replace__: X}` 要改 X，不能写在外层（会被整段替换丢掉）。 */
+function mergeIntoSegment(patch, key, nextBody) {
+  const node = patch?.[key];
+  if (node && typeof node === 'object' && !Array.isArray(node)
+    && node.__replace__ && typeof node.__replace__ === 'object' && !Array.isArray(node.__replace__)) {
+    node.__replace__ = { ...node.__replace__, ...nextBody };
+    return;
+  }
+  const body = node && typeof node === 'object' && !Array.isArray(node) ? node : {};
+  patch[key] = { ...body, ...nextBody };
+}
+
 function mirrorAdminIntoLegacyPatch(patch, ownerUin) {
   // These mirrors exist only until the remaining runtime modules stop reading
   // their historical paths. The retired slang worker intentionally has no
   // mirror at all: its old owner/tuning fields are removed by the policy.
-  patch.identityPilot = {
-    ...(patch.identityPilot || {}),
-    friendProposal: {
-      ...(patch.identityPilot?.friendProposal || {}),
-      ownerUin
-    }
-  };
-  patch.incidentPilot = {
-    ...(patch.incidentPilot || {}),
-    ownerUin
-  };
-  patch.autoUpdate = {
-    ...(patch.autoUpdate || {}),
-    ownerUin
-  };
+  const identityBody = effectiveSectionBody(patch.identityPilot) || {};
+  mergeIntoSegment(patch, 'identityPilot', {
+    friendProposal: { ...(identityBody.friendProposal || {}), ownerUin }
+  });
+  mergeIntoSegment(patch, 'incidentPilot', { ownerUin });
+  mergeIntoSegment(patch, 'autoUpdate', { ownerUin });
   return patch;
 }
 
 function ensureAdminPrivateAccess(patch, current, ownerUin) {
   if (!ownerUin) return patch;
 
-  const requestedAllow = Array.isArray(patch.allow?.private)
-    ? patch.allow.private.map(String)
+  const allowBody = effectiveSectionBody(patch.allow) || {};
+  const requestedAllow = Array.isArray(allowBody.private)
+    ? allowBody.private.map(String)
     : idList(current.allow?.private);
-  patch.allow = {
-    ...(patch.allow || {}),
-    private: [...new Set([...requestedAllow, ownerUin])]
-  };
+  mergeIntoSegment(patch, 'allow', { private: [...new Set([...requestedAllow, ownerUin])] });
 
-  const requestedDeny = Array.isArray(patch.deny?.private)
-    ? patch.deny.private.map(String)
+  const denyBody = effectiveSectionBody(patch.deny) || {};
+  const requestedDeny = Array.isArray(denyBody.private)
+    ? denyBody.private.map(String)
     : idList(current.deny?.private);
-  patch.deny = {
-    ...(patch.deny || {}),
-    private: requestedDeny.filter((uin) => uin !== ownerUin)
-  };
+  mergeIntoSegment(patch, 'deny', { private: requestedDeny.filter((uin) => uin !== ownerUin) });
   return patch;
 }
 
@@ -317,15 +332,24 @@ export function updateConfig(patch, options = {}) {
     if (error) throw Object.assign(new Error(error), { httpStatus: 400 });
   }
   const requestedAdmin = normalizedRequestedAdmin(rawPatch, current);
-  const autoUpdateEnabled = hasOwn(rawPatch?.autoUpdate, 'enabled')
-    ? rawPatch.autoUpdate.enabled === true
-    : current.autoUpdate?.enabled === true;
+  // autoUpdate 也可能是整段替换：只看外层会把 `autoUpdate.__replace__:{enabled:true}`
+  // 当成“没启用”，从而让“清空管理员 + 开启自动更新”的组合绕过校验（2026-10-31 复审）。
+  const autoNode = rawPatch?.autoUpdate;
+  const autoPatch = effectiveSectionBody(autoNode);
+  const autoReplaced = Boolean(autoNode && typeof autoNode === 'object' && !Array.isArray(autoNode)
+    && Object.hasOwn(autoNode, '__replace__') && autoNode.__replace__
+    && typeof autoNode.__replace__ === 'object' && !Array.isArray(autoNode.__replace__));
+  // 整段替换后没写 enabled 时，实际生效值是 false（migrateConfig 只认 === true），
+  // 不能按“当前开着”判断，否则会误报“自动更新不能清空管理员”（2026-10-31 复核 P3）。
+  const autoUpdateEnabled = autoReplaced
+    ? autoPatch?.enabled === true
+    : (hasOwn(autoPatch, 'enabled') ? autoPatch.enabled === true : current.autoUpdate?.enabled === true);
 
   // Auto update has a real notification dependency. Promoted Identity/Incident
   // infrastructure does not: it remains active with no administrator and only
   // skips QQ notification/approval edges.
   if (!requestedAdmin.ownerUin && autoUpdateEnabled) {
-    throw new Error('自动更新已启用，不能清空全局管理员 QQ');
+    throw Object.assign(new Error('自动更新已启用，不能清空全局管理员 QQ'), { httpStatus: 400 });
   }
 
   // Reuse the mature legacy normalizer without allowing obsolete experimental
