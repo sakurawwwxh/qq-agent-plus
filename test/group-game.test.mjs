@@ -910,3 +910,94 @@ test('别名撞车（某人的备注 = 另一个人的群名片）时宁缺勿�
   const back = await w3.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb', players: ['群友1', '群友2'] });
   assert.equal(back.ok, true, `没有备注时名片应可解析：${back.error || ''}`);
 });
+
+const { EffectLedger } = await import('../src/core/effects.js');
+
+test('终局播报接入账本：送达记 sent，同一局再次 begin 直接 done', async () => {
+  const w = makeWorld({ players: 6 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  updateConfig({ groupGame: { enabled: true, chats: ['group:1'], allowPrivateInvite: true, allowGamePrivateDm: false, dailyLimitPerChat: 6, recruitSeconds: 0, games: ['werewolf'] } });
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'werewolf' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const st = w.mgr.games.get('group:1').state;
+  const wolves = st.roles.filter((x) => x.role === 'wolf');
+  const other = st.roles.find((x) => x.role !== 'wolf');
+  for (const uid of [wolves[0].userId, wolves[1].userId, other.userId]) {
+    w.store.appendIncoming(`private:${uid}`, { mid: `q-${uid}`, ts: Date.now(), senderId: uid, senderName: uid, text: '不玩了', reply: null, media: [] }, { recordOnly: true });
+  }
+  await w.mgr.tick();
+  const ends = w.sent.filter((x) => x.chatKey === 'group:1' && /狼人杀结束：/.test(x.msgs[0]));
+  assert.equal(ends.length, 1);
+  const row = w.store.db.prepare("SELECT id, state, detail FROM effects WHERE kind='game-final'").get();
+  assert.ok(row, '终局播报要进账本');
+  assert.equal(row.state, 'sent');
+  const instanceId = JSON.parse(row.detail).instanceId;
+  assert.ok(instanceId, '每局必须有唯一 instanceId（不能用游戏类型做幂等键）');
+  const again = effects.begin({ kind: 'game-final', chatKey: 'group:1', idemKey: `game:group:1:${instanceId}` });
+  assert.equal(again.action, 'done', '同一局的终局播报不能再发一次');
+});
+
+test('终局播报结果未知：账本 unknown，下个 tick 停止重试而不是重发', async () => {
+  const w = makeWorld({ players: 6 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  w.store.hasUncertainEffects = () => true;   // 模拟 outbox 里有本次未知行
+  let finalCalls = 0;
+  w.mgr.sender = {
+    sendTextBatch: async (_chatKey, msgs) => {
+      if (/结束：/.test(String(msgs?.[0] || ''))) {
+        finalCalls += 1;
+        throw Object.assign(new Error('socket timeout'), { outcome: 'unknown' });
+      }
+      return { message_id: 1 };
+    }
+  };
+  updateConfig({ groupGame: { enabled: true, chats: ['group:1'], allowPrivateInvite: true, allowGamePrivateDm: false, dailyLimitPerChat: 6, recruitSeconds: 0, games: ['werewolf'] } });
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'werewolf' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const st = w.mgr.games.get('group:1').state;
+  const wolves = st.roles.filter((x) => x.role === 'wolf');
+  const other = st.roles.find((x) => x.role !== 'wolf');
+  for (const uid of [wolves[0].userId, wolves[1].userId, other.userId]) {
+    w.store.appendIncoming(`private:${uid}`, { mid: `q-${uid}`, ts: Date.now(), senderId: uid, senderName: uid, text: '不玩了', reply: null, media: [] }, { recordOnly: true });
+  }
+  await w.mgr.tick();
+  assert.equal(finalCalls, 1);
+  const row = w.store.db.prepare("SELECT state FROM effects WHERE kind='game-final'").get();
+  assert.equal(row.state, 'unknown');
+  assert.ok(w.mgr.games.get('group:1')?.pendingEnd, '未知时要挂起 pendingEnd 等下个 tick 收尾');
+
+  // 下个 tick（越过退避时间）：账本 review → 不再发，直接收尾
+  w.setClock(w.getClock() + 30 * 60 * 1000);
+  await w.mgr.tick();
+  assert.equal(finalCalls, 1, '结果未知绝不重发');
+  assert.equal(w.mgr.games.has('group:1'), false, '收尾要清掉挂起的局');
+});
+
+test('同一群同一种游戏开第二局：终局播报照常发（幂等键按局而不是游戏类型）', async () => {
+  const w = makeWorld({ players: 6 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  updateConfig({ groupGame: { enabled: true, chats: ['group:1'], allowPrivateInvite: true, allowGamePrivateDm: false, dailyLimitPerChat: 6, recruitSeconds: 0, games: ['werewolf'] } });
+
+  const playOne = async (tag) => {
+    const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'werewolf' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const st = w.mgr.games.get('group:1').state;
+    const wolves = st.roles.filter((x) => x.role === 'wolf');
+    const other = st.roles.find((x) => x.role !== 'wolf');
+    for (const uid of [wolves[0].userId, wolves[1].userId, other.userId]) {
+      w.store.appendIncoming(`private:${uid}`, { mid: `q-${tag}-${uid}`, ts: Date.now(), senderId: uid, senderName: uid, text: '不玩了', reply: null, media: [] }, { recordOnly: true });
+    }
+    await w.mgr.tick();
+  };
+
+  await playOne('a');
+  await playOne('b');
+  const ends = w.sent.filter((x) => x.chatKey === 'group:1' && /狼人杀结束：/.test(x.msgs[0]));
+  assert.equal(ends.length, 2, '两局都要有终局播报：' + JSON.stringify(w.sent.map((x) => x.msgs[0])));
+  const rows = w.store.db.prepare("SELECT state FROM effects WHERE kind='game-final'").all();
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((r) => r.state === 'sent'));
+});

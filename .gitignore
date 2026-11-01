@@ -24,6 +24,9 @@ debug-*.md
 *.tmp
 *.bak
 
+# ops doctor 生成的诊断包（含配置与日志，绝不入库）
+qq-agent-diagnose-*
+
 # 系统文件
 .DS_Store
 Thumbs.db

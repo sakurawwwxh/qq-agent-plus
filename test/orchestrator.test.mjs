@@ -20,6 +20,7 @@ const {
   finishBarrierBlock
 } = await import('../src/core/orchestrator.js');
 const { ChatStore } = await import('../src/core/store.js');
+const { EffectLedger } = await import('../src/core/effects.js');
 const { SessionRegistry } = await import('../src/core/sessions.js');
 const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
 const { ReminderStore } = await import('../src/core/reminders.js');
@@ -1862,6 +1863,21 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.equal(runner.reminders.items[0].status, 'pending', '租约还在时不能标记已触发（否则提醒永久丢失）');
   });
 
+  it('周期提醒迟到超过 12 小时：跳过这一期而不是永久作废整条', async (t) => {
+    const { runner } = fixture(t, { reminders: new ReminderStore(path.join(root, 'reminders-repeat-expired.json')) });
+    runner.reminders.items.push({
+      id: 'r-repeat', chatKey: 'group:1', at: Date.now() - 13 * 3600 * 1000,
+      text: '每天吃药', status: 'pending', createdBy: '42',
+      repeat: { kind: 'daily', hour: 9, minute: 0 }
+    });
+    runner.wake = async () => { throw new Error('不该派发'); };
+    runner.fireDueReminders();
+    const item = runner.reminders.items[0];
+    assert.equal(item.status, 'pending', '周期项不能变成 expired');
+    assert.ok(item.at > Date.now(), '要 re-arm 到下一次，而不是立刻补发');
+    assert.equal(Number(item.fireCount) || 0, 1, '记录跳过的一期');
+  });
+
   it('定时提醒：预算闸门会丢的唤醒顺延 24 小时而不是标成已触发；没超预算就正常派发', async (t) => {
     const { runner, store, cfg, append } = fixture(t, { reminders: new ReminderStore(path.join(root, 'reminders-budget.json')) });
     append(1);
@@ -1892,6 +1908,112 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(woke, 1, '没超预算要正常派发');
     assert.equal(runner.reminders.items.find((x) => x.id === 'r-budget').status, 'fired');
+  });
+
+  it('定时提醒：上次投递结果未知（崩溃残留）→ 不再重复播报，标记人工核对', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-ledger-unknown.json')) });
+    const effects = new EffectLedger(store.db);
+    runner.effects = effects;
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({ id: 'r-unknown', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
+    const occUnknown = runner.reminders.ensureOccurrenceId('r-unknown');
+    // 模拟上一条命在"发送后、结算前"崩溃：planned 行留着，且已超过 TTL
+    effects.begin({ kind: 'reminder', chatKey: 'group:1', idemKey: `reminder:r-unknown:${occUnknown}` });
+    store.db.prepare('UPDATE effects SET created_at=?').run(Date.now() - 3600_000);
+
+    let woke = 0;
+    runner.wake = async () => { woke += 1; };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(woke, 0, '结果未知时绝不能再唤醒重说一遍');
+    assert.equal(effects.get('reminder', `reminder:r-unknown:${occUnknown}`).state, 'unknown');
+    const item = runner.reminders.items.find((x) => x.id === 'r-unknown');
+    assert.equal(item.status, 'failed');
+    assert.match(String(item.error), /未知/);
+  });
+
+  it('定时提醒：周期项结果未知只跳过本期并重排，不会把整条提醒永久停掉', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-ledger-repeat.json')) });
+    const effects = new EffectLedger(store.db);
+    runner.effects = effects;
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({
+      id: 'r-repeat', chatKey: 'group:1', at, text: '站会', status: 'pending', createdBy: '42',
+      repeat: { kind: 'daily', hour: 9, minute: 0, tz: 'Asia/Shanghai' }
+    });
+    const occ = runner.reminders.ensureOccurrenceId('r-repeat');
+    effects.begin({ kind: 'reminder', chatKey: 'group:1', idemKey: `reminder:r-repeat:${occ}` });
+    store.db.prepare('UPDATE effects SET created_at=?').run(Date.now() - 3600_000);
+
+    let woke = 0;
+    runner.wake = async () => { woke += 1; };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(woke, 0, '本期结果未知，不能重发');
+    const item = runner.reminders.items.find((x) => x.id === 'r-repeat');
+    assert.equal(item.status, 'pending', '周期项要留在 pending，下一期继续');
+    assert.ok(item.at > at, '要重排到下一次触发');
+    assert.equal(item.occurrenceId, undefined, '下一期换新的 occurrenceId');
+  });
+
+  it('定时提醒：正常播报后账本结算 sent，同一提醒不会二次派发', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-ledger-sent.json')) });
+    const effects = new EffectLedger(store.db);
+    runner.effects = effects;
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({ id: 'r-sent', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
+    runner.wake = async (chatKey) => {
+      store.appendSelf(chatKey, { mid: 'self-ledger-1', ts: Date.now(), text: '该喝水了' });
+    };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(runner.reminders.items.find((x) => x.id === 'r-sent').status, 'fired');
+    const occSent = runner.reminders.items.find((x) => x.id === 'r-sent').occurrenceId;
+    assert.equal(effects.get('reminder', `reminder:r-sent:${occSent}`).state, 'sent');
+
+    // 同一 occurrence 再派发一次（模拟重启后 due() 又返回）——账本 done，直接跳过
+    const again = { ...runner.reminders.items.find((x) => x.id === 'r-sent'), status: 'pending', id: 'r-sent' };
+    runner.reminders.items = [again];
+    let woke = 0;
+    runner.wake = async () => { woke += 1; };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(woke, 0, '已结算的提醒不能再唤醒');
+  });
+
+  it('定时提醒：本轮没发出（可证明未送达）→ 账本 failed，提醒按 5 分钟重试', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-ledger-nosend.json')) });
+    const effects = new EffectLedger(store.db);
+    runner.effects = effects;
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({ id: 'r-nosend', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
+    runner.wake = async () => {};
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const occNoSend = runner.reminders.items.find((x) => x.id === 'r-nosend').occurrenceId;
+    assert.equal(effects.get('reminder', `reminder:r-nosend:${occNoSend}`).state, 'failed');
+    const item = runner.reminders.items.find((x) => x.id === 'r-nosend');
+    assert.equal(item.status, 'pending', '没发出要保留 pending 等下一次重试');
+    assert.ok(item.deliveryAttempts >= 1);
+  });
+
+  it('定时提醒：本轮出现未知外发 → 账本 unknown，停止自动重试', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-ledger-uncertain.json')) });
+    const effects = new EffectLedger(store.db);
+    runner.effects = effects;
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({ id: 'r-uncertain', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
+    runner.wake = async (chatKey) => {
+      const id = store.beginSend(chatKey, null, { type: 'text' });
+      store.finishSend(id, { error: 'socket timeout', outcome: 'unknown' });
+    };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const occUncertain = runner.reminders.items.find((x) => x.id === 'r-uncertain').occurrenceId;
+    assert.equal(effects.get('reminder', `reminder:r-uncertain:${occUncertain}`).state, 'unknown');
+    assert.equal(runner.reminders.items.find((x) => x.id === 'r-uncertain').status, 'failed');
   });
 
   it('测试用远景时间窗在任何时刻都成立：下一个窗口至少 4 分钟外（跨午夜回归）', () => {
@@ -2129,7 +2251,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.ok(orch.includes("const isReminderNote = String(wakeNote).startsWith('【定时提醒】');"), '要有提醒专用分支');
     assert.ok(orch.includes('? `${safeSlice(String(wakeNote), 600)}\\n`'), '提醒 note 要逐字进入（不套"给自己留过话"框架）');
     assert.ok(orch.includes('把提醒自然地说出来即可；说完就结束'), '提醒分支要有自己的收尾语');
-    assert.ok(orch.includes('buildReminderNote(chosen, { now })') && orch.includes('reminderNoteCost(item)'),
+    assert.ok(orch.includes('buildReminderNote(batch.map((pair) => pair.it), { now })') && orch.includes('reminderNoteCost(item)'),
       '话术与预算要共用 reminders 的唯一实现');
     assert.ok(orch.includes('triggerEntries: (triggerEntries || []).map'),
       '工具 ctx 要带本轮触发消息（remind 的 from 兜底要用）');

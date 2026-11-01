@@ -9,7 +9,8 @@
 "security": {
   "allowFakeIpDns": true,
   "fakeIpCidrs": ["198.18.0.0/15"],
-  "allowPrivateImageHosts": false
+  "allowPrivateImageHosts": false,
+  "allowPrivatePriceHosts": false
 }
 ```
 
@@ -24,6 +25,51 @@ Clash/mihomo 等代理的 fake-ip 模式会把任意域名解析到 `198.18.0.0/
 「重新加载磁盘配置 / 用当前页面覆盖」二选一。API 调用方确认覆盖时用
 `POST /api/config?force=1`，重新加载用 `POST /api/config/reload`。备份写不出来时保存直接失败，
 不会静默覆盖。
+
+## security.allowPrivatePriceHosts：价目类 URL 允许内网（默认关）
+
+价格探测、渠道价目表、远程价格表的目标地址都由用户填写，默认与插件索引同一道
+safe-fetch SSRF 防线：拒绝环回 / RFC1918 / 链路本地 / CGNAT，重定向逐跳复检。
+确实要拉**内网 one-api** 的部署才打开：
+
+```json
+"security": { "allowPrivatePriceHosts": true }
+```
+
+打开后这三类请求才能访问内网地址；图片下载开关 `allowPrivateImageHosts` 不联动，
+两者分开授权。注意它同样放行**重定向的每一跳**（公网价目跳到内网也会被允许）；
+URL 里不能内嵌 `user:pass@`（safe-fetch 一律拒绝凭据），需要鉴权的价目端点请改用
+无凭据的内网地址或反向代理层认证。
+
+**升级注意**：旧版本价目 URL 走裸 `fetch`，内网地址一直可用；升级到本版本后默认会
+报「禁止访问内网/本机地址」。若 `api.channelPriceFeeds[].url` 或 `api.priceRemoteUrl`
+指向局域网 one-api，请显式加 `"allowPrivatePriceHosts": true`，否则会停在旧缓存价目。
+
+## server.trustedProxies / server.singleInstanceLock
+
+```json
+"server": {
+  "host": "0.0.0.0",
+  "token": "<控制台令牌>",
+  "trustedProxies": ["127.0.0.1"],
+  "singleInstanceLock": true
+}
+```
+
+- `trustedProxies`：反向代理的地址白名单（IP 或 IPv4 CIDR）。只有 TCP 对端命中这里时，
+  才采信 `x-forwarded-for` 作为**登录限流键**（从右往左跳过命中 `trustedProxies`
+  的代理，取第一个非可信地址；多级代理时请把每一跳代理地址都列进来）。
+  `X-Real-IP` **不采信**（它常被代理原样透传，客户端可直接伪造）；代理没设置
+  `X-Forwarded-For` 时限流退化为按代理地址计数，不会绕过。
+  客户端自带的伪造段不会生效，代理应使用 `$proxy_add_x_forwarded_for` 追加真实对端。
+  多级代理时，`x-forwarded-proto` 也取最后一跳；若 CDN 终止 TLS、内层是 HTTP，需要让
+  最内层代理透传原始协议，否则登录 Cookie 不会加 `Secure`（不影响可用性）。并在
+  `x-forwarded-proto: https` 时给登录 Cookie 加 `Secure`。空数组（默认）= 不信任任何
+  转发头，伪造 XFF 不会绕过限流，但反代后所有客户端会共用代理地址计数。
+  **不要**在代理不受控时填写；转发头永远不参与鉴权判定。
+- `singleInstanceLock`：同一数据目录只允许一个实例（`<DATA_DIR>/.server.lock`）。
+  默认开；同机陈旧 pid 或损坏锁会自动接管，不同主机的锁一律拒绝。确认没有旧进程时
+  也可手动删除锁文件再启动。
 
 ## platform.privateFileSend：当前私聊的纯文本资料（默认关闭）
 
@@ -902,6 +948,8 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
     "maxMessagesPerChat": 0,
     "keepSessionFiles": 2000,
     "sessionPersistMs": 10000,
+    "sessionCompressAfterDays": 30,
+    "sessionMaxTotalMb": 1024,
     "sqliteSynchronous": "FULL"
   }
 }
@@ -917,6 +965,13 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
 - `keepSessionFiles`：`data/sessions` 审计文件保留条数，`0` = 不限；重启后生效。
 - `sessionPersistMs`：运行中会话 JSON 的落盘间隔，默认 10 秒（2~60 秒）。会话文件包含完整
   提示词与记录，间隔越小崩溃时丢的进度越少，但磁盘写入越多。
+- `sessionCompressAfterDays`：多少天前**已结束**的留档压成 `<id>.json.gz`，默认 30，`0` = 不压缩。
+  压缩比通常 8~10 倍；读取方（控制台详情、用量、成本、价格缺口、健康检查）都透明支持压缩归档，
+  压缩后历史账目不会变少。只在每日保留期任务里跑，不占启动时间。运行中/等待中的会话不压。
+- `sessionMaxTotalMb`：`data/sessions` 总量上限（MB），默认 1024，`0` = 不限制。超出后按
+  **最旧优先**删除已结束的留档（运行中/等待中的永不删），并在控制台「总览 → 主机资源」展示
+  当前占用。多群或长提示词的部署建议保留默认值，避免悄悄吃满磁盘。下调后不是立刻删：
+  下一次每日保留期任务（或重启）时才真正压到上限内，控制台会显示当前占用与上限。
 - `sqliteSynchronous`：`messages.sqlite` 的同步级别。默认 `FULL`（每条提交等落盘）；
   小云盘 IOPS 紧张时可设 `NORMAL`——WAL 下仍保证崩溃一致性，但掉电可能丢最近几条提交。
 - 控制台默认只让用户选三个档位：均衡（10 秒 / FULL）、省 IO（30 秒 / NORMAL）、

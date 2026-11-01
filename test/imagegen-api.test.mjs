@@ -72,7 +72,7 @@ test('GET /api/imagegen/key 存在且带密钥守卫；本机可读回明文', a
 
   // 守卫仍在：源码里这条路由必须调用 keyEndpointAllowed（与 /api/tts/key 同款写法）。
   // 用源码断言而不是伪造请求，是因为合法配置下构造不出"该被拒却放行"的场景（见上方说明）。
-  const src = fs.readFileSync(path.resolve('src/console/app.js'), 'utf8');
+  const src = fs.readFileSync(path.resolve('src/console/routes/media-settings.js'), 'utf8');
   const routeStart = src.indexOf("router.add('GET', '/api/imagegen/key'");
   assert.ok(routeStart > 0, '路由必须存在');
   const routeBody = src.slice(routeStart, routeStart + 600);

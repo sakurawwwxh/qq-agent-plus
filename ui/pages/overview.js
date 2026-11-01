@@ -196,16 +196,27 @@ async function loadOverview() {
   );
   const healthResults = Array.isArray(health?.health?.lastResults) ? health.health.lastResults : [];
   const healthFailed = healthResults.filter((item) => item?.ok === false);
-  const healthPanel = healthFailed.length ? panel(
+  // 出站账本里有"结果未知"的动作：可能已经生效、但没拿到确认。它**不是**巡检失败项
+  // （巡检有自己的连续失败语义），单独在面板里列一行；也不宣称"已停止重试" ——
+  // 直连写工具只登记不拦截，日报/提醒/终局才会按账本停。
+  const unknownEffects = Number(status?.effects?.byState?.unknown) || 0;
+  const effectRow = unknownEffects > 0
+    ? `<li class="setup-row">
+        <span class="setup-mark">${iconSvg('plus', { size: 14 })}</span>
+        <span class="setup-main"><span class="setup-label">出站动作待核对</span>
+          <span class="setup-detail">${unknownEffects} 个动作结果未知（可能已生效）：日报/提醒/终局已停止自动重试，直连写只记录；明细/改判见 node src/ops.js effects list</span></span>
+      </li>`
+    : '';
+  const healthPanel = (healthFailed.length || effectRow) ? panel(
     '运行体检',
-    `${healthFailed.length} 项异常 · 最近一次巡检结果`,
+    healthFailed.length ? `${healthFailed.length} 项异常 · 最近一次巡检结果` : '有出站动作结果未知，需要人工核对',
     `<ul class="setup-list">${healthFailed.slice(0, 6).map((item) => `
       <li class="setup-row">
         <span class="setup-mark">${iconSvg('plus', { size: 14 })}</span>
         <span class="setup-main"><span class="setup-label">${esc(item.name || '检查项')}</span>
           <span class="setup-detail">${esc(item.detail || '异常')}</span></span>
         <span class="setup-action"><button type="button" class="btn btn-small" data-setup-tab="control">去处理</button></span>
-      </li>`).join('')}</ul>`,
+      </li>`).join('')}${effectRow}</ul>`,
     { icon: 'sparkles' }
   ) : '';
 
@@ -234,8 +245,16 @@ async function loadOverview() {
 
   // cacheHitRate 是**比例**（0.7456），要 ×100 才是百分比 —— 顶部状态条也是这么算的
   const cacheHit = (Number(status?.cacheHitRate) || 0) * 100;
-  // 花费与顶部状态条同源（cost.cost），避免同一屏两个数打架
-  const todayCost = Number(status?.cost?.cost ?? usageToday.estimatedYuan) || 0;
+  // 花费与顶部状态条同源：台账与会话口径取较大值（改价后台账可能仍是旧快照，
+  // 不能因此把真实成本藏起来），旧后端没有 ledgerCost 时自然回退 cost.cost。
+  const todayCost = Math.max(
+    Number(status?.cost?.ledgerCost) || 0,
+    Number(status?.cost?.cost) || 0,
+    Number(usageToday.estimatedYuan) || 0
+  );
+  // 后台调用（记忆整理等）不写 session 文件，只在台账里；差额就是它们
+  const bgCost = Math.max(0,
+    (Number(status?.cost?.ledgerCost) || 0) - (Number(status?.cost?.cost) || 0));
   // 最近异常列表：没有记录时给一句空状态，不渲染空 <ul>
   const incidentBody = incidentList.length
     ? `<ul class="feed">
@@ -251,6 +270,14 @@ async function loadOverview() {
     : '<div class="hint">最近没有异常记录。</div>';
   const mem = host?.mem || null;
   const disk = host?.disk || null;
+  // 会话留档占用（/api/status.storage）：磁盘快满时用户至少能看到是谁占的。
+  const storage = status?.storage || null;
+  const storageLine = storage
+    ? `会话留档 ${fmtNum(storage.files)} 个 · ${fmtBytes(storage.bytes)}`
+      + `${storage.compressedFiles ? `（已压缩 ${fmtNum(storage.compressedFiles)} 个）` : ''}`
+      + ` · 上限 ${Number(storage.maxTotalBytes) > 0 ? fmtBytes(storage.maxTotalBytes) : '不限制'}`
+      + `${Number(storage.maxTotalBytes) > 0 && storage.bytes >= Number(storage.maxTotalBytes) * 0.8 ? ' · 接近上限' : ''}`
+    : '';
 
   box.dataset.ready = '1';
   box.innerHTML = `
@@ -285,6 +312,8 @@ async function loadOverview() {
         value: `¥${todayCost.toFixed(3)}`,
         sub: `缓存命中 ${cacheHit.toFixed(1)}% · ${fmtNum(usageToday.totalTokens)} tok`
           + (Number(usageToday.unpricedRuns) ? ` · ${usageToday.unpricedRuns} 次未计价` : '')
+          // 后台调用（记忆整理等）不写 session 文件，只在台账里；差额就是它们
+          + (bgCost > 0.0005 ? ` · 含后台 ¥${bgCost.toFixed(3)}` : '')
       })}
       ${kpi({
         icon: 'alert', label: '待处理异常',
@@ -339,7 +368,8 @@ async function loadOverview() {
           <div class="stat-sub">${disk ? `${fmtBytes(disk.used)} / ${fmtBytes(disk.total)}${disk.usedPercent >= 90 ? ' · 快满了' : ''}` : '读不到'}</div>
         </div>
       </div>
-      <div class="hint" style="margin-top:8px">本进程 ${host.process ? `RSS ${fmtBytes(host.process.rss)} · 堆 ${fmtBytes(host.process.heapUsed)} / ${fmtBytes(host.process.heapTotal)}` : '—'}${host.process?.nodeVersion ? ` · Node ${esc(host.process.nodeVersion)}` : ''} · 运行 ${Math.floor((host.uptimeSec || 0) / 3600)} 小时</div>`
+      <div class="hint" style="margin-top:8px">本进程 ${host.process ? `RSS ${fmtBytes(host.process.rss)} · 堆 ${fmtBytes(host.process.heapUsed)} / ${fmtBytes(host.process.heapTotal)}` : '—'}${host.process?.nodeVersion ? ` · Node ${esc(host.process.nodeVersion)}` : ''} · 运行 ${Math.floor((host.uptimeSec || 0) / 3600)} 小时</div>
+      ${storageLine ? `<div class="hint" style="margin-top:4px">${storageLine}</div>` : ''}`
       : '<div class="hint">没读到主机信息（接口不可用）。</div>', { icon: 'cpu' })}
   `;
 

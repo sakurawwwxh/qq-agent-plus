@@ -234,3 +234,26 @@ test('工具路径：对象形式的 repeat 能建出带时刻的周期提醒，
   assert.match(bad.content, /hour|repeat/i);
 });
 
+
+test('occurrenceId：顺延/短重试不改键，周期项 re-arm 时换新键（账本幂等键）', () => {
+  const store = new ReminderStore(path.join(dir, 'reminders-occurrence.json'));
+  const first = nextDailyAt({ hour: 9, minute: 0 }, 'Asia/Shanghai', Date.now());
+  const { id } = store.add({
+    chatKey: 'group:1', at: first, text: '站会', repeat: { kind: 'daily', hour: 9, minute: 0, tz: 'Asia/Shanghai' }
+  });
+  const occ = store.ensureOccurrenceId(id);
+  assert.ok(occ, '第一次派发要生成 occurrenceId');
+  assert.equal(store.ensureOccurrenceId(id), occ, '同一期重复获取不变');
+
+  store.deferTo(id, Date.now() + 3600_000);
+  assert.equal(store.items.find((x) => x.id === id).occurrenceId, occ, 'deferTo 改 at 但不能换键');
+  store.retryLater(id, Date.now() + 5 * 60_000);
+  assert.equal(store.items.find((x) => x.id === id).occurrenceId, occ, 'retryLater 也不能换键');
+
+  // 周期项触发后进入下一期：必须换新的 occurrenceId，否则账本 done 会挡住明天的提醒
+  store.markFired(id);
+  const next = store.items.find((x) => x.id === id);
+  assert.equal(next.occurrenceId, undefined, 're-arm 时清空');
+  const occ2 = store.ensureOccurrenceId(id);
+  assert.notEqual(occ2, occ, '下一期是新的 occurrence');
+});

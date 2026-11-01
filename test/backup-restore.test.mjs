@@ -96,3 +96,42 @@ test('--no-encrypt 仍可备份/恢复；恢复没有 --confirm 直接拒绝', {
   assert.equal(restore.status, 0, restore.stderr || restore.stdout);
   assert.equal(fs.existsSync(path.join(restored, 'config.json')), true);
 });
+
+test('恢复前发现数据目录仍被实例占用（锁存活）必须拒绝，未停服不覆盖', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const source = path.join(root, 'source');
+  const backups = path.join(root, 'backups');
+  seedDataDir(source);
+  const backup = runOps(['backup', '--confirm', '--data', source, '--backup-dir', backups]);
+  assert.equal(backup.status, 0, backup.stderr || backup.stdout);
+  const arch = path.join(backups, newest(backups, '.tar.gz.enc'));
+
+  const target = path.join(root, 'target');
+  seedDataDir(target);
+  const lock = path.join(target, '.server.lock');
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, hostname: os.hostname(), startedAt: Date.now() }));
+
+  const refused = runOps(['restore', '--from', arch, '--data', target, '--confirm']);
+  assert.notEqual(refused.status, 0, refused.stdout + refused.stderr);
+  assert.match(`${refused.stdout}${refused.stderr}`, /仍被实例占用/);
+  assert.equal(fs.readFileSync(path.join(target, 'config.json'), 'utf8'), '{"server":{"token":"restore-me"}}\n',
+    '拒绝时不能动目标目录');
+
+  fs.rmSync(lock, { force: true });
+  const ok = runOps(['restore', '--from', arch, '--data', target, '--confirm']);
+  assert.equal(ok.status, 0, ok.stderr || ok.stdout);
+});
+
+test('备份前发现数据目录仍被实例占用（锁存活）必须中止，不生成归档', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const data = path.join(root, 'data');
+  const backups = path.join(root, 'backups');
+  seedDataDir(data);
+  fs.writeFileSync(path.join(data, '.server.lock'), JSON.stringify({
+    pid: process.pid, hostname: os.hostname(), startedAt: Date.now()
+  }));
+  const backup = runOps(['backup', '--confirm', '--data', data, '--backup-dir', backups]);
+  assert.notEqual(backup.status, 0, backup.stdout + backup.stderr);
+  assert.match(`${backup.stdout}${backup.stderr}`, /仍被实例占用/);
+  assert.equal(fs.existsSync(backups) ? newest(backups, '.enc') : '', '', '不应生成归档');
+});

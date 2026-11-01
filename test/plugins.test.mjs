@@ -460,27 +460,34 @@ test('storage 能力的三个上限要真拦（单值 32KB / 总量 256KB / 每�
 
 test('控制台接线：路由的守卫与设置页的分区都在（锚点）', () => {
   const app = fs.readFileSync(path.join(process.cwd(), 'src', 'console', 'app.js'), 'utf8');
+  // 插件路由已拆到 routes/plugins.js（2026-10-31 M2）：接线锚点按两处合并检查
+  const routes = fs.readFileSync(path.join(process.cwd(), 'src', 'console', 'routes', 'plugins.js'), 'utf8');
+  const pluginSrc = `${app}\n${routes}`;
   for (const route of ['/api/plugins', '/api/plugins/index', '/api/plugins/master',
     '/api/plugins/toggle', '/api/plugins/reload', '/api/plugins/install', '/api/plugins/uninstall']) {
-    assert.ok(app.includes(`'${route}'`), `缺少路由 ${route}`);
+    assert.ok(pluginSrc.includes(`'${route}'`), `缺少路由 ${route}`);
   }
   // 卸载是破坏性操作：必须有 confirm 门槛（与全站口径一致）
-  assert.match(app, /卸载插件需要 body\.confirm === true/);
+  assert.match(pluginSrc, /卸载插件需要 body\.confirm === true/);
   // enabledIds 是**数组**：deepMerge 对数组本来就是整体替换 —— 写成 { __replace__: [...] } 会被
   // 静默忽略（那个约定只认对象），于是"启用"永远写不进去（2026-10-15 复审 P1-1，实测复现过）
-  assert.match(app, /updateConfig\(\{ plugins: \{ enabledIds: next \} \}\)/);
-  assert.ok(!app.includes('enabledIds: { __replace__'), '授权清单不该再用 __replace__（数组是整体替换）');
+  assert.match(pluginSrc, /updateConfig\(\{ plugins: \{ enabledIds: next \} \}\)/);
+  assert.ok(!pluginSrc.includes('enabledIds: { __replace__'), '授权清单不该再用 __replace__（数组是整体替换）');
   // 从索引装时以索引里的地址与 sha256 为准（不信请求体里那份）。
   // 字段名是归一化后的 `url`：索引里 downloadUrl / tarball / url 三种叫法都归到它
   //（2026-10-16 修正 —— 此前锚点写的是 `hit.tarball`，而 plugin-pack 产出的条目用的是 downloadUrl，
   //  照着文档做出来的条目会被静默跳过；锚点把旧字段名焊死了，所以这里改成盯归一化后的名字）
-  assert.match(app, /url = hit\.url;/);
-  assert.match(app, /sha256 = hit\.sha256;/);
+  assert.match(pluginSrc, /url = hit\.url;/);
+  assert.match(pluginSrc, /sha256 = hit\.sha256;/);
   // 索引里标了"本机装不了"的条目（apiVersion / minVersion 对不上）要在动手前拦住并说清原因
-  assert.match(app, /if \(hit\.compatible === false\)/);
-  assert.match(app, /这个插件在本机装不了/);
-  // 启停/装卸都要重排（否则"点了没反应"）
-  assert.ok((app.match(/pluginRegistry\.reconfigure\(\)/g) || []).length >= 4, '各动作后都要重排');
+  assert.match(pluginSrc, /if \(hit\.compatible === false\)/);
+  assert.match(pluginSrc, /这个插件在本机装不了/);
+  // 插件包下载不能继承 security.allowPrivateImageHosts 的内网例外（2026-10-31 复审 P2）
+  assert.match(routes, /safeFetchBinary\([^)]*allowPrivate:\s*false/,
+    '插件包下载必须显式 allowPrivate:false，图片例外只属于图片');
+  // 启停/装卸都要重排（否则"点了没反应"）。只数路由模块：app.js 自己的 4 处
+  //（索引清空/撤回变化/定时刷新/启动收口）和插件动作无关，拼起来数会让这条断言失效。
+  assert.ok((routes.match(/pluginRegistry\.reconfigure\(\)/g) || []).length >= 11, '各动作后都要重排');
 
   // 2026-10-16：插件页从「设置 → 插件」搬到左侧顶层「插件」。两条锚点跟着改口径：
   // 入口在主侧栏（index.html 的 tab），内容容器是 index.html 里的静态节点（委托只绑一次）。

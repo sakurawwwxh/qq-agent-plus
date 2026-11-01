@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { test } from 'node:test';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-usage-cost-'));
@@ -133,4 +134,44 @@ test('未定价 ≠ 免费：没价的调用单独计数，明细接口也要带
   assert.ok(row, '明细要有一行');
   assert.equal(row.unpricedCalls, 1, '明细行要带未定价计数（否则界面只剩 ¥0.00）');
   assert.equal(row.flatCalls, 0);
+});
+
+test('压缩归档（.json.gz）仍计入用量与明细，压缩不会让历史账目变少', async (t) => {
+  const dir = path.join(root, 'sessions');
+  fs.mkdirSync(dir, { recursive: true });
+  const startedAt = Date.now() - 60_000;
+  const body = JSON.stringify({
+    id: 's-gzip-1',
+    chatKey: 'group:1',
+    vendor: '',
+    model: 'deepseek-flash',
+    startedAt,
+    messages: [{
+      raw: {
+        model: 'deepseek-flash',
+        created: Math.floor(startedAt / 1000),
+        usage: { prompt_tokens: 1_000_000, completion_tokens: 1_000_000 }
+      }
+    }]
+  });
+  fs.writeFileSync(path.join(dir, 's-gzip-1.json.gz'), zlib.gzipSync(Buffer.from(body, 'utf8')));
+
+  const { app, get } = await bootApp({ costMode: 'official', useOfficialPrice: true, fallbackToCurrentModel: false });
+  t.after(async () => { await app.stop(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  const stats = await get('/api/usage/stats?range=today');
+  assert.equal(stats.status, 200);
+  const totals = stats.body.totals;
+  assert.ok(totals.runs >= 1, '压缩归档里的调用要算进次数');
+  assert.ok(totals.cost > 0, '压缩归档里的调用要算进成本（不能因为读不到而少算）');
+  assert.equal(totals.unpricedCalls, 0, '有价的模型不该因为压缩被当成未定价');
+
+  const breakdown = await get('/api/usage/breakdown?range=today&dim=chat&key=group:1&by=model');
+  assert.equal(breakdown.status, 200);
+  assert.ok((breakdown.body.rows || []).length >= 1, '明细里也要有这一行');
+
+  // 存储占用面板：压缩文件数要如实上报
+  const status = await get('/api/status');
+  assert.ok(status.body.storage?.compressedFiles >= 1, '/api/status 要能看到压缩归档数量');
+  assert.ok(status.body.storage?.bytes > 0);
 });

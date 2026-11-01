@@ -389,9 +389,18 @@ return `
       <div class="field"><label for="cfg-store-keepsessions">会话审计文件保留条数（0 = 不限）</label>
         <input type="number" id="cfg-store-keepsessions" min="0" max="100000" value="${esc(st.keepSessionFiles ?? 2000)}" /></div>
     </div>
+    <div class="field-row" style="margin-top:12px">
+      <div class="field"><label for="cfg-store-compressdays">留档压缩：多少天前结束的压成 .gz（0 = 不压缩）</label>
+        <input type="number" id="cfg-store-compressdays" min="0" max="3650" value="${esc(st.sessionCompressAfterDays ?? 30)}" /></div>
+      <div class="field"><label for="cfg-store-sessionmb">留档总量上限（MB，0 = 不限）</label>
+        <input type="number" id="cfg-store-sessionmb" min="0" max="1048576" value="${esc(st.sessionMaxTotalMb ?? 1024)}" /></div>
+    </div>
     <div class="hint">
       消息保留上限只清理已经处理完的历史，不会删待处理或结果未知的消息，填 0 表示不清理，保存后即时生效。
       审计文件条数在下次重启后生效；占用磁盘时再调小。
+      超过压缩天数的旧留档每天自动压成 .json.gz（可省约 90% 空间，控制台仍能正常查看）；
+      总量超过上限时按最旧优先删除已结束的留档，运行中/等待中的永不删。
+      当前占用在「总览 → 主机资源」里能看到。
     </div>
     <div class="field" style="margin-top:12px">
       <label for="cfg-store-ioprofile">磁盘写入策略</label>

@@ -89,6 +89,24 @@ test('ReminderStore：新增/查询/取消/到期/过期与限额', () => {
   assert.equal(s3.list('group:21').some((x) => x.id === a.id && x.status === 'pending'), true, '早先那条不受影响');
 
 
+test('新增提醒时清理过期占位项：周期项只跳一期，不永久作废', () => {
+  const store = new ReminderStore(path.join(dataDir, 'reminders-add-expired-repeat.json'));
+  const old = Date.now() - 13 * 3600 * 1000;
+  const repeat = store.add({
+    chatKey: 'group:repeat', at: Date.now() + 60_000, text: '每天吃药',
+    repeat: { kind: 'daily', hour: 9, minute: 0 }
+  });
+  const item = store.items.find((x) => x.id === repeat.id);
+  item.at = old;
+  item.originalAt = old;
+  // 任意一次新增都会触发过期占位清理
+  store.add({ chatKey: 'group:other', at: Date.now() + 120_000, text: '别的提醒' });
+  const after = store.items.find((x) => x.id === repeat.id);
+  assert.equal(after.status, 'pending', '周期项不能被 add() 的清理永久作废');
+  assert.ok(Number(after.at) > Date.now(), '要 re-arm 到未来');
+  assert.equal(Number(after.fireCount) || 0, 1);
+});
+
 test('提醒容量（#9）：先清「过期未处理」的占位项再判上限；全局满时给"全局提醒位已满"', () => {
   const store = new ReminderStore(path.join(dataDir, 'reminders-capacity.json'));
   const now = Date.now();

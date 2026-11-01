@@ -120,14 +120,92 @@ HTML 里的 markdown 星号）。
 并加了一条端到端用例：起这个示例插件、调它的工具、断言内网地址被**宿主侧**的网络守卫拦下 ——
 这既证明示例可用，也证明"插件拿不到裸 fetch 能力"。
 
-## 未发布：消息关键词黑名单
+## 未发布：会话留档存储、诊断、副作用账本与消息关键词黑名单
 
-- 新增 `store.blacklistKeywords`：普通条目大小写不敏感包含匹配，`re:` 前缀启用受限正则；
-  命中后在 ingest 入口直接丢弃（不入库、不触发模型/记忆/插件观察），黑名单优先于白名单。
-- `re:` 子集只允许最多一个不限长度量词，所有变长量词（含 `?`、`{n,m}`）的组合预算
-  不超过 200，禁止断言/反向引用/嵌套重复/超大重复，且只看消息前 2000 字。
-- 配置加载时丢弃非法规则（fail-closed，并告警一次），控制台保存时校验并返回 400
-  （含 `__replace__` 整段替换形状）；编译结果按配置缓存。
+- **启动不再全量解析会话留档**：新增 `data/sessions/.sessions-index.jsonl` 摘要索引（追加式，启动时压实）。
+  实测 1312 个留档 / 111MB JSON 的同步解析从 **3.1 秒**降到只读索引；索引缺失、损坏、外部新增文件
+  （恢复备份）都会自愈，崩溃残留的 running/waiting 仍按原口径回收成 aborted。索引行数超过有效条数
+  2 倍时自动压实，常驻进程也不会让索引文件无界增长。
+- **旧留档自动压缩**：`store.sessionCompressAfterDays` 默认 30 天，已结束的归档压成 `<id>.json.gz`
+  （压缩比通常 8~10 倍）；控制台详情、用量、成本、价格缺口、健康检查全部透明读取压缩归档，
+  不会因为压缩少算历史账目。运行中/等待中的会话不压，压缩失败保留明文，重复执行幂等。
+- **留档总量预算**：`store.sessionMaxTotalMb` 默认 1024MB，超出后按最旧优先删除已结束留档
+  （运行中/等待中永不删）；控制台「总览 → 主机资源」新增留档占用/压缩数/上限，设置页可调。
+- **运行中落盘改异步合并**：`update()` 触发的节流落盘不再同步写整份会话，同一会话同时只有一个写在飞，
+  期间的新状态合并成下一次；`finish()` 仍同步落最终态，并用世代号作废在途旧快照，
+  不会出现"最终文件被 running 覆盖"。
+- 新增 `GET /api/storage` 与 `POST /api/storage/compress`；路由按领域拆到 `src/console/storage.js`，
+  `console/app.js` 只留一行注册（不再往 7000 行的大文件里加 handler）。
+- **新增出站副作用账本**（`src/core/effects.js` + `messages.sqlite` 的 `effects` 表）：
+  已接入的动作在执行前记 `planned`、结果确定后结算；`unknown` 是终态，绝不自动重试。
+  群日报按「归属日」去重（跨午夜不再把第二天标成已发）、提醒崩溃/重启后不重复播报、
+  群游戏终局按每局唯一 id 只发一次；直连协议端的写操作只登记不拦截
+  （另有 outbox 覆盖的消息发送与插件写审计不在本次改动范围内）。
+  控制台 `/api/status.effects` 与总览页体检、`ops doctor` 都能看到 unknown 计数；
+  新增 `node src/ops.js effects list|resolve` 用于人工定位与改判。
+  详见 `docs/EFFECT-LEDGER.md`。
+- **新增消息关键词黑名单**（`store.blacklistKeywords`）：普通条目大小写不敏感包含匹配，
+  `re:` 前缀启用受限正则；命中后在 ingest 入口直接丢弃（不入库、不触发模型/记忆/插件观察），
+  黑名单优先于白名单。为保证同步 ingest 不被拖垮，`re:` 只允许最多一个不限长度量词，
+  所有变长量词（含 `?`、`{n,m}`）的组合预算不超过 200，禁止断言/反向引用/嵌套重复/
+  超大重复，且正则只看消息前 2000 字；配置加载时丢弃非法规则（fail-closed，并告警一次）、
+  控制台保存时 400 校验（含 `__replace__` 整段替换形状），编译结果按配置缓存。
+- **结构整治里程碑 1–3**：控制台路由按域拆出 22 个模块（knowledge/memes/mcp/living-memory/
+  life-feed/skills/auto-update/managers/assets/providers/plugins/chats/sessions/backup/status/
+  config/memory/media-settings/prices/onebot/persona/search），`console/app.js` 7495 → 4066 行（截至本轮加固），
+  路由快照覆盖生产实际注册集（createApp 222 条 + server.js 手动好友审批 1 条 = 223 条）；新增四组结构守卫（路由快照、源码文件大小 ratchet、静态 import 环、
+  拆出域的接口 smoke），以及 `npm run test:coverage`、`scripts/release-check.mjs`
+  （版本/CHANGES/镜像 pin/tag 的 `[skip ci]` 检查）与 CI coverage job。
+- **全项目复审修复（2026-10-31）**：`ops prune` 改为按 rowid 定位并重算 `message_count`
+  （旧实现只按会话内自增 id 匹配，会跨会话误删同号的 pending/held，P1）；
+  `EffectLedger` 启动时立即清扫全部 `planned`（不再等 15 分钟 TTL），群日报不再把
+  `in-flight` 记成今日完成；`ops effects resolve` 同步核对 `outbox.run_id=effect id` 的
+  未知发送并释放 held；`deepMerge` 深拷贝基线，写盘失败回滚不再污染内存配置；
+  启动令牌错误与 SQLite 打开失败补中文上下文；补齐 M2/M3 只读接口 smoke 与
+  if 链前缀分支守卫。
+- **SSRF/反代/单实例加固（2026-10-31）**：价格探测、渠道价目表、远程价格表默认走
+  safe-fetch（内网/环回/重定向逐跳校验），需要拉内网 one-api 时显式打开
+  `security.allowPrivatePriceHosts`；新增 `server.trustedProxies`，只有可信反代才采信
+  `x-forwarded-for` 作为登录限流键，并在 `x-forwarded-proto: https` 时给登录 Cookie 加
+  `Secure`；新增数据目录单实例锁（`.server.lock`，陈旧 pid 自动接管，stop 释放），
+  防止双实例共库（锁在 `createApp` 打开存储之前获取；同机陈旧 pid 自动接管）。
+  **升级动作**：价目 URL 若指向内网 one-api，需显式打开
+  `security.allowPrivatePriceHosts`；价目 URL 不再支持内嵌 `user:pass@` 凭据；
+  多级反向代理需把每一跳代理地址都列进 `server.trustedProxies`（取第一个非可信地址，
+  客户端伪造段不生效）。
+- **全项目复审修复（2026-10-31 第二轮）**：单实例锁识别“同一 PID 的遗留锁”，修复
+  Docker + init 重启（node 仍是 PID 2）后的自锁 crash loop，并加进程 exit 兜底释放；
+  `trustedProxies` 严格校验 CIDR（`10.0.0.0/` 不再被当成 `/0`），只采信
+  `X-Forwarded-For`、不再信任客户端可直传的 `X-Real-IP`；插件包下载显式拒绝内网
+  （不继承图片开关）；`ops restore` 发现数据目录仍被实例占用时拒绝覆盖，`ops backup`
+  停服失败时中止；`admin.__replace__` 不再绕过“自动更新必须有管理员”的不变量；
+  搜索渠道更新改为副本写入，写盘失败不再污染内存；价格页补充内网价目开关提示。
+- **盲审/交叉复核修复（2026-10-31 第三轮）**：兜底回收不再绕过自主节奏（普通群消息
+  不会 8–12 秒就被处理/概率档丢消息）；周期提醒迟到或 `add()` 清理时只跳过一期、
+  不再永久作废；聊天全量导出从最老消息正向分页（>5000 条不再只导最近 5000 条）并处理
+  响应背压；`ops restore` 复制中途失败会换回旧目录，失败且无法回滚时不再拉起服务；
+  `admin`/`autoUpdate`/`allow` 的 `__replace__` 正确写入有效体；hasXxx 回填保留键名
+  大小写；插件 tar 拒绝负长度；CSV 导出防公式注入；ASR 临时文件 0600；
+  生产入口的手动好友审批路由纳入快照（223 条）与冒烟；测试集并发度默认压到 4，
+  避免 Windows 并行端口抢占导致整文件偶发失败。
+- **人物印象元信息泄漏修复（2026-11-01）**：记忆整理 prompt 把【对象信息】与
+  【需要整理的印象】拆成两段；写回前过滤以 `群友 QQ：`/`当前名字：`/`今天：`/
+  `身份：这是机器人管理员本人` 开头的模型输出；只返回元信息时放弃本轮，避免把原印象清空。
+  控制台状态接口新增 `cost.ledgerCost`（usage-today 台账口径，含记忆整理等后台调用），
+  顶栏/总览优先显示它，解决金额比服务商后台少 17–21% 的问题。
+  整理模式同时读取该成员最近 30 条发言（每条 ≤200 字，过滤黑名单）作为补充证据，
+  已有印象的人可以在原护栏内逐步变丰富（issue #25）。
+- **最终全项目审查修复（2026-11-01）**：记忆整理在名字反查后再做一次可见性检查，
+  防止“只有名字的遗留记录 + 仅私聊来源”把私聊正文带进群；整理期间被删除的记忆不再
+  被旧快照复活；`force` 手动整理也不能绕过“无数字 QQ 号”预检；`unpricedRuns` 只认
+  真正缺价（包月/免费不再误报）；后台调用记录实际 vendor；用量页/顶栏/总览统一优先
+  台账口径并取 max，避免改价后把真实成本藏起来；`ops doctor` 默认输出在只读工作目录
+  下回落到数据目录。
+- 新增 `node src/ops.js doctor`：一键生成诊断包（巡检结果、脱敏配置、存储占用、插件清单、
+  异常台账、最近 3 小时日志）。配置在字段名脱敏后再按值脱敏，MCP env/args 与插件设置的敏感键
+  整段掩码；日志过滤 Bearer/查询串/Cookie/x-api-key 等常见形态（第三方插件自己打印的内容
+  无法保证）。只读：不写 `data/health.json`、不重启服务。包内文件名不与线上
+  `config.json`/`health.json` 冲突，避免误把包解到 data 目录时覆盖真实配置。
 
 ## 0. 0.9.13：见闻生态、控制台运维与可靠性加固
 

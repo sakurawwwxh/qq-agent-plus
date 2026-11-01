@@ -270,6 +270,10 @@ function renderBanner() {
 }
 
 function switchTab(name) {
+  // 点击当前已激活的**设置**页签时不要 loadSettings()：那会重建表单，把用户刚改、
+  // 尚未保存的输入静默冲掉（2026-10-31 盲审 P2）。其它页签保持原有刷新语义，
+  // 首屏/测试也可能需要靠 switchTab 初始化侧栏滑块。
+  if (state.tab === name && name === 'settings' && state.settingsDirty) return;
   // 统一守卫：所有入口（页签点击、待批徽标、实验页跳转）都经过这里，
   // 不能只挂在 .tab 的 click 上，否则别的入口会静默丢掉未保存的设置。
   if (state.tab === 'settings' && name !== 'settings' && state.settingsDirty && !state.switchTabBypass) {

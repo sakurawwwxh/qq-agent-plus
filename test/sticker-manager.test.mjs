@@ -557,7 +557,7 @@ test('收藏配额记账：成功扣一次、取不到图退还（事前原子�
 });
 
 test('控制台预览失效的收藏表情：返回 404，不把 STICKER_LINK_DEAD 记成系统异常', () => {
-  const app = fs.readFileSync(new URL('../src/console/app.js', import.meta.url), 'utf8');
+  const app = fs.readFileSync(new URL('../src/console/routes/assets.js', import.meta.url), 'utf8');
   const at = app.indexOf("router.add('GET', '/api/assets/stickers/image'");
   assert.ok(at > 0, '图片路由结构变了就更新这条用例');
   const slice = app.slice(at, at + 1800);

@@ -52,3 +52,25 @@ test('redactText：不该动的文本原样保留（只截断/去空字符）', 
   // max 截断与 trim
   assert.equal(redactText('   abcdef  ', 3), 'abc');
 });
+
+test('redactText：Cookie 多段、x-api-key 与 URL 里的 user:pass 也要脱敏（2026-10-30 交叉审查）', () => {
+  // 旧规则 \S+ 只吃掉第一对，后面几对 skey/p_skey 会明文留下
+  const cookie = redactText('Cookie: uin=o123; skey=SECRET1; p_skey=SECRET2');
+  assert.equal(cookie, 'Cookie: [redacted]');
+  assert.ok(!cookie.includes('SECRET1') && !cookie.includes('SECRET2'));
+
+  // 头形式的 api key / authorization: Token 不在 Bearer|Basic 规则里
+  assert.equal(redactText('x-api-key: abcd1234'), 'x-api-key: [redacted]');
+  assert.equal(redactText('api-key: abcd1234'), 'api-key: [redacted]');
+  assert.equal(redactText('authorization: Token abcd1234'), 'authorization: [redacted]');
+
+  // URL 里内嵌的凭据（既不是查询串也不是头）
+  const url = redactText('fetch https://user:pa55word@example.com/path');
+  assert.ok(!url.includes('pa55word'));
+  assert.ok(url.startsWith('fetch https://[redacted]@example.com'));
+
+  // JSON 里带连字符的键名（x-api-key / api-key）也要认
+  assert.equal(redactText('{"x-api-key":"abcd1234"}'), '{"x-api-key":"[redacted]"}');
+  // 已经脱敏过的值不重复处理（幂等）
+  assert.equal(redactText(redactText('x-api-key: abcd1234')), 'x-api-key: [redacted]');
+});

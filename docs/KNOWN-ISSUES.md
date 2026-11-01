@@ -58,9 +58,6 @@ quiet 保存后误报未保存、保存双写/暂停半生效/并发保存旧快
 
 **功能**
 
-- 群游戏终局播报在发送结果 unknown 时仍会重发（`src/features/group-game.js:791`）。
-- 群日报"已完成"日期用发送时刻，跨午夜会把第二天标成已发（`src/features/group-digest.js:73`）；
-  结果 unknown 时补跑可能重复发（`:165`）。
 - 每日动态手动发布当天草稿后，定时器会再生成一份预览（`src/features/daily-moments.js:49`）。
 - 删除身份资产不清理待批好友请求/好友机会，残留请求仍可把人加回私聊白名单
   （`src/identity/identity-store.js:1413`）。
@@ -99,6 +96,9 @@ quiet 保存后误报未保存、保存双写/暂停半生效/并发保存旧快
 或按视频时长分段转写、每段独立超时。
 
 ### 提醒的播报确认是"该会话有没有新自述"，不是"这条提醒有没有发出去"（2026-10-20 审查）
+
+**2026-10-31 更新**：崩溃/重启导致的重复播报已经由副作用账本修掉（planned 超时转 unknown，
+不再自动重试，见 `docs/EFFECT-LEDGER.md`）。下面这条**近似语义仍在**：
 
 `reminders` 派发后，`orchestrator` 用 `store.hasSelfSince(chatKey, dispatchedAt)` 判断是否播报成功：
 只要这次唤醒期间机器人在该会话发出**任意一条**消息（哪怕是在回复别的群友），就按已播报处理。
@@ -144,6 +144,12 @@ id 集合（`activeRuns` 的 sessionId）传入 store，清理时排除。留待
 磁盘缓存仍按设计保留，重新启用时先顶上。）
 
 ### 直连协议端的写入工具不走发送队列的 outbox（2026-10-08 复审记录）
+
+**2026-10-31 更新**：直连协议端的写操作（贴表情/签名/状态/备注/签到/待办/头像/资料/群名片/
+禁言/踢人/撤回/设管理员/相册点赞与评论）已接入副作用账本（只登记，不拦截）：协议端明确拒绝
+或连接被拒记 `failed`，超时/连接重置记 `unknown`，控制台与 `ops doctor` 能看到。下面说的
+"不走 outbox、结果不确定不会进 unknown"仍然成立 —— 账本只提供可观测性，不改变这些调用的
+重试行为；`unknown` 行需人工核对（`resolve` 或按日志/`effects.json` 排查）。
 
 `react_to_message` / `set_my_signature` / `set_my_status` / `set_remark` / `group_sign` /
 `set_group_todo` 这类**直接调用协议端**的写入工具不经过 `SendQueue` 的 `#deliver`，因此传输结果

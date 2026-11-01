@@ -180,3 +180,19 @@ test('P2-8（行为）：缺 id 的原生 tool_calls 会被补齐，下一轮 as
   assert.ok(toolMsg, '第二轮请求要带上 tool 结果消息');
   assert.equal(toolMsg.tool_call_id, assistant.tool_calls[0].id, 'assistant 与 tool 消息必须按同一 id 配对');
 });
+
+test('兜底回收不能绕过 pacing：不会排 8–12 秒的即时唤醒', async (t) => {
+  const ctx = makeInstance(t, { onExceed: 'block' });
+  ctx.store.appendIncoming('group:1', { mid: 'recovery-1', text: '普通消息', senderId: '42', senderName: 'm42' });
+  ctx.runner.onIncoming('group:1');
+  const before = ctx.runner.scheduledWakes.get('group:1');
+  assert.ok(before && before.at - Date.now() > 60_000, '前提：已排几分钟后的 paced 唤醒');
+
+  ctx.runner.startRecoveryLoop();
+  await new Promise((resolve) => setTimeout(resolve, 5300));
+
+  assert.equal(ctx.runner.pendingWake.size, 0, '回收循环不该排即时唤醒');
+  assert.equal(ctx.store.unreadCount('group:1'), 1, '消息必须保留到 paced 唤醒');
+  const after = ctx.runner.scheduledWakes.get('group:1');
+  assert.ok(after && after.at - Date.now() > 60_000, '仍应是几分钟后的 paced，而不是被提前');
+});

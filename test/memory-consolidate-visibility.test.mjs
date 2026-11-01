@@ -185,3 +185,26 @@ test('混合批次仍整理可见人物，指定目标不带无关的跳过项',
   assert.deepEqual(selected.results.map((item) => item.userId), [otherUid]);
   assert.equal(selected.skipped.length, 0);
 });
+
+test('只有名字的遗留记录 + 仅私聊来源：反查后也不能绕过可见性', async (t) => {
+  const f = fixture(t, { otherOnly: true, legacy: true });
+  const before = f.memory.getMember('', f.uid).impressions
+    .find((entry) => entry.content === f.hiddenText);
+  assert.ok(before, '前提：该人只有私聊来源的印象');
+  const result = await f.runner.consolidateMemoryForChat(f.chatKey, { force: true });
+  assert.equal(f.requests.length, 0, '不能把私聊来源的正文送去整理模型');
+  const after = f.memory.getMember('', f.uid).impressions;
+  assert.deepEqual(after.find((entry) => entry.content === f.hiddenText), before,
+    '隐藏来源记录不能被改写/截断');
+  assert.ok(result.skipped.some((item) => String(item.userId) === f.uid && /不可见/.test(item.reason)));
+});
+
+test('force 手动整理也不能为“只有名字”的条目白烧模型调用', async (t) => {
+  const f = fixture(t, { empty: true });
+  f.memory.append(f.chatKey, 'memberImpression', 'ghost-impression', { userId: '', target: 'Ghost Name' });
+  const result = await f.runner.consolidateMemoryForChat(f.chatKey, { force: true });
+  // 活跃群友仍可走“发现新人”建立印象，但不能把无法反查 QQ 号的 ghost 条目送去模型。
+  assert.ok(!JSON.stringify(f.requests).includes('ghost-impression'), '名字遗留条目不能进模型');
+  assert.ok(result.skipped.some((item) => /只有名字|QQ 号/.test(item.reason)));
+  assert.deepEqual(result.failed, []);
+});

@@ -29,6 +29,13 @@ test('配置冲突 API：默认 409 不写盘，force 才写，reload 读回磁�
   cfg.runtime.mode = 'observe';
   cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
   cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  cfg.webSearch = {
+    ...cfg.webSearch,
+    providers: [{
+      id: 'sp_conflict_1', name: 'old-name', type: 'openai',
+      baseUrl: 'https://search.example.com/v1', apiKey: 'sk-old', count: 6, timeoutMs: 20000
+    }]
+  };
   updateConfig(cfg);
   const app = createApp({ log: () => {} });
   t.after(async () => {
@@ -55,6 +62,20 @@ test('配置冲突 API：默认 409 不写盘，force 才写，reload 读回磁�
   assert.equal(conflict.body.code, 'CONFIG_CONFLICT');
   assert.ok(conflict.body.configConflict?.backupPath);
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).api.model, 'external-api-edit');
+
+  // 写盘失败时不能就地改内存：搜索渠道更新必须走副本（2026-10-31 复审 P2）。
+  const providerConflict = await request('/api/search-providers', {
+    method: 'POST',
+    body: {
+      name: 'new-name', type: 'openai', baseUrl: 'https://search.example.com/v1', apiKey: 'sk-new'
+    }
+  });
+  assert.equal(providerConflict.status, 400, JSON.stringify(providerConflict.body));
+  assert.match(String(providerConflict.body.error), /CONFIG_CONFLICT|外部|冲突/i);
+  const providers = await request('/api/search-providers');
+  assert.equal(providers.body.providers[0].name, 'old-name', '失败保存不能改内存里的名称');
+  const configAfter = await request('/api/config');
+  assert.equal(configAfter.body.webSearch.providers[0].name, 'old-name');
 
   const forced = await request('/api/config?force=1', { method: 'POST', body: { api: { temperature: 0.42 } } });
   assert.equal(forced.status, 200);

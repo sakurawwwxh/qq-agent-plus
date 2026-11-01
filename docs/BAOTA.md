@@ -193,10 +193,19 @@ proxy_buffering off;
 proxy_cache off;
 proxy_read_timeout 3600s;
 proxy_send_timeout 3600s;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
 ```
 
-登录 cookie 包含 `HttpOnly; SameSite=Strict`，不含 `Secure` 标志（`src/console/app.js` 的 `setConsoleCookie`），
-因此 HTTP 反向代理下登录正常，启用 HTTPS 亦不受影响。首次访问使用
+并在 `config.json` 里把反代地址加入 `server.trustedProxies`（宝塔 nginx 在本机时）：
+
+```json
+"server": { "trustedProxies": ["127.0.0.1"] }
+```
+
+这样登录限流按真实客户端 IP 计数（而不是所有访客共用代理地址），HTTPS 反代下登录
+Cookie 也会带 `Secure`（`HttpOnly; SameSite=Strict` 始终保留）。不配置时仍可正常登录，
+但限流退化为按代理地址计数；`x-forwarded-*` 永远不参与鉴权判定。首次访问使用
 `https://<域名>/?token=<令牌>` 即可免登录，此后浏览器保留 30 天。反向代理一旦对公网开放，
 控制台令牌即为唯一凭据，必须仅限本人使用。
 

@@ -539,6 +539,7 @@ function renderApiSection(c) {
           <button class="btn btn-small" id="price-feed-refresh-btn" title="不等定时，立即拉一次">立即拉取</button>
         </div>
         <div class="hint" id="price-feed-status" style="margin-top:4px"></div>
+        <div class="hint" style="margin-top:2px">内网/自建价目表默认会被 SSRF 防护拦截；确需拉取请在 config.json 设置 <code>security.allowPrivatePriceHosts: true</code> 后重载配置。</div>
       </div>
 
       <!-- 从渠道自动拉价（探测）：把中转站/自建渠道公布的价格拉下来，写成"渠道价" -->
@@ -552,6 +553,7 @@ function renderApiSection(c) {
         <button class="btn btn-small" id="probe-btn">探测</button>
       </div>
       <div class="hint" id="probe-status" style="margin-top:4px">探测只做预览，不会改动任何配置；确认后才写成"渠道价"。</div>
+      <div class="hint" style="margin-top:2px">内网渠道默认会被 SSRF 防护拦截（见上方 <code>security.allowPrivatePriceHosts</code>）。</div>
       <div id="probe-result" class="hidden" style="margin-top:8px"></div>
     </div>
 

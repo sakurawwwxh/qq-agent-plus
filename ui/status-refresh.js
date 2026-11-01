@@ -78,7 +78,10 @@ QARegistry.override('refreshStatus', async function refreshStatus() {
     setStatusLabel('#model-label', `模型：${s.orchestrator.model || '未设置'}`);
     const u = s.usage;
     const c = s.cost;
-    const costTxt = c && c.cost > 0 ? ` · ¥${c.cost.toFixed(3)}` : '';
+    // 优先台账口径（含记忆整理等后台调用）；旧后端没有 ledgerCost、或改价后台账
+    // 还是旧快照时，取两者较大值，避免把真实成本藏起来（2026-11-01 复审）。
+    const shownCost = Math.max(Number(c?.ledgerCost) || 0, Number(c?.cost) || 0);
+    const costTxt = shownCost > 0 ? ` · ¥${shownCost.toFixed(3)}` : '';
     // 口径后缀与 app.js 保持一致：包月/倍率/未定价都要在顶栏说明，别让金额被误读
     const modeTxt = c?.costMode === 'subscription'
       ? (Number(c.costMonthlyFee) > 0 ? ` · 包月 ¥${Number(c.costMonthlyFee)}/月` : ' · 按月付')

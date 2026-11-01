@@ -51,3 +51,22 @@ test('todayUsage 计入在途会话的估算金额', () => {
     Date.now = realNow;
   }
 });
+
+test('包月模式不把按量成本 0 误记成“未计价”', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.api = {
+    ...cfg.api,
+    model: 'deepseek-flash',
+    costMode: 'subscription',
+    costMonthlyFee: 68,
+    costMultiplier: 1
+  };
+  setRuntimeConfig(cfg);
+  const reg = new SessionRegistry(0);
+  reg.recordExternalUsage(
+    { promptTokens: 1000, completionTokens: 100, totalTokens: 1100, cachedTokens: 0, calls: 1 },
+    { model: 'deepseek-flash' }
+  );
+  const usage = reg.todayUsage(todayKey());
+  assert.equal(usage.unpricedRuns, 0, '包月不是未定价');
+});

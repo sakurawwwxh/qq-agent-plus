@@ -805,7 +805,13 @@ function updateUsagePage(stats, st, prices) {
   set('prompt-sub', `输出 ${fmtTok(t.completionTokens)}`);
   set('rate', `${((t.cacheHitRate || 0) * 100).toFixed(1)}%`);
   set('rate-sub', `命中 ${fmtTok(t.cachedTokens)} / 输入 ${fmtTok(t.promptTokens)}`);
-  set('cost', fmtYuan(t.cost));
+  // 今日区间优先台账口径（含记忆整理等后台调用）；历史区间仍用会话聚合。
+  // 改价后 ledgerCost 可能还是旧的 0/低值，取 max 避免把真实成本藏起来（2026-11-01 复审）。
+  const ledgerCost = Number(st?.cost?.ledgerCost) || 0;
+  const shownCost = stats?.range === 'today'
+    ? Math.max(ledgerCost, Number(t.cost) || 0)
+    : (Number(t.cost) || 0);
+  set('cost', fmtYuan(shownCost));
   // 口径：实付（用户自己填的渠道价/自定义价）vs 估算（官方表、兜底）。
   // 只显示"估算成本"会让人以为数字是账单；只显示"实付"又会漏掉估算那部分。
   const actual = Number(t.actualCost) || 0;

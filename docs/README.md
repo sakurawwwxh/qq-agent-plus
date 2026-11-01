@@ -42,6 +42,7 @@
 | [CHANGES.md](CHANGES.md) | 本分支相对上游的改动清单，每条附「失败模式 → 现行做法」 |
 | [RELEASE-ARCHIVE.md](RELEASE-ARCHIVE.md) | v0.5.0–v0.8.4 已从 GitHub Releases 列表移除的旧发布说明存档（git tag 全部保留） |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | 当前已知但未修复的问题，以及历史上的基线失败记录 |
+| [EFFECT-LEDGER.md](EFFECT-LEDGER.md) | 出站副作用账本：日报/提醒/游戏终局的幂等键与 unknown 语义（第一阶段已实现，插件 journal 待做） |
 | [PERSONAS.md](PERSONAS.md) | 内置角色卡清单、选择与保存、语气档位（原版群友 / 自然可靠）与生效范围 |
 | [PLUGINS.md](PLUGINS.md) | 插件机制：目录与 manifest 契约、NDJSON 协议、能力白名单、隔离实测与信任声明（含分期）；apiVersion 2 的设置面板/加密凭据/授权与配额/媒体边界；作者向的写插件三条命令与上架流程（控制台「插件 → 发布插件」是同一份路线的界面版） |
 | [BILIBILI.md](BILIBILI.md) | 官方 B 站插件：读/观看/互动范围、Cookie 配置、批准与配额、视频下载合流的限制 |

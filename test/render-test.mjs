@@ -2008,7 +2008,7 @@ try {
     && featuresSrc.includes('id="asset-sticker-bulk-analyze"')
     && featuresSrc.includes('id="asset-sticker-bulk-delete"')
     && featuresSrc.includes("'/api/assets/stickers/analyze'")
-    && fs.readFileSync(path.join(ROOT, 'src', 'console', 'app.js'), 'utf8').includes('if (body.stickerId)');
+    && fs.readFileSync(path.join(ROOT, 'src', 'console', 'routes', 'assets.js'), 'utf8').includes('if (body.stickerId)');
   batchPins ? pass++ : fail++;
   console.log('  ' + (batchPins ? 'OK   ' : 'FAIL ') + '表情包 ZIP 导入、多选批量操作与进度接口存在');
 

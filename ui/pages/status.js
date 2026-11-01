@@ -268,7 +268,8 @@ async function refreshStatusImpl() {
     // 成本：查得到价就显示；查不到（未定价，转站/新模型常见）就不显示金额，
     // 只提示"含未定价调用"，避免让 ¥0 被读成"免费"。
     const c = s.cost;
-    const costTxt = c && c.cost > 0 ? ` · ¥${c.cost.toFixed(3)}` : '';
+    const shown = Math.max(Number(c?.ledgerCost) || 0, Number(c?.cost) || 0);
+    const costTxt = shown > 0 ? ` · ¥${shown.toFixed(3)}` : '';
     // 按账户口径换个说法：倍率=你的渠道价、按月付=包月（不按 token 算）
     const modeTxt = c?.costMode === 'subscription'
       ? (Number(c.costMonthlyFee) > 0 ? ` · 包月 ¥${Number(c.costMonthlyFee)}/月` : ' · 按月付')
