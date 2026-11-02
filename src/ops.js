@@ -793,7 +793,7 @@ const AUDIT_MARKERS = [
   // 改查随版本发布的内置卡，才对应"这个补丁在不在"的本意。
   ['人设·别当评委', 1, 'roles/xiaojingyu.md', '不要总结、不要升华'],
   ['闲聊带自己', 1, 'src/llm/prompt.js', '把自己的那半句补上'],
-  ['表情清单常驻', 1, 'src/llm/prompt.js', '表情清单常驻系统提示']
+  ['表情清单动态段', 1, 'src/llm/prompt.js', 'function stickerPromptBlock']
 ];
 
 function loadConfigJson(dataDir) {

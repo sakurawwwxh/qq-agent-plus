@@ -950,10 +950,15 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
     "sessionPersistMs": 10000,
     "sessionCompressAfterDays": 30,
     "sessionMaxTotalMb": 1024,
-    "sqliteSynchronous": "FULL"
+    "sqliteSynchronous": "FULL",
+    "contextLayering": { "enabled": true, "maxHistoryMessages": 24, "maxHistoryChars": 8000 }
   }
 }
 ```
+
+- `contextLayering`（Issue #86）：默认只带最近 24 条 / 8000 字历史，控制单轮输入；
+  设为 `{ "enabled": false }` 恢复旧口径（仍受 `atCount/allCount` 与 `pastStateMaxChars` 约束）。
+  建议先用默认值观察回复连贯性，再按群需要调大。
 
 - `blacklistKeywords`：消息关键词黑名单（每项一条，最多 100 条）。普通文字大小写不敏感
   包含匹配；以 `re:` 开头启用受限正则：最多一个 `*`/`+`/`{n,}`，所有变长量词（含 `?`、
@@ -990,7 +995,7 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
 - `mode`：`off`（默认）/ `balanced`（省）/ `aggressive`（很省）。控制台在「设置 -> Token 节省」，带"你的设置 / 当前生效"对照表。
 - 语义：**只夹上限，不改写** `store.atCount` / `api.maxRounds` 这些用户值；关掉立刻回到原设置（`off` 与升级前一致；手改成负数这类坏值时会按默认值处理，不再原样传下去）。
 - 被夹的项：上下文档位条数（被艾特/关键词/随机/全响应）、单次运行工具轮数与累计 Token、
-  会话交接与全局印象注入的字符上限、系统提示里的表情清单条数。
+  会话交接与全局印象注入的字符上限、动态提示里的表情清单条数。
 - 有一处例外：每日动态（说说）另有一条提示词组装路径，它自己取交接与印象，不吃上面那两个字符上限
   （那条路径有自己的 `maxPromptChars` 预算兜底）。
 - 改不动的部分：每次模型调用的固定底（系统提示 + 工具定义）约 1.2 万-1.5 万 token。

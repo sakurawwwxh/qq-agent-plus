@@ -679,7 +679,7 @@ export const DEFAULT_CONFIG = {
   // 表情包
   sticker: {
     enabled: true,
-    promptMaxStickers: 10,
+    promptMaxStickers: 3,
     collectEnabled: true,
     // 别人发来的表情包自动进库（同图只存一次，受 maxCollectPerHour 限频）
     autoCollect: true,
@@ -867,6 +867,14 @@ export const DEFAULT_CONFIG = {
     batchLimit: 100,
     batchMaxChars: 32000,
     pastStateMaxChars: 24000,
+    // 分层上下文（Issue #86）：默认只带最近 24 条 / 8000 字，避免 300 条历史把每轮输入顶到
+    // 几万字符。需要恢复旧行为时把 enabled 设为 false（这时仍用 atCount/allCount 与
+    // pastStateMaxChars 的原口径）。
+    contextLayering: {
+      enabled: true,
+      maxHistoryMessages: 24,
+      maxHistoryChars: 8000
+    },
     // ── 响应档位的作用范围 ──
     unifiedTier: true,          // true = 上方滑条对所有会话生效；false = 可按群单独设置
     groupSliderPos: {},         // { [群号]: 概率 0~100 } 仅 unifiedTier=false 时生效；未设置的群/私聊跟随全局
@@ -1573,7 +1581,15 @@ function migrateConfig(parsed) {
       contextSliderPos: probability,
       contextTier: derived.tier,
       randomPercent: derived.randomPercent,
-      groupSliderPos
+      groupSliderPos,
+      // 分层上下文：手改坏值不能让整段丢回 undefined。关闭时保留旧口径。
+      contextLayering: {
+        enabled: store.contextLayering?.enabled !== false,
+        maxHistoryMessages: Math.min(200, Math.max(1,
+          Number(store.contextLayering?.maxHistoryMessages) || 24)),
+        maxHistoryChars: Math.min(100000, Math.max(1000,
+          Number(store.contextLayering?.maxHistoryChars) || 8000))
+      }
     };
   }
   if (out.wakeDelayMinMs == null && out.wakeDelayMaxMs == null && out.wakeDelayMs != null) {

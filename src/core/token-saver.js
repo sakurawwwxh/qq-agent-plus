@@ -3,7 +3,7 @@
 // 为什么是这几个项（2026-09-23 用线上真实用量算过一遍）：
 //   · 每次模型调用的固定底（系统提示 + 工具定义）约 1.2 万~1.5 万 token，靠设置改不动它；
 //   · 剩下能动的就是：上下文档位各档读多少条已读、单次运行的工具轮数与累计 token、
-//     会话交接与全局印象注入的字符上限、系统提示里的表情清单条数。
+//     会话交接与全局印象注入的字符上限、动态提示里的表情清单条数。
 //   线上 7 天数据（867 次调用 / 1836 万 token）：输入占 98.8%，其中"没命中缓存的输入"占花费的 76%。
 //   按这里的上限压，每次唤醒的输入大约降三到五成（档位条数是大头，交接/记忆/清单是小头）。
 //
@@ -94,9 +94,9 @@ export function tokenSaverEffective(cfg = {}) {
     { key: 'maxRunTokens', label: '单次运行累计 Token 上限', user: num(cfg.api?.maxRunTokens, 160000), cap: caps?.maxRunTokens },
     { key: 'handoffMaxChars', label: '会话交接注入上限（字符，配置文件里改）', user: num(cfg.memory?.handoffMaxChars, 4000), cap: caps?.handoffMaxChars },
     { key: 'memoryBlockChars', label: '全局印象注入上限（字符，固定值）', user: 6000, cap: caps?.memoryBlockChars },
-    // 表情清单的运行时读法是"非正数/坏值按默认 10"（prompt.js 里 `want > 0 ? want : 10`），
-    // 所以手改成 -5 时这一行要说 10 —— 说 -5 或 0 都是运行时不会发生的事。
-    { key: 'promptMaxStickers', label: '提示词里的表情清单条数', user: (Number(cfg.sticker?.promptMaxStickers) > 0 ? Number(cfg.sticker.promptMaxStickers) : 10), cap: caps?.promptMaxStickers },
+    // 表情清单的运行时读法是"非正数/坏值按默认 3"（prompt.js 里 `want > 0 ? want : 3`），
+    // 所以手改成 -5 时这一行要说 3 —— 说 -5 或 0 都是运行时不会发生的事。
+    { key: 'promptMaxStickers', label: '提示词里的表情清单条数', user: (Number(cfg.sticker?.promptMaxStickers) > 0 ? Number(cfg.sticker.promptMaxStickers) : 3), cap: caps?.promptMaxStickers },
     // 日说说有**自己的**轮次旋钮（dailyMoments.maxRounds，默认 8），与聊天那条 api.maxRounds 不是一回事
     { key: 'dailyMomentsMaxRounds', label: '每日动态最大轮次（配置文件里改）', user: num(cfg.dailyMoments?.maxRounds, 8), cap: caps?.maxRounds }
   ];

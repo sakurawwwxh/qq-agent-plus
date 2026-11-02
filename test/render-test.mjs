@@ -938,13 +938,13 @@ try {
     && !/<select id="cfg-sticker-max"/.test(chatHtml);
   openSwitchesOk ? pass++ : fail++;
   console.log('  ' + (openSwitchesOk ? 'OK   ' : 'FAIL ') + '设置页：主动开口三个开关 + 表情清单条数滑条');
-  // 缺省 / 老配置（字段不存在）按"开"渲染：升级后行为不变；条数默认 10 档
+  // 缺省 / 老配置（字段不存在）按"开"渲染：升级后行为不变；清单条数默认 3 档
   const defaultHtml = ctx.renderChatSection(cfg);
   const defaultOnOk = /id="cfg-pro-followup"[^>]*checked/.test(defaultHtml)
     && /id="cfg-pro-selfwake"[^>]*checked/.test(defaultHtml)
-    && /<input type="range" id="cfg-sticker-max"[^>]*value="10"/.test(defaultHtml);
+    && /<input type="range" id="cfg-sticker-max"[^>]*value="3"/.test(defaultHtml);
   defaultOnOk ? pass++ : fail++;
-  console.log('  ' + (defaultOnOk ? 'OK   ' : 'FAIL ') + '设置页：缺省开关勾选、清单条数默认 10');
+  console.log('  ' + (defaultOnOk ? 'OK   ' : 'FAIL ') + '设置页：缺省开关勾选、清单条数默认 3');
   // 收藏开关（2026-10-02 用户反馈"乱收藏"）：**一个开关**同时管"自动收"与"主动收"
   // （两个名字太像、分开摆会造成误解）；上限默认 10 档；关掉/自定义值如实回显，
   // 手改出的"混合状态"（总闸开、自动关）在界面上显示为关。
@@ -975,9 +975,9 @@ try {
   overOk ? pass++ : fail++;
   console.log('  ' + (overOk ? 'OK   ' : 'FAIL ') + '设置页：超范围存量值按 60 回显');
 
-  // 手改成非正数（运行时按默认 10 生效）时界面也必须显示 10 —— 否则保存一下就把用户的值改成 1 了
+  // 手改成非正数（运行时按默认 3 生效）时界面也必须显示 3 —— 否则保存一下就把用户的值改成 1 了
   const zeroHtml = ctx.renderChatSection({ ...cfg, sticker: { ...cfg.sticker, promptMaxStickers: -5 } });
-  const zeroOk = /<input type="range" id="cfg-sticker-max"[^>]*value="10"/.test(zeroHtml)
+  const zeroOk = /<input type="range" id="cfg-sticker-max"[^>]*value="3"/.test(zeroHtml)
     && !/<input type="range" id="cfg-sticker-max"[^>]*value="-5"/.test(zeroHtml)
     && !/<input type="range" id="cfg-sticker-max"[^>]*value="1"/.test(zeroHtml);
   zeroOk ? pass++ : fail++;

@@ -651,6 +651,20 @@ function adminIdentityLine(cfg, cardFirst = false, hasRoleText = true) {
   return lines.join('\n');
 }
 
+function stickerPromptBlock(entries) {
+  if (!Array.isArray(entries) || !entries.length) return '';
+  // 省 Token 模式下调小清单条数（关闭时上限为 null，取用户设置）；
+  // 非正数/坏值按默认 3 处理（Issue #86：每轮只给 3–5 个候选，完整清单用 list_stickers）。
+  const stickerCap = tokenSaverCapsOf(getConfig())?.promptMaxStickers;
+  const wantStickers = Number(getConfig().sticker?.promptMaxStickers);
+  return buildStickerContext(
+    entries,
+    cappedByTokenSaver(wantStickers > 0 ? wantStickers : 3, stickerCap),
+    // 这里必须读 getConfig()：调用方可能只传了 persona（没有 api / sticker 字段）。
+    { vision: stickerVisionEnabled() }
+  ) || '';
+}
+
 export function buildSystemPrompt({
   persona,
   selfNickname = '',
@@ -732,21 +746,10 @@ export function buildSystemPrompt({
   if (cfg.customRules && String(cfg.customRules).trim()) {
     parts.push('', '【管理员附加规则】', String(cfg.customRules).trim());
   }
-  // 表情清单常驻系统提示：续接运行的 userPrompt 不再重复它（避免 transcript 里堆积），
-  // 放这里保证每次运行模型都直接看得到有哪些图可发（2026-09-18：只放会话首轮的旧上下文里=等于没有）。
+  // 兼容直接调用（测试/旧调用方）：生产路径由 orchestrator 把清单放进动态 user prompt，
+  // 不再进 system 前缀 —— 清单随收藏变化时不会让前缀缓存整体失效（Issue #86）。
   if (Array.isArray(stickerEntries) && stickerEntries.length) {
-    // 省 Token 模式下调小清单条数（关闭时上限为 null，取用户设置）；
-    // 非正数/坏值按默认 10 处理（以前会把 -5 这种手改坏值原样传下去）
-    const stickerCap = tokenSaverCapsOf(getConfig())?.promptMaxStickers;
-    const wantStickers = Number(getConfig().sticker?.promptMaxStickers);
-    const stickerCtx = buildStickerContext(
-      stickerEntries,
-      cappedByTokenSaver(wantStickers > 0 ? wantStickers : 10, stickerCap),
-      // 这里必须读 getConfig()：本函数里的 cfg 是 persona 对象（没有 api / sticker 字段）。
-      // 判定用 stickerVisionEnabled：图片输入关、模型不支持图片、或消息类型关了表情查看，
-      // 三种情况下 get_sticker_image 都不在工具表里（2026-09-26 / 2026-10-17 审查）
-      { vision: stickerVisionEnabled() }
-    );
+    const stickerCtx = stickerPromptBlock(stickerEntries);
     if (stickerCtx) parts.push('', stickerCtx);
   }
   // 玩法与工具箱（2026-09-28）：小游戏与"随机/提醒/语音/称呼"这几件群友会主动要的事，
@@ -970,7 +973,13 @@ export const PAST_STATE_MAX_CHARS = 100000;
  */
 export function buildPastState(store, chatKey, { excludeIds = [], limit = null } = {}) {
   const cfg = getConfig().store;
-  const maxLimit = Math.min(PAST_STATE_MAX_MESSAGES, limit === null ? Math.max(1, Number(cfg.allCount) || 300) : Math.max(0, Number(limit) || 0));
+  const layering = cfg.contextLayering || {};
+  const layered = layering.enabled !== false;
+  const configuredLimit = Math.min(PAST_STATE_MAX_MESSAGES,
+    limit === null ? Math.max(1, Number(cfg.allCount) || 300) : Math.max(0, Number(limit) || 0));
+  const maxLimit = layered
+    ? Math.min(configuredLimit, Math.max(1, Number(layering.maxHistoryMessages) || 24))
+    : configuredLimit;
   const exclude = new Set(excludeIds);
   if (maxLimit <= 0) return { text: '', count: 0, messages: [] };
   const memCfg = getConfig().memory || {};
@@ -999,7 +1008,10 @@ export function buildPastState(store, chatKey, { excludeIds = [], limit = null }
   // 屏蔽名单兜底：屏蔽前已存档的消息也不能再进提示词；跨会话按消息自己的群号过滤。
   messages = filterBlockedHistory(messages, chatKey, { crossScope });
   messages = messages.slice(-maxLimit);
-  const maxChars = Math.min(PAST_STATE_MAX_CHARS, Math.max(100, Number(cfg.pastStateMaxChars) || 24000));
+  const maxChars = Math.max(100, Math.min(PAST_STATE_MAX_CHARS,
+    layered
+      ? Math.min(Number(cfg.pastStateMaxChars) || 24000, Number(layering.maxHistoryChars) || 8000)
+      : (Number(cfg.pastStateMaxChars) || 24000)));
   let remaining = maxChars;
   const selected = [];
   const lines = [];
@@ -1217,6 +1229,12 @@ export function buildUserPrompt(ctx) {
   const memText = ctx.memory.formatForPrompt(ctx.chatKey, { userIds: [...relevantUserIds] });
   if (memText) parts.push(`【记忆】\n${memText}`);
 
+  // 动态段：表情候选与进行中的游戏不进 system 前缀，避免收藏/游戏状态变化让缓存失效。
+  // 只给少量候选（默认 3），完整清单由模型按需调用 list_stickers。
+  const stickerCtx = stickerPromptBlock(ctx.stickerEntries);
+  if (stickerCtx) parts.push(stickerCtx);
+  if (ctx.gameContext) parts.push(String(ctx.gameContext));
+
   // 技能只给"有哪几套方法"，具体流程由 skill_use 返回；不把整份 SKILL.md 常驻提示词。
   try {
     const skills = getConfig().skills?.enabled === true
@@ -1232,7 +1250,7 @@ export function buildUserPrompt(ctx) {
   // 成员备注：不再单独成段——备注名已经直接替换了消息里的显示名
   // （formatEntry/triggerLabels 都优先用备注），单独列一遍是重复信息。
 
-  // 表情清单已挪进系统提示（每次运行都新鲜可见；不再只出现在会话首轮的 userPrompt 里）。
+  // 黑话/异常上下文是动态段，只在首轮注入（lifecycle 续接不重复）。
   if (!lifecycleContinuation && ctx.slangContext) {
     parts.push(String(ctx.slangContext));
   }

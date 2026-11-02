@@ -558,7 +558,7 @@ function effectivePriceFor(model, vendor, overrides = null) {
  */
 function normalizeStickerMax(current) {
   const n = Number(current);
-  if (!Number.isFinite(n) || n <= 0) return 10;
+  if (!Number.isFinite(n) || n <= 0) return 3;
   return Math.min(60, Math.max(1, Math.round(n)));
 }
 

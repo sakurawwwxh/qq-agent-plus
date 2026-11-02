@@ -2295,11 +2295,9 @@ export class Orchestrator {
       persona,
       // 与【此刻状态】用同一个名字（群名片优先），否则同一次请求里会出现两个"你在群里的名字"
       selfNickname,
-      // 进行中的游戏：只注入公开摘要（不含词与身份）
-      gameContext: this.getGames?.()?.summaryFor(chatKey) || '',
       identityPilotAvailable: identityAvailable,
       friendProposalAvailable,
-      stickerEntries,
+      // 表情清单与游戏状态是动态的：走 buildUserPrompt，不再进 system 前缀（Issue #86）。
       // 平台能力的"教不教"必须与上面工具表的"给不给"同判（含按群覆盖）：同一个 chatKey。
       platform: cfg.platform,
       chatKey
@@ -2382,6 +2380,7 @@ export class Orchestrator {
       store: this.store,
       memory: this.memory,
       stickerEntries,
+      gameContext: this.getGames?.()?.summaryFor(chatKey) || '',
       slangContext,
       incidentContext,
       selfNickname,

@@ -296,7 +296,7 @@ export function buildStickerContext(entries, max = 10, { vision = true } = {}) {
   // 只有最先发出去的那几张能被模型看见（用户反馈"收藏了很多，但只会发那几张"）。
   // 现在一半留给"没用过/最久没用"的：发掉一张，下一张就自然顶上来。
   // 排序只看 useCount / lastUsedAt / createdAt / id，同一份库每轮结果完全一致 ——
-  // 这段清单常驻系统提示、属于缓存前缀，不能每次运行都换一批。
+  // 清单现在走动态 user prompt（Issue #86），候选要稳定，避免同一轮重复渲染时换来换去。
   const hasNote = (e) => Boolean(String(e.localNote || e.desc || '').trim());
   const byUsage = [...list].sort((a, b) =>
     (b.useCount || 0) - (a.useCount || 0)

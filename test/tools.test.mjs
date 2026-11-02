@@ -448,10 +448,15 @@ test('过去状态按控制台上限 500 条 / 100000 字符读取，不再偷�
   assert.equal(PAST_STATE_MAX_MESSAGES, 500);
   assert.equal(PAST_STATE_MAX_CHARS, 100000);
   const cfg = getConfig();
-  const old = { allCount: cfg.store.allCount, pastStateMaxChars: cfg.store.pastStateMaxChars };
+  const old = {
+    allCount: cfg.store.allCount,
+    pastStateMaxChars: cfg.store.pastStateMaxChars,
+    contextLayering: cfg.store.contextLayering
+  };
   try {
     cfg.store.allCount = 500;
     cfg.store.pastStateMaxChars = 100000;
+    cfg.store.contextLayering = { enabled: false, maxHistoryMessages: 24, maxHistoryChars: 8000 };
     const store = new ChatStore(0);
     const chatKey = 'group:777003';
     for (let i = 0; i < 520; i += 1) {
@@ -473,6 +478,7 @@ test('过去状态按控制台上限 500 条 / 100000 字符读取，不再偷�
   } finally {
     cfg.store.allCount = old.allCount;
     cfg.store.pastStateMaxChars = old.pastStateMaxChars;
+    cfg.store.contextLayering = old.contextLayering;
   }
 });
 

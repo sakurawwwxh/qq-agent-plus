@@ -985,7 +985,7 @@ describe('Orchestrator', () => {
     }
   });
 
-  it('feeds both familiar and unused stickers into the system prompt', async (t) => {
+  it('feeds both familiar and unused stickers into the dynamic user prompt', async (t) => {
     const { cfg, runner, append } = fixture(t);
     cfg.sticker.enabled = true;
     cfg.sticker.promptMaxStickers = 10;
@@ -1003,8 +1003,11 @@ describe('Orchestrator', () => {
     }
     runner.stickers = { sync: async () => ({ entries }), list: async () => ({ total: entries.length, stickers: [] }) };
     let system = '';
+    let user = '';
     globalThis.fetch = async (_url, options) => {
-      system = JSON.parse(options.body).messages[0].content;
+      const body = JSON.parse(options.body);
+      system = body.messages[0].content;
+      user = body.messages.find((m) => m.role === 'user')?.content || '';
       return Response.json({
         choices: [{ message: { content: 'done' } }],
         usage: { total_tokens: 10 }
@@ -1012,9 +1015,10 @@ describe('Orchestrator', () => {
     };
     append(1, '哈哈', '42');
     await runner.wake('group:1');
-    assert.match(system, /stickerId：st-1/, '常用的要在清单里');
-    assert.match(system, /（没用过）（stickerId：st-\d+）/, '没用过的也要有机会进清单');
-    assert.equal([...system.matchAll(/stickerId：/g)].length, 10, '条数按配置取满');
+    assert.equal(system.includes('stickerId：st-'), false, '清单不能进 system 前缀');
+    assert.match(user, /stickerId：st-1/, '常用的要在清单里');
+    assert.match(user, /（没用过）（stickerId：st-\d+）/, '没用过的也要有机会进清单');
+    assert.equal([...user.matchAll(/stickerId：/g)].length, 10, '条数按配置取满');
   });
 
   it('语音回复/提醒关掉时：工具表与提示词同步撤（send_voice 必失败、remind 不会被派发）', async (t) => {
@@ -1062,19 +1066,23 @@ describe('Orchestrator', () => {
     }
     runner.stickers = { sync: async () => ({ entries }), list: async () => ({ total: entries.length, stickers: [] }) };
     let system = '';
+    let user = '';
     let tools = [];
     globalThis.fetch = async (_url, options) => {
       const body = JSON.parse(options.body);
       system = body.messages[0].content;
+      user = body.messages.find((m) => m.role === 'user')?.content || '';
       tools = body.tools || [];
       return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
     };
     append(1, '哈哈', '42');
     await runner.wake('group:1');
     assert.equal(tools.some((tool) => tool.function?.name === 'get_sticker_image'), false, '工具已摘掉');
-    // 只看【可用表情包】那一段（角色卡正文是管理员内容，可能仍提到这个工具，不归这里管）：
-    // 清单不能再说"可以先 get_sticker_image 看一眼"——那句话指向一个不存在的工具
-    const listBlock = system.slice(system.indexOf('【可用表情包】'));
+    // 表情清单已移到动态 user prompt（Issue #86）；系统提示里不再随收藏变化。
+    const prompt = `${system}\n${user}`;
+    const listBlock = prompt.slice(prompt.indexOf('【可用表情包】'));
+    assert.equal(system.includes('st-1'), false, '表情清单不能进 system 前缀');
+    assert.ok(user.includes('st-1'), '清单应随动态 user prompt 发送');
     assert.ok(listBlock.includes('stickerId：'), '清单段要在');
     // 只断言"教它去看"的那句不在；工具名本身会出现在后面的机制说明里
     //（"get_sticker_image 不在工具表里"），那是刻意保留的覆盖说明

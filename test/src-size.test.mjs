@@ -16,7 +16,7 @@ const ALLOWLIST = new Map([
   ['src/core/orchestrator.js', 4183],
   ['src/tools/tools-core.js', 3499],
   ['src/ops.js', 3416],
-  ['src/core/config-legacy.js', 2612],
+  ['src/core/config-legacy.js', 2628],
   ['src/identity/identity-store.js', 1951],
   ['src/features/daily-moments.js', 1808]
 ]);
