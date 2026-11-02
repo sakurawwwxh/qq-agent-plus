@@ -663,15 +663,62 @@ export class Orchestrator {
     return !pending.some((m) => mentionsOrPokesBot(m, this.onebot.selfId));
   }
 
+  /**
+   * 自动释放"未知已消解"的 held（Issue #84）。
+   * 回收循环每 5 秒先回收过期租约、再走这里：过期租约可能当场产生 held，
+   * 而它们的 outbox 如果已经终结，这一轮就该解除会话阻塞，不能等人工点「核对」。
+   */
+  releaseResolvedHeld() {
+    let result;
+    try {
+      result = this.store.autoReleaseResolvedHeld();
+    } catch (error) {
+      log.error('[held] 自动释放检查失败（下一轮再试）：', error?.message ?? error);
+      return { released: [], kept: [] };
+    }
+    for (const item of result.released) {
+      log.info(`[held] 自动释放 ${item.chatKey} run=${item.runId}：${item.messages} 条消息`
+        + `（${item.reason}，outbox=${JSON.stringify(item.outbox)}）`);
+      try { this.emit('chat-update', item.chatKey); } catch { /* 控制台刷新失败不影响释放 */ }
+    }
+    return result;
+  }
+
+  /**
+   * 长跑进程的 deferred 兜底：富化任务异常/停服竞态可能留下永久不可见的行。
+   * 这是最后兜底，不是队列调度：同一会话的富化是串行的，队列可能正常排几十秒；
+   * 只在 5 分钟仍未放行时才按占位符收掉，且 app 侧任务真正开始时会把 deferred_at 刷新。
+   */
+  releaseStaleDeferred() {
+    const timeout = Math.max(200, Number(getConfig().messageTypes?.enrichTimeoutMs) || 5000);
+    const olderThanMs = Math.max(5 * 60 * 1000, timeout * 4 + 5000);
+    let chats = [];
+    try {
+      chats = this.store.releaseStaleDeferred?.({ olderThanMs }) || [];
+    } catch (error) {
+      log.error('[ingest] 兜底放行 deferred 失败（下一轮再试）：', error?.message ?? error);
+      return [];
+    }
+    for (const chatKey of chats) {
+      log.warn(`[ingest] ${chatKey} 的延迟富化超过 ${Math.round(olderThanMs / 1000)}s，按占位符放行`);
+      try { this.emit('chat-update', chatKey); } catch { /* 控制台刷新失败不影响放行 */ }
+    }
+    return chats;
+  }
+
   startRecoveryLoop() {
     clearInterval(this.retryTimer);
     this.store.recoverExpired(Date.now(), { live: this.liveLeases });
+    this.releaseResolvedHeld();
+    this.releaseStaleDeferred();
     this.store.expireConversationThreads?.();
     this.retryTimer = setInterval(() => {
       // 兜底回收不能把进程带走：SQLITE_BUSY、磁盘满、库损坏都可能在恢复期间抛出，
       // 而 server.js 的 uncaughtException 会直接 process.exit(1)。下一个 tick 再试即可。
       try {
         this.store.recoverExpired(Date.now(), { live: this.liveLeases });
+        this.releaseResolvedHeld();
+        this.releaseStaleDeferred();
         this.store.expireConversationThreads?.();
         if (this.paused || this.aborted) return;
         // ⚠️ 「今天别再花钱」（onExceed=block）时**不能**继续给有未读的会话排唤醒：

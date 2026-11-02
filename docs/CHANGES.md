@@ -10,7 +10,81 @@
   只读视频入口统一接受 BV 号、av 号、`bilibili.com/video/...` 与 `b23.tv` 短链**：
   完整视频链接在本地提取视频号；不透明短链经宿主 HTTP 安全跟随，并从最终页 canonical
   再次校验 B 站视频地址。写操作继续只收裸号，保持对象级批准目标明确。
-
+  复核补强：canonical 按精确属性名读取（不会把 `data-href`/`data-rel` 当属性），支持相对与
+  协议相对地址；压缩响应被体积上限截断时按前缀尽力解压；`video`/`danmaku` 显式 30 秒超时。
+- **MCP Registry 导入链的 runner/env/OCI 口径不一致 → 只允许 npx、env 拦截代理与 TLS 降级变量、
+  OCI 无 tag 时用 version 钉住或拒绝**：`runtimeHint` 不再把非 npx 运行器喂 `-y pkg@version`；
+  `*_PROXY`、`NODE_TLS_REJECT_UNAUTHORIZED`、`NODE_EXTRA_CA_CERTS` 等不进入子进程；OCI 引用
+  以 `-` 开头或没有可钉版本时拒绝导入。
+- **2026-11-03 全项目审查（非仅 diff）修复一批跨域 P1/P2**：
+  - LLM：选了目录 provider 但没有该家 Key 时不再回退顶层 `api.apiKey`，避免把上一家密钥发给新厂商；
+  - 插件：子进程退出标 `E_PLUGIN_DOWN`（写操作按结果未知、不退款不重试）；升级/重载中途拒绝旧工具定义；
+    `schedule` 上限 24 条并用 Set 去重；安装前校验包内 `engines.minVersion`；`requireNetworkIsolation`
+    会强制启用网络隔离；`send.file` 与 `send.text` 共用每插件每分钟出站桶；
+  - B 站插件：`login` 只信宿主 `context.channel`，模型伪造 `channel=console` 不能再绕过 owner；
+    `account` 的历史/收藏/关注/通知要求 owner；`danmaku` 只保留只读参数；
+  - 备份：数据目录软链按真实目录打包/恢复；损坏/不可读的旧密钥文件不再被新密钥覆盖；
+    只恢复备份前原本在跑的服务，重启失败返回 1；`install-timers` 启用恢复演练 timer；
+  - 身份：启动/重排同步“已知好友”只补 allow，不再删掉管理员手写的 `deny.private`；
+  - 根安装：默认不再自动把服务账号加入 docker 组，只有 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 才加；
+  - 提醒/发送：取消后的周期提醒不会被迟到的 `markFired` 复活；`sending` 行不能提前人工核对；
+    重试等待可中止且保留第一次“确定未送达”的定性；预算 block/degrade 不再吞掉自安排唤醒留言；
+    `selfLastMessageAt` 直接查库；cron 的 `7` 按周日归一；
+  - 生活层/Qzone：分享名额发送前原子占位，同一候选并发分享会被拒绝；自己动态的评论回复也受
+    `maxAgeHours` 约束；待回复评论只保存最近 10 条上下文，避免整份线程按评论数复制膨胀；
+  - 留档压缩改为异步 gzip；健康巡检对 incident block/deny/明确移出 allow 的会话豁免
+    outbound-freshness；Release/Docker 门禁接入 `release-check` 与 local/regression/scan；
+    codeload 源码包解包前复用 tar 路径/类型校验；SnowLuma 更新增加跨进程锁与 journal，
+    中断未收尾时拒绝再次更新；补 Seed-ASR 本地 WebSocket 假服务端用例；
+  - TTS：按 provider 校验必需 model/voice/appId；`send_voice` 增加每会话 6 条/全局 30 条每小时的
+    事前原子闸门，合成前消费，避免第三方账户被刷；
+  - 运维：Docker 构建加 `--ignore-scripts`；`deploy.sh` 处理 SIGHUP、服务原本 stopped 也写中断标记；
+    `manage.sh backup` 递归把嵌套 SQLite（living-memory/memory）也走在线备份；健康通知 8 秒超时；
+    备份只恢复原本在跑的服务，重启失败返回 1；`install-timers` 启用恢复演练 timer；
+  - 预算/巡检：degrade 不再把 proactive 自安排唤醒无谓顺延 24 小时（只有 block 会丢）；
+    `requireNetworkIsolation=true` 时巡检按实际强制隔离判定，不再出现“插件全拒载却报绿”；
+    控制台“未知写入”默认只列真正 unknown，sending 不再显示必然核对失败的按钮；
+  - MCP/归档：单工具 inputSchema 超 16KB 不挂载；tar 数字字段严格八进制并拒绝 base-256；
+  - 测试：`plugin-feed` 不再读写仓库真实 data；平台不满足的用例改成显式 skip；Windows 门禁补
+    TMPDIR/离线开关/并发上限；测试套件兜底清理保护运行时临时目录。
+- **held 批次过期后永不释放，整群被挡到人工点「核对」 → 回收循环自动释放「未知已消解」的批次**：
+  严格按 messages.lease_id + outbox.run_id 的 run 粒度判断；该批 outbox 全部终结
+  （sent/failed/reconciled_*）或已无 outbox 行时才 ack 释放，仍有 sending/unknown 的继续人工核对。
+  旧版本没记 lease_id 的 held 按会话级 outbox 判断：会话仍有未知外发才保留。
+  释放语义与手动 resolve-held 一致（不自动重发旧消息），日志与控制台计数可见。
+- **一条慢引用/慢转发展开会卡住同群后续消息 → 入站富化后台化，先落占位再放行**：
+  引用、@昵称、合并转发在后台用统一预算 `messageTypes.enrichTimeoutMs`（默认 5s）执行；
+  完成并通过黑名单后才转为 unread/唤醒，超时按占位符放行。合并转发的黑名单仍在模型看到前生效；
+  进程重启时未完成的 deferred 消息自动按占位符放行。拍一拍/贴表情的成员资料查询同样有预算。
+- **第五轮复审批次（2026-11-03）**：提醒“已播报”改为只认本轮唤醒实际产生的 `sent`
+  （不再用 `hasSelfSince`，日报/游戏/插件消息不会再把提醒误标成已播报）；部署回滚里
+  `systemctl start` 失败会记 `ROLLBACK_FAILED` 并保留中断标记；`sudo loginctl` 补 `-n`；
+  docker 组自愈改为显式 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` opt-in。登录失败计数 30 分钟无失败
+  自动清零；`/api/status` 的 UI 构建戳加 3 秒缓存，避免每请求递归 statSync 全量 ui/。
+- **Issue #86 复核补强**：Token 节省表把分层上下文并入每个条数行的实际生效值，并标注
+  “分层上下文上限”；聊天设置仍显示用户滑条原值。MCP Registry 的 `runtimeArguments` 只接受
+  非 flag 位置参数，env 拒绝 `PATH/HOME/NODE_OPTIONS/LD_*` 等启动器变量，OCI env 改走
+  `docker -e`，无版本 npm 包拒绝导入。lifecycle 续接不再重复游戏/异常摘要；`ops restore`
+  真正消费 `--service`；启动把遗留 `sending` 转为 `unknown`并纳入健康巡检；恢复会清掉
+  源主机的更新/部署锁与中断标记；插件在 `unconfined` 时仍可启用 netns；生活层单次领取
+  count 夹到剩余额度；草稿发布图片回退到落库媒体地址。
+- **Issue #86：单轮提示词分层与按需加载**：表情清单与进行中的游戏从 system 前缀移到动态
+  user prompt，避免收藏/游戏状态变化击穿前缀缓存；系统提示只保留稳定规则。默认历史改为
+  最近 24 条 / 8000 字（`store.contextLayering`，可关闭恢复旧口径）；表情清单默认只给 3 个
+  候选，完整清单由 `list_stickers` 按需查询。lifecycle 续接不再重复表情清单；Token 节省
+  对照表新增“分层上下文实际条数”，避免滑条仍显示 300 而实际只带 24 条。角色卡正文不自动改写
+  （属于管理员内容）。MCP Registry 的 `runtimeHint` 只接受已知运行器 basename，未知值回落 npx。
+- **周期提醒在一次“发送结果未知”或连续重试耗尽后永久消失 → 周期项只跳过本期并 re-arm**：
+  一次性提醒仍保留 unknown 人工核对语义；周期项在 `retryLater` 耗尽前直接 `markFired`，
+  避免先置 failed 再被清理。手动/自动分享统一受 `maxOffersPerDay` 限制。
+- **安全加固**：插件 tar 拒绝 Windows 尾随点/空格段、设备名与反斜杠路径；`ops restore`
+  额外拒绝符号链接/硬链接/设备节点并做跨平台路径校验；加密备份的明文中间档预创建为 0600
+  并在下次备份清理旧残留；`persona.__replace__.changedAt` 不再能由客户端伪造。
+- **模式与隐私**：Qzone 互动在 observe/暂停时不调模型、不写操作；生活层不再把群/私聊高频词
+  当 B 站搜索词外发，并尊重显式空来源；屏蔽名单覆盖日报/早报/每日动态/关系证据/按 mid 工具与
+  `read_forward`；新建印象 prompt 的成员名过 `sanitizeUserText`。
+- **停服/并发**：停止时先封 HTTP 入口、清补课定时器，插件 stop 后 reconfigure 不再拉起子进程；
+  MCP 启动期间的第二次保存会排队重跑；配置 reload 在 await 后重读当前配置再初始化价目表。
 - **Bing HTML 结果页返回验证页或结构变化时搜不到任何结果 → Bing 先读取 RSS，RSS 请求失败、格式异常或为空时回退原 HTML 解析**：
   两种入口共用 15 秒总超时预算与原 `maxResults` 限制；RSS 标题、摘要和链接按同一清洗口径输出。
   自定义非 Bing `searchUrl` 不附加 RSS 参数，继续只走原 HTML 路径；两种入口均为空时仍明确报错。

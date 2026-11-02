@@ -757,7 +757,10 @@ export const DEFAULT_CONFIG = {
     images: true,
     // 表情库里的图片（get_sticker_image）：关掉后模型不能查看库里没备注的图；
     // 按备注名发送表情（send_sticker）不受影响。
-    stickers: true
+    stickers: true,
+    // 入站富化（解析引用/@昵称/合并转发）的总预算。到点就按占位符落库/放行，
+    // 不再让弱网下的一个慢下载卡住该会话后续消息（Issue #85）。范围 200–15000ms。
+    enrichTimeoutMs: 5000
   },
   // 插件（第三方扩展，默认全关；契约与信任声明见 docs/PLUGINS.md）
   plugins: {
@@ -1474,7 +1477,11 @@ function migrateConfig(parsed) {
       expandForward: out.messageTypes.expandForward !== false,
       videoFrames: out.messageTypes.videoFrames !== false,
       images: out.messageTypes.images !== false,
-      stickers: out.messageTypes.stickers !== false
+      stickers: out.messageTypes.stickers !== false,
+      // 单个慢请求可以比总预算长，但不能让一个附件把整条入站链拖几十秒；
+      // 200ms 下限供弱网测试/极端调优，15000ms 上限防止误配成"永不超时"。
+      enrichTimeoutMs: Math.min(15000, Math.max(200,
+        Number(out.messageTypes.enrichTimeoutMs) || 5000))
     };
   }
   // ── 平台能力（2026-10-07 键拆细：读/写分离）──

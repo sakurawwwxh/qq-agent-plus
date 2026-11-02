@@ -1058,11 +1058,20 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
 
 ```json
 {
-  "messageTypes": { "expandForward": false, "videoFrames": true, "images": true, "stickers": false }
+  "messageTypes": {
+    "expandForward": false,
+    "videoFrames": true,
+    "images": true,
+    "stickers": false,
+    "enrichTimeoutMs": 5000
+  }
 }
 ```
 
 - 控制台在「设置 -> 消息类型」。四个开关都**默认开**（即升级前的老行为，不会因为升级改变现有实例的表现）。
+- `enrichTimeoutMs`（默认 5000，范围 200–15000）：入站富化的总预算。解析引用、@昵称、
+  合并转发都在后台进行；到点还没完成就按占位符落库/放行，不再让一个慢下载卡住同群后续消息。
+  弱网/Termux 可适当调大；`0`/非法值回落默认，不能表示无限等待。
 - 语义：只是决定这类内容**进不进提示词/进不进模型**；消息本身照常进聊天记录。
   注意合并转发那条：**展开后的文本就是存档里的那一行**，关掉后存档（以及控制台里的显示与搜索）
   留下的是占位符，内容要等模型按需 `read_forward` 之后才补进去。

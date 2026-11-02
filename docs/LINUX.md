@@ -391,6 +391,11 @@ OneBot -> serialized per-chat ingestion -> deduplicated SQLite message
 - `failed`: invalid configuration, budget exhaustion, or three failed batch attempts.
 - `held`: sending succeeded partially or may have succeeded before failure.
 
+Held batches are normally reviewed manually. The recovery loop also releases a
+held batch automatically once its `outbox.run_id` has no `sending`/`unknown`
+rows left — the uncertainty is resolved, so the batch is acknowledged (not
+resent). A missing `lease_id` or a still-uncertain send stays manual.
+
 On restart, leases remain durable. Recovery runs every five seconds. Expired
 leases with no send effects become pending; leases with possible send effects
 are held. The default lease lasts four minutes, giving a three-minute run time

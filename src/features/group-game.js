@@ -294,6 +294,9 @@ export class GroupGameManager {
         const rows = this.store.recent(key, { limit: 200, afterId: after });
         for (const m of rows) {
           if (this.games.get(groupKey)?.state?.phase === 'ended') break;
+          // 延迟富化中的行正文还是占位符：先停在它这里，等放行后再从同一水位扫，
+          // 不能把占位正文喂给插件、也不能把水位推过它（Issue #85）。
+          if (m.state === 'deferred') break;
           const fedKey = `${key}|${String(m.id)}`;   // 消息 id 是每会话各自的序列，跨会话会重号：key 必须带 chatKey
           if (this._privateScanFedIds.has(fedKey)) continue;   // 扫描窗口内已被入口喂过
           this.#notePrivateSeen(m.id, uid);
@@ -337,6 +340,8 @@ export class GroupGameManager {
     // 取 readOnly 会把它们整批漏掉、45 秒到点直接"人数不够"（2026-09-29 审查 P2）
     const rows = this.store.recent(chatKey, { limit: 200, includeSelf: false, afterId: Number(g.lastSeenId || 0) });
     for (const m of rows) {
+      // 报名消息不能为了等富化而错过 45 秒窗口：占位正文里通常已有用户自己写的
+      // 「我玩/报名」，按它继续扫描；富化只会补充引用/转发细节，不会改变报名意图。
       g.lastSeenId = Math.max(Number(g.lastSeenId || 0), Number(m.id) || 0);
       const uid = String(m.senderId || '');
       if (!uid) continue;

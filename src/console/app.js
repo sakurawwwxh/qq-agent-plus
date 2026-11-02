@@ -17,6 +17,7 @@ import { catchupReplyWindowMs, catchupLogLine, isFreshForReply } from '../core/c
 import { sanitizeConfigSecrets } from '../core/secret-keys.js';
 import { appendAudit, queryAudit } from '../core/audit-log.js';
 import { createLogger } from '../core/logger.js';
+import { createTimeBudget } from '../core/time-budget.js';
 import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNodes } from '../onebot/onebot.js';
 import { faceNameOf } from '../onebot/face-catalog.js';
 import { readForwardMessages, readForwardNodesById, forwardResIdFromSegment } from '../onebot/forward-reader.js';
@@ -1334,6 +1335,162 @@ function buildApp({
     }
   }
 
+  // 入站富化任务：串行执行同会话的富化（保持引用/转发的处理顺序），但不阻塞事件入口。
+  const deferredIngestChains = new Map();
+  const deferredIngestTasks = new Set();
+  let ingestAbort = new AbortController();
+  let ingestStopping = false;
+
+  function enqueueDeferredIngest(chatKey, job) {
+    const previous = deferredIngestChains.get(chatKey) || Promise.resolve();
+    const task = previous.then(() => job.run()).catch(async (error) => {
+      log('[ingest] 延迟富化失败：', error?.message ?? error);
+      try {
+        await job.fallback();
+      } catch (fallbackError) {
+        log('[ingest] 延迟富化兜底失败：', fallbackError?.message ?? fallbackError);
+      }
+    });
+    deferredIngestChains.set(chatKey, task);
+    deferredIngestTasks.add(task);
+    const cleanup = () => {
+      deferredIngestTasks.delete(task);
+      if (deferredIngestChains.get(chatKey) === task) deferredIngestChains.delete(chatKey);
+    };
+    task.then(cleanup, cleanup);
+  }
+
+  async function resolveReplyWithLocal(chatKey, mid, budget, cfgNow) {
+    const remote = await budget.run(resolveReply(mid), null);
+    if (remote) return remote;
+    const local = store.findByMid(chatKey, mid);
+    if (!local) return null;
+    return {
+      messageId: String(mid),
+      sender: local.self ? (onebot.selfNickname || cfgNow.persona?.botName || '我') : local.senderName,
+      senderId: local.self ? String(onebot.selfId || '') : String(local.senderId || ''),
+      self: Boolean(local.self),
+      text: safeSlice(String(local.text || ''), 120)
+    };
+  }
+
+  /**
+   * 富化一条入站消息：解析引用、@昵称、合并转发。
+   * 所有网络操作都走同一个 budget；到点返回 null/占位符，调用方照常落库与唤醒。
+   * 黑名单不在里面做：调用方拿到最终正文后再判，避免把未展开的内容喂给模型。
+   */
+  async function enrichIncomingMessage({
+    chatKey, kind, id, segments, replySegment, looksForward, autoExpand, forwardResId, event, media, budget, cfgNow
+  }) {
+    const replyCache = new Map();
+    const getReply = (mid) => {
+      const key = String(mid);
+      if (!replyCache.has(key)) {
+        replyCache.set(key, resolveReplyWithLocal(chatKey, key, budget, cfgNow));
+      }
+      return replyCache.get(key);
+    };
+    let text = await segmentsToText(segments, {
+      selfId: String(onebot.selfId || ''),
+      resolveReply: getReply,
+      resolveAtName: (qq) => (kind === 'group' ? budget.run(resolveAtName(id, qq), null) : null)
+    });
+    let reply = replySegment ? await getReply(replySegment.data.id) : null;
+    let nextMedia = media;
+    if (segments && looksForward && event.message_id != null && autoExpand) {
+      const isCard = !text.includes('[合并转发') && !text.includes('[转发消息');
+      if (budget.expired) {
+        log(`[ingest] ${chatKey} 合并转发富化预算用尽，保留占位符`);
+      } else {
+        const work = (async () => {
+          try {
+            const nodes = await readForwardMessages(onebot, event.message_id, segments);
+            const ex = await expandForwardNodes(nodes, {
+              fetchNested: (rid) => readForwardNodesById(onebot, rid)
+            });
+            return { nodes, ex };
+          } catch (error) {
+            return { error };
+          }
+        })();
+        const result = await budget.run(work, { timeout: true });
+        if (result?.ex?.text) {
+          text = result.ex.text;
+          if (result.ex.media?.length) nextMedia = [...media, ...result.ex.media];
+          // 诊断（每张卡片一行，低噪音）：卡片能不能读，靠这行下结论
+          if (isCard) log(`[ingest] 聊天记录卡片：resid ${forwardResId ? '有' : '无'}，取回 ${result.nodes?.length ?? 0} 条`);
+        } else if (result?.error) {
+          if (isCard) log(`[ingest] 聊天记录卡片展开失败（resid ${forwardResId ? '有' : '无'}）: ${result.error?.message ?? result.error}`);
+          else log(`[ingest] 展开合并转发失败（保留占位符）: ${result.error?.message ?? result.error}`);
+        } else {
+          log(`[ingest] ${chatKey} 合并转发展开超时（保留占位符，可用 read_forward 重试）`);
+        }
+      }
+    }
+    return { text: text || '', reply, media: nextMedia };
+  }
+
+  /**
+   * 消息落库后的统一收尾。非延迟路径直接调用；延迟路径在富化完成、状态放行前调用。
+   * finalize 只在延迟路径传入：命令拦截时也放行（保持原有"不叫醒模型"语义）。
+   */
+  async function dispatchStoredIncoming(options) {
+    const { chatKey, kind, id, stored, isSelf } = options;
+    const finalize = options.finalize || null;
+    if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
+    if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
+    // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
+    // 插件改不了内容、也拦不住消息（它没有回执通道）。只投非自己发的消息：v1 插件发不了言，
+    // 但等 `send` 能力开了之后，"自己发的也投"会变成自问自答的环。
+    if (!isSelf) {
+      pluginRegistry.observe({
+        chatKey, group: kind === 'group',
+        mid: stored.mid, ts: stored.ts,
+        senderId: stored.senderId, senderName: stored.senderName,
+        text: stored.text
+      });
+    }
+    if (!isSelf) {
+      Promise.resolve(stickers.autoCollect?.(chatKey, stored)).catch((error) =>
+        log('[sticker] 自动收藏失败:', error?.message ?? error));
+    }
+    emit('chat-update', chatKey);
+    const ackHandled = async () => {
+      if (finalize) {
+        await options.finalize('handled');
+        return;
+      }
+      // 非延迟路径已经是 pending：命令被消费后必须 ack，否则恢复循环 5 秒内仍会叫醒模型
+      // 让它看到"同意好友申请 fp_xxx"这类命令正文（deferred 路径由 finalize 负责）。
+      try { store.markRead(chatKey, [stored.id]); } catch (error) {
+        log(`[ingest] 管理员命令消息标记已读失败：${error?.message ?? error}`);
+      }
+    };
+    if (
+      !isSelf
+      && (
+        await handleFriendProposalAdminCommand(kind, id, stored.text)
+        || await handleSlangPilotAdminCommand(kind, id, stored.text)
+      )
+    ) {
+      await ackHandled();
+      return;
+    }
+    // 群游戏的私聊行动（狼人杀这类"夜里私聊提交"的游戏）：属于进行中的局就由引擎在入口
+    // 接管（发回执/发查验结果），并就地标记已读 —— 不再唤醒模型（省调用 + 零泄密面）。
+    // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
+    if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
+      && await groupGame.consumePrivateAction(chatKey, stored)) {
+      await ackHandled();
+      return;
+    }
+    if (finalize) {
+      const released = await options.finalize('wake');
+      if (!released) return;   // 富化期间被删除/已被别的路径收尾
+    }
+    if (!isSelf) orchestrator.onIncoming(chatKey, stored);
+  }
+
   async function ingestMessage(kind, id, event, arrivedInactive = false) {
     const cfgNow = getConfig();
     if (!allowed(kind, id, cfgNow)) return; // 白名单外的聊天完全不记录
@@ -1352,34 +1509,12 @@ function buildApp({
       segment?.type === 'at'
       && String(segment?.data?.qq ?? '') === String(onebot.selfId || '')));
 
+    const replySegment = segments?.find((segment) => segment?.type === 'reply' && segment?.data?.id != null) || null;
     let text;
-    let reply = null;
     if (segments) {
-      const replySegment = segments.find((segment) => segment?.type === 'reply' && segment?.data?.id != null);
-      if (replySegment) {
-        reply = await resolveReply(replySegment.data.id);
-        if (!reply) {
-          const local = store.findByMid(chatKey, replySegment.data.id);
-          if (local) {
-            reply = {
-              messageId: String(replySegment.data.id),
-              sender: local.self ? (onebot.selfNickname || cfgNow.persona?.botName || '我') : local.senderName,
-              senderId: local.self ? String(onebot.selfId || '') : String(local.senderId || ''),
-              self: Boolean(local.self),
-              text: safeSlice(String(local.text || ''), 120)
-            };
-          }
-        }
-      }
-      text = await segmentsToText(segments, {
-        selfId: String(onebot.selfId || ''),
-        resolveReply: (mid) => (
-          reply && String(reply.messageId) === String(mid)
-            ? reply
-            : resolveReply(mid)
-        ),
-        resolveAtName: (qq) => kind === 'group' ? resolveAtName(id, qq) : null
-      });
+      // 先用不解析引用/@昵称的正文落库：弱网下这一步不做任何网络请求（Issue #85）。
+      // 引用块和 @ 的最终渲染由后台富化补上，超时就保留占位符。
+      text = await segmentsToText(segments, { selfId: String(onebot.selfId || '') });
     } else {
       // 协议端以字符串 / CQ 码上报时（message_format=string）正文也要清洗：
       // 否则这种部署形态下群友文本可以原样伪造段标记
@@ -1404,35 +1539,32 @@ function buildApp({
     // 后续每一轮的上下文）。**被 @ 的那条仍然展开** —— 用户点名要看的东西不该再多花一轮
     // 工具调用；关掉后正文留占位符，模型需要时自己调 read_forward。
     const autoExpand = cfgNow.messageTypes?.expandForward !== false || mentionsSelf;
-    if (segments && looksForward && event.message_id != null && autoExpand) {
-      const isCard = !text.includes('[合并转发') && !text.includes('[转发消息');
-      try {
-        const nodes = await readForwardMessages(onebot, event.message_id, segments);
-        const ex = await expandForwardNodes(nodes, {
-          fetchNested: (rid) => readForwardNodesById(onebot, rid)
-        });
-        if (ex && ex.text) {
-          text = ex.text;
-          if (ex.media?.length) media.push(...ex.media);
-        }
-        // 诊断（每张卡片一行，低噪音）：卡片能不能读，靠这行下结论
-        if (isCard) log(`[ingest] 聊天记录卡片：resid ${forwardResId ? '有' : '无'}，取回 ${nodes?.length ?? 0} 条`);
-      } catch (e) {
-        if (isCard) log(`[ingest] 聊天记录卡片展开失败（resid ${forwardResId ? '有' : '无'}）: ${e?.message ?? e}`);
-        else log(`[ingest] 展开合并转发失败（保留占位符）: ${e?.message ?? e}`);
-      }
-    } else if (segments && looksForward && event.message_id != null) {
+    if (!isSelf && segments && looksForward && event.message_id != null && !autoExpand) {
       log('[ingest] 合并转发未自动展开（「消息类型」页关着）：占位符已存档，需要时模型可调 read_forward');
     }
+    const hasAtName = Boolean(segments?.some((segment) =>
+      segment?.type === 'at' && String(segment?.data?.qq ?? '') !== 'all'));
+    const needsEnrichment = Boolean(
+      segments
+      && (replySegment || hasAtName || (looksForward && event.message_id != null && autoExpand))
+    );
+    const enrichTimeoutMs = Math.max(200, Math.min(15000,
+      Number(cfgNow.messageTypes?.enrichTimeoutMs) || 5000));
 
-    // 合并转发展开后的正文也要过黑名单：上面的前置判定只看到占位符，
-    // 广告写在转发内容里会绕过（2026-10-31 复审 P2）。展开有网络成本，但既然已经
-    // 展开并即将存档/喂模型，这次匹配是必要的；未自动展开的卡片只能看到摘要。
-    if (!isSelf && text && matchesBlacklistKeyword(text, cfgNow.store?.blacklistKeywords)) {
-      log(`[ingest] ${chatKey} 转发展开后的正文命中消息关键词黑名单，已丢弃`);
-      return;
+    // 自己的回显没有唤醒需求；富化仍按原有语义同步做完（有预算），避免正文退化成占位符。
+    let initialReply = null;
+    if (isSelf && needsEnrichment) {
+      const budget = createTimeBudget(enrichTimeoutMs, { signal: ingestAbort.signal });
+      const enriched = await enrichIncomingMessage({
+        chatKey, kind, id, segments, replySegment, looksForward, autoExpand, forwardResId,
+        event, media, budget, cfgNow
+      });
+      text = enriched.text || text;
+      initialReply = enriched.reply;
     }
+
     if (!text && !media.length) return;
+    const recordOnly = arrivedInactive || !isTimeActive(chatKey);
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1441,48 +1573,101 @@ function buildApp({
       // 表情包（QQ 标记为动画表情/表情的图）与普通图片分开标注，让模型和存档一眼能分辨
       text: text || (media.some((m) => m.kind === 'image' && /表情/.test(String(m.summary || '')))
         ? '[表情包]' : '[图片]'),
-      reply,
+      reply: initialReply,
       media,
       mentionsSelf,
       // 引擎发的游戏私聊（身份/查验结果/行动回执）标成 game-secret：提示词构建时会过滤掉，
       // 模型在私聊里不该是上帝视角（2026-09-29 审查 P2）
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : 'message'
     };
+    const deferred = !isSelf && needsEnrichment;
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey)
+      recordOnly,
+      deferred
     });
     if (stored.duplicate) return;
-    if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
-    if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
-    // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
-    // 插件改不了内容、也拦不住消息（它没有回执通道）。只投非自己发的消息：v1 插件发不了言，
-    // 但等 `send` 能力开了之后，"自己发的也投"会变成自问自答的环。
-    if (!isSelf) {
-      pluginRegistry.observe({
-        chatKey, group: kind === 'group',
-        mid: stored.mid, ts: stored.ts,
-        senderId: stored.senderId, senderName: stored.senderName,
-        text: stored.text
-      });
-    }
-    if (!isSelf) {
-      Promise.resolve(stickers.autoCollect?.(chatKey, stored)).catch((error) =>
-        log('[sticker] 自动收藏失败:', error?.message ?? error));
-    }
     emit('chat-update', chatKey);
-    if (
-      !isSelf
-      && (
-        await handleFriendProposalAdminCommand(kind, id, text)
-        || await handleSlangPilotAdminCommand(kind, id, text)
-      )
-    ) return;
-    // 群游戏的私聊行动（狼人杀这类"夜里私聊提交"的游戏）：属于进行中的局就由引擎在入口
-    // 接管（发回执/发查验结果），并就地标记已读 —— 不再唤醒模型（省调用 + 零泄密面）。
-    // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
-    if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
-      && await groupGame.consumePrivateAction(chatKey, stored)) return;
-    if (!isSelf) orchestrator.onIncoming(chatKey, stored);
+
+    if (!deferred) {
+      await dispatchStoredIncoming({ chatKey, kind, id, stored, isSelf });
+      return;
+    }
+
+    let finished = false;
+    let blocked = false;
+    const finalizeDeferred = (reason) => {
+      if (finished) return '';
+      // 群游戏/管理员命令已经消费了这条：必须 ack，不能再放回 pending 让模型看到行动正文。
+      const state = store.finalizeDeferred(chatKey, stored.id,
+        reason === 'handled' ? { state: 'acked' } : undefined);
+      if (!state) return '';
+      finished = true;
+      emit('chat-update', chatKey);
+      return state;
+    };
+    const finishWithFallback = async () => {
+      if (blocked) {
+        // 黑名单删除失败（SQLITE_BUSY/停库）也不能把正文放给模型：先改写为拦截占位再 ack。
+        try {
+          store.updateDeferredMessage(chatKey, stored.id, { text: '[内容已拦截]', reply: null, media: [] });
+          store.finalizeDeferred(chatKey, stored.id, { state: 'acked' });
+          emit('chat-update', chatKey);
+        } catch (error) {
+          log(`[ingest] ${chatKey} 拦截消息收尾失败（留给启动清扫）：${error?.message ?? error}`);
+        }
+        return;
+      }
+      const current = store.getMessage(chatKey, stored.id);
+      if (!current) return;
+      await dispatchStoredIncoming({
+        chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
+      });
+    };
+    // recordOnly（静默段/重连补课）走单独队列：不能让一大批历史富化把实时消息的
+    // 延迟放行链堵在后面（Issue #85 的同类慢队列问题）。
+    enqueueDeferredIngest(recordOnly ? `${chatKey}#backlog` : chatKey, {
+      run: async () => {
+        // 排队期间可能已被兜底清扫按占位符放行：不要再花一次网络预算去覆盖已放行的正文。
+        if (store.getMessage(chatKey, stored.id)?.state !== 'deferred') return;
+        // 队列可能排了很久才轮到：把年龄从"真正开始富化"重新起算，避免刚出队就被清扫放行。
+        store.touchDeferred(chatKey, stored.id);
+        const budget = createTimeBudget(enrichTimeoutMs, { signal: ingestAbort.signal });
+        let enriched;
+        try {
+          enriched = await enrichIncomingMessage({
+            chatKey, kind, id, segments, replySegment, looksForward, autoExpand, forwardResId,
+            event, media, budget, cfgNow
+          });
+        } catch (error) {
+          log(`[ingest] ${chatKey} 延迟富化异常，按占位符处理：${error?.message ?? error}`);
+          enriched = { text, reply: null, media };
+        }
+        const finalText = enriched.text || text;
+        // 黑名单必须看到展开后的正文再判：先落库/先唤醒会让转发里的广告在检查前进入模型。
+        if (finalText && matchesBlacklistKeyword(finalText, cfgNow.store?.blacklistKeywords)) {
+          blocked = true;
+          const dropped = store.dropDeferredMessage(chatKey, stored.id);
+          if (dropped) {
+            finished = true;
+            emit('chat-update', chatKey);
+            log(`[ingest] ${chatKey} 富化后的正文命中消息关键词黑名单，已丢弃`);
+          }
+          return;
+        }
+        const changed = store.updateDeferredMessage(chatKey, stored.id, {
+          text: finalText,
+          reply: enriched.reply,
+          media: enriched.media
+        });
+        if (!changed) return;
+        const current = store.getMessage(chatKey, stored.id);
+        if (!current) return;
+        await dispatchStoredIncoming({
+          chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
+        });
+      },
+      fallback: finishWithFallback
+    });
   }
 
   // ── 启动/重连补齐 ──
@@ -1670,7 +1855,13 @@ function buildApp({
     // 会覆盖同一 QQ 在普通消息里的真实昵称 —— 记忆整理时取名字会拿到这个占位符，
     // 导致"<uin> 的名字叫（拍一拍事件）"这种脏数据。
     const chatKeyNow = `${isGroup ? 'group' : 'private'}:${id}`;
-    let operatorName = isGroup ? ((await resolveAtName(id, operatorId)) || '') : '';
+    // 拍一拍/贴表情也在同一条 ingress 串行链上：成员资料查询必须同样有预算，
+    // 否则一个慢 get_group_member_info 会卡住这个群的后续消息（Issue #85）。
+    const nameBudget = createTimeBudget(
+      Math.max(200, Math.min(15000, Number(cfgNow.messageTypes?.enrichTimeoutMs) || 5000)),
+      { signal: ingestAbort.signal }
+    );
+    let operatorName = isGroup ? ((await nameBudget.run(resolveAtName(id, operatorId), null)) || '') : '';
     if (!operatorName) {
       const prior = (store.recent(chatKeyNow, { limit: 500 }) || [])
         .find((m) => !m.self && String(m.senderId) === operatorId
@@ -1682,7 +1873,7 @@ function buildApp({
       // 拍机器人是最常见的拍法：这条分支以前漏了清洗，群名片里的段标记能原样进提示词
       text = sanitizeUserText(`[拍一拍] 你拍了拍${isGroup ? '' : '你'}（来自 ${operatorName}）`);
     } else {
-      const targetName = isGroup ? (await resolveAtName(id, targetId)) || targetId : targetId;
+      const targetName = isGroup ? (await nameBudget.run(resolveAtName(id, targetId), null)) || targetId : targetId;
       text = operatorId === targetId ? `[拍一拍] ${operatorName} 拍了拍自己` : `[拍一拍] ${operatorName} 拍了拍 ${targetName}`;
       text = sanitizeUserText(text);
       // 上面这段文案会进消息存档、进而进提示词，昵称同样是 QQ 侧可控内容
@@ -1716,7 +1907,11 @@ function buildApp({
     if (operatorId && operatorId === onebot.selfId) return;   // 自己贴的自己在发送时不重复记
     if (operatorId && (cfgNow.blocklist?.[groupId] || []).map(String).includes(operatorId)) return;
     const chatKeyNow = `group:${groupId}`;
-    let operatorName = (await resolveAtName(groupId, operatorId)) || '';
+    const nameBudget = createTimeBudget(
+      Math.max(200, Math.min(15000, Number(cfgNow.messageTypes?.enrichTimeoutMs) || 5000)),
+      { signal: ingestAbort.signal }
+    );
+    let operatorName = (await nameBudget.run(resolveAtName(groupId, operatorId), null)) || '';
     if (!operatorName) {
       const prior = (store.recent(chatKeyNow, { limit: 500 }) || [])
         .find((m) => !m.self && String(m.senderId) === operatorId && String(m.senderName || ''));
@@ -1757,6 +1952,7 @@ function buildApp({
 
   const ingress = new Map();
   function handleOneBotEvent(event) {
+    if (ingestStopping) return Promise.resolve();
     const key = event?.group_id ? `group:${event.group_id}` : `private:${event?.user_id}`;
     const arrivedInactive = !isTimeActive(key);
     const task = (ingress.get(key) || Promise.resolve()).then(() => ingestOneBotEvent(event, arrivedInactive));
@@ -3304,6 +3500,14 @@ function buildApp({
     // 不等 15 分钟 TTL，否则重启落在发送窗口内会让日报/游戏播报被当成 in-flight 跳过当天。
     effects.markStalePlanned({ olderThanMs: 0, minAgeMs: 0 });
     effects.prune();
+    // 上一次进程如果在富化途中退出，deferred 消息会留在库里：按占位符放行，
+    // 让恢复循环把它们当普通未读处理，别让它们永远不可见（Issue #85）。
+    if (ingestAbort.signal.aborted) ingestAbort = new AbortController();
+    ingestStopping = false;
+    const staleDeferred = store.releaseStaleDeferred();
+    if (staleDeferred.length) {
+      log(`[ingest] 启动释放 ${staleDeferred.length} 个会话里未完成富化的消息（按占位符处理）`);
+    }
 
     await onebot.connect();
     if (
@@ -3388,6 +3592,12 @@ function buildApp({
   async function stop() {
     try {
       pluginsStarted = false;
+      // 先关闭入站入口，再 abort：否则停服过程中到达的事件会在等待快照之后
+      // 再入队，store.close() 时撞上已关闭的数据库。
+      ingestStopping = true;
+      // 先中止入站富化：还在等协议端下载的后台任务应立即按占位符收尾，
+      // 否则 stop 会陪它们等完整个预算（Issue #85）。
+      ingestAbort.abort();
     // 安装脚本别被落下：进程重启/停服时它是孤儿进程，会一直占着构建目录。
     // 只 kill 包装进程不够：它 spawnSync 出来的 cmake/make 会活下来继续写构建目录、与下一次安装并发
     // （超时那条路径早就按进程组杀了，这里同款处理，2026-09-26 审查）。
@@ -3428,7 +3638,15 @@ function buildApp({
     livingMemory.stop();
     onebot.close();
     await orchestrator.abortAll();
-    await Promise.allSettled([...ingress.values()]);
+    // 等待所有在途入站/富化收尾。用循环重新取集合而不是一次快照：正在收尾的 ingress
+    // 任务可能在 await 期间又入队一条 deferred（Issue #85 停服竞态）。
+    for (let round = 0; round < 100; round += 1) {
+      const pending = [...ingress.values(), ...deferredIngestTasks];
+      if (!pending.length) break;
+      await Promise.allSettled(pending);
+      if (!ingress.size && !deferredIngestTasks.size) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     for (const client of sseClients) client.end();
     await new Promise((resolve) => {
       let settled = false;

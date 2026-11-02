@@ -451,6 +451,32 @@ test('人满/开局后还有人报名：给一句"来晚了"的提示（同一�
   assert.equal(w2.sent.filter((x) => /来晚/.test(x.msgs[0])).length, 1, '在册玩家不该被当成迟到的');
 });
 
+test('报名扫描不因 deferred 行错过 45 秒窗口：占位正文里的报名仍然生效', async () => {
+  const w = makeWorld({ players: 6 });
+  updateConfig({ groupGame: {
+    enabled: true, chats: ['group:1'], allowPrivateInvite: true, allowGamePrivateDm: false,
+    dailyLimitPerChat: 6, recruitSeconds: 30, games: ['werewolf'], maxPlayers: 10
+  } });
+  const started = await w.mgr.start({ chatKey: 'group:1', gameId: 'werewolf' });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  const game = w.mgr.games.get('group:1');
+  assert.equal(game.state.phase, 'recruiting');
+  const before = Number(game.lastSeenId) || 0;
+  const deferred = w.store.appendIncoming('group:1', {
+    mid: 'deferred-join', ts: Date.now(), senderId: 'u1', senderName: '群友1', text: '报名', media: []
+  }, { deferred: true });
+
+  await w.mgr.tick();
+  assert.ok(w.mgr.games.get('group:1').state.joiners.some((j) => j.userId === 'u1'),
+    '占位正文里的报名信号也要生效，不能等富化');
+  assert.ok((Number(w.mgr.games.get('group:1').lastSeenId) || 0) > before);
+
+  w.store.finalizeDeferred('group:1', deferred.id);
+  await w.mgr.tick();
+  assert.equal(w.mgr.games.get('group:1').state.joiners.filter((j) => j.userId === 'u1').length, 1,
+    '放行后不应重复报名');
+});
+
 test('审查回归：报名消息还是 pending（模型那边在飞）也必须能报上名', async () => {
   // 以前报名扫描带 readOnly（== 只看 acked），同一群里正好有一次模型运行在飞时，
   // 这批「我玩」对引擎不可见 → 45 秒到点直接"人数不够"（2026-09-29 审查 P2）

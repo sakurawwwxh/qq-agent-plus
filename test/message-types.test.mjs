@@ -10,7 +10,7 @@ import { test } from 'node:test';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-message-types-'));
 process.env.QQ_AGENT_DATA_DIR = root;
 
-const { DEFAULT_CONFIG, updateConfig } = await import('../src/core/config.js');
+const { DEFAULT_CONFIG, updateConfig, getConfig } = await import('../src/core/config.js');
 const { buildSystemPrompt } = await import('../src/llm/prompt.js');
 const src = (rel) => fs.readFileSync(path.join(process.cwd(), rel), 'utf8');
 
@@ -19,6 +19,20 @@ test('默认值：四个开关都默认开（保持既有行为，不偷偷改�
   assert.equal(DEFAULT_CONFIG.messageTypes.videoFrames, true, '视频画面默认仍然可看');
   assert.equal(DEFAULT_CONFIG.messageTypes.images, true, '消息里的图片/表情包默认仍然可看');
   assert.equal(DEFAULT_CONFIG.messageTypes.stickers, true, '表情库里的图默认仍然可看');
+  assert.equal(DEFAULT_CONFIG.messageTypes.enrichTimeoutMs, 5000, '入站富化默认 5 秒预算');
+});
+
+test('enrichTimeoutMs 会被夹到 200–15000，非法值回落 5000', () => {
+  try {
+    updateConfig({ messageTypes: { enrichTimeoutMs: 1 } });
+    assert.equal(getConfig().messageTypes.enrichTimeoutMs, 200);
+    updateConfig({ messageTypes: { enrichTimeoutMs: 99999 } });
+    assert.equal(getConfig().messageTypes.enrichTimeoutMs, 15000);
+    updateConfig({ messageTypes: { enrichTimeoutMs: 'bad' } });
+    assert.equal(getConfig().messageTypes.enrichTimeoutMs, 5000);
+  } finally {
+    updateConfig({ messageTypes: { enrichTimeoutMs: 5000 } });
+  }
 });
 
 test('提示词：关掉视频画面后不再教它去调抽帧，且说清为什么看不到', () => {
