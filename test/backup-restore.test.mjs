@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { openDatabase } from '../src/core/sqlite.js';
+import { buildTar } from './helpers/tar.mjs';
 
 const OPS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'ops.js');
 const KEY = 'a'.repeat(64);
@@ -134,4 +135,32 @@ test('备份前发现数据目录仍被实例占用（锁存活）必须中止�
   assert.notEqual(backup.status, 0, backup.stdout + backup.stderr);
   assert.match(`${backup.stdout}${backup.stderr}`, /仍被实例占用/);
   assert.equal(fs.existsSync(backups) ? newest(backups, '.enc') : '', '', '不应生成归档');
+});
+
+test('恢复拒绝符号链接/硬链接归档，不能把链接带进数据目录', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const arch = path.join(root, 'evil.tar.gz');
+  fs.writeFileSync(arch, buildTar([
+    { name: 'config.json', data: '{"server":{"token":"x"}}' },
+    { name: 'messages.sqlite', type: '2', data: '/etc/passwd' }
+  ]));
+  const target = path.join(root, 'restored');
+  const res = runOps(['restore', '--from', arch, '--data', target, '--confirm', '--no-encrypt']);
+  assert.notEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /不允许的条目类型|不安全/);
+  assert.equal(fs.existsSync(path.join(target, 'config.json')), false, '校验失败不能落盘');
+});
+
+test('恢复拒绝 Windows 尾随点/空格与反斜杠路径', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const arch = path.join(root, 'evil-path.tar.gz');
+  fs.writeFileSync(arch, buildTar([
+    { name: 'config.json', data: '{"server":{"token":"x"}}' },
+    { name: 'a/.. /config.json', data: 'evil' }
+  ]));
+  const target = path.join(root, 'restored');
+  const res = runOps(['restore', '--from', arch, '--data', target, '--confirm', '--no-encrypt']);
+  assert.notEqual(res.status, 0, res.stdout + res.stderr);
+  assert.match(`${res.stdout}${res.stderr}`, /不安全/);
+  assert.equal(fs.existsSync(path.join(target, 'config.json')), false);
 });

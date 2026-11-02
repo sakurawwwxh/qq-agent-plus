@@ -37,6 +37,12 @@ const FEED_RETRY_DELAY_MS = 45000;
 // 连续失败到第 3 次才上报异常通知：一次限流不值得顶一条"错误"给管理员。
 const FAILURE_NOTIFY_STREAK = 3;
 
+/** observe/暂停模式不自动调模型，也不做 Qzone 写操作（看别人动态另说，这里连发现都不跑）。 */
+function automationAllowed() {
+  const cfg = getConfig();
+  return cfg.runtime?.mode === 'active' && !cfg.runtime?.paused;
+}
+
 function cleanText(value, max = 1000) {
   // 双保险：数据源头（qzone-feed.js 的 compact）已过 sanitizeUserText，
   // 拼进互动决策提示词前再过一次 —— 昵称等字段可能绕过 compact 直达这里。
@@ -472,6 +478,11 @@ export class QzoneInteractionManager {
 
   async #tick() {
     if (this.stopped) return;
+    // observe/暂停是全局闸门：不能只靠聊天发送的 assertCanSend，Qzone 写操作不经过它。
+    if (!automationAllowed()) {
+      this.#schedule(60000);
+      return;
+    }
     const cfg = normalizedConfig();
     const now = this.now();
     const time = timeControlState(getConfig().timeControl, '', now);
@@ -1229,6 +1240,11 @@ export class QzoneInteractionManager {
   }
 
   async #run({ kind, source, includeExisting }) {
+    // 双保险：#tick 已经挡住自动轮询，但 runNow 是另一条入口。
+    if (!automationAllowed()) {
+      this.log(`[qzone-interactions] 当前是 observe/暂停模式，跳过${source === 'manual' ? '手动' : '自动'}运行`);
+      return { skipped: 'runtime-mode', reason: 'observe/paused' };
+    }
     // 2026-10-06 复审 P2：持久化状态必须绑定账号。协议端（NapCat）换号登录后 selfId 变了，
     // 旧账号积压的动态/评论队列若照常出批，会以新账号身份对旧账号好友的动态点赞/评论、
     // 把回复发给旧账号的评论 —— daily-moments 对同一场景专门设了 MOMENT_ACCOUNT_CHANGED 闸，

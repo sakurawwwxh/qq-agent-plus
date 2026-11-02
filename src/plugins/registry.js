@@ -124,6 +124,8 @@ export class PluginRegistry {
     this.starting = new Map();        // id -> 在途的按需启动 promise（并发调用共享同一个）
     this.scheduleTimer = null;
     this.started = false;
+    // stop 之后禁止 reconfigure 再把插件拉起来：停服期间到达的配置/索引回调必须 no-op。
+    this.stopped = false;
   }
 
   /** 扫目录读 manifest（不起进程）。坏插件不抛错，进 discovered 的 error 字段，控制台能看见原因。 */
@@ -282,7 +284,10 @@ export class PluginRegistry {
    * 按配置起插件进程。**fail-closed**：隔离不可用（本机 Node 不支持权限模型）时，
    * 装了 requireIsolation 就一个都不加载 —— 宁可插件跑不起来，也不假装隔离生效。
    */
-  start() { return this.#serialize(() => this.#startImpl()); }
+  start() {
+    this.stopped = false;
+    return this.#serialize(() => this.#startImpl());
+  }
 
   async #startImpl() {
     this.started = true;
@@ -458,7 +463,10 @@ export class PluginRegistry {
     return next;
   }
 
-  stop() { return this.#serialize(() => this.#stopImpl()); }
+  stop() {
+    this.stopped = true;
+    return this.#serialize(() => this.#stopImpl());
+  }
 
   async #stopImpl() {
     this.started = false;
@@ -476,6 +484,7 @@ export class PluginRegistry {
    * plugin-data/<id>/storage.json（全量覆盖式落盘 → 丢更新），而控制台只看得到表里那一代。
    */
   async reconfigure() {
+    if (this.stopped) return { started: [], skipped: 'stopped' };
     return this.#serialize(async () => {
       await this.#stopImpl();
       return this.#startImpl();

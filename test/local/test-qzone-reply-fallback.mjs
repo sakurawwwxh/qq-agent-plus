@@ -20,6 +20,7 @@ if (!dataDir) {
 }
 fs.mkdirSync(dataDir, { recursive: true });
 fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+  runtime: { mode: 'active', paused: false },
   qzoneInteractions: {
     enabled: true,
     feedIntervalMinutes: 1440,

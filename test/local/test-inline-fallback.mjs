@@ -12,6 +12,10 @@ const { parseRelationshipResponse } = await import(new URL('../../src/pilots/rel
 const { parseFriendReview } = await import(new URL('../../src/identity/identity-pilot-core.js', import.meta.url).href);
 const { parseManualFriendReview } = await import(new URL('../../src/identity/identity-pilot.js', import.meta.url).href);
 const { QzoneInteractionManager } = await import(new URL('../../src/features/qzone-interactions.js', import.meta.url).href);
+const { getConfig, updateConfig } = await import(new URL('../../src/core/config.js', import.meta.url).href);
+const cfgNow = structuredClone(getConfig());
+cfgNow.runtime = { ...cfgNow.runtime, mode: 'active', paused: false };
+updateConfig(cfgNow);
 
 let pass = 0, fail = 0;
 const check = (name, ok, extra = '') => {

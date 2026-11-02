@@ -94,6 +94,18 @@ test('长跑进程的兜底只放行超过年龄阈值的 deferred', (t) => {
   assert.equal(store.getMessage('group:7', stale.id).state, 'pending');
 });
 
+test('queueStats 覆盖 deferred，并有独立队列索引', (t) => {
+  const store = new ChatStore(0, { dataDir: root, filename: 'messages.sqlite' });
+  t.after(() => store.close());
+  store.appendIncoming('group:9', {
+    mid: 9, ts: Date.now(), senderId: '1', senderName: 'A', text: '排队', media: []
+  }, { deferred: true });
+  const stats = store.queueStats();
+  assert.ok(stats.byState.deferred >= 1);
+  const indexes = store.db.prepare('PRAGMA index_list(messages)').all().map((row) => row.name);
+  assert.ok(indexes.includes('messages_queue_stats'), indexes.join(','));
+});
+
 test('touchDeferred 从真正开始富化的时刻重新计龄', (t) => {
   const store = new ChatStore(0, { dataDir: root, filename: 'messages.sqlite' });
   t.after(() => store.close());

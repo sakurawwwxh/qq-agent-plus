@@ -13,6 +13,7 @@ import {
 import { safeFetchBinary, validateImageUrl } from '../llm/safe-fetch.js';
 import { convertGifToStillStrip } from '../tools/image-downsample.js';
 import { sanitizeUserText } from '../core/util.js';
+import { filterBlockedHistory } from '../core/blocklist.js';
 import { displayNameOf } from '../core/display-name.js';
 import { visibleImpressions } from '../core/memory-visibility.js';
 import { webFetch, webSearch } from '../llm/web-search.js';
@@ -1199,8 +1200,9 @@ export class DailyMomentsManager {
     for (const chatKey of chatKeys) {
       const [, groupId] = chatKey.split(':');
       const scanLimit = Math.min(2000, Math.max(cfg.maxMessagesPerGroup * 4, 200));
-      const dayMessages = this.store.recent(chatKey, { limit: scanLimit, readOnly: true })
-        .filter((message) => Number(message.ts) >= start && Number(message.ts) < end);
+      const dayMessages = filterBlockedHistory(
+        this.store.recent(chatKey, { limit: scanLimit, readOnly: true }), chatKey
+      ).filter((message) => Number(message.ts) >= start && Number(message.ts) < end);
       const humanCount = dayMessages.filter((message) => !message.self).length;
       const members = this.memory.members(chatKey);
       const handoff = this.memory.getHandoff(chatKey);

@@ -22,6 +22,14 @@ const JOIN_RE = /(我玩|我要玩|我也玩|我来|我报名|报名|加我|带�
 // 否定/劝阻语境的直接跳过："别带我""不参与""我玩不动"都不是报名（子串匹配会误判，2026-09-29 审查 P1）
 const JOIN_NEG_RE = /不|别|勿|甭|算了|不用|拒绝/;
 
+/**
+ * 引用回复在正文前会带 `[引用#123·我：…]`；插件解析器多为整句/关键词锚定，
+ * 引用块里若碰巧含“投 3/刀 2”会把玩家的真实行动带偏。喂插件前先剥掉引用装饰。
+ */
+function stripQuotePrefix(text) {
+  return String(text || '').replace(/^\s*(?:\[引用[^\]]*\]\s*)+/, '').trim();
+}
+
 export class GroupGameManager {
   constructor({ store, sender, effects = null, log = console.log, now = () => Date.now(), rng = Math.random, wake = null } = {}) {
     this.store = store;
@@ -221,9 +229,10 @@ export class GroupGameManager {
 
   /** 把一条私聊喂给归属局；它不认领（白天/看不懂）就返回 null，由调用方交回模型。 */
   #feedPrivate(chatKey, uid, text, ts) {
+    const cleanText = stripQuotePrefix(text);
     for (const cand of this.#privateCandidates(chatKey)) {
       const out = cand.plugin.onPrivateMessage(cand.game.state, {
-        userId: uid, text, ts
+        userId: uid, text: cleanText, ts
       }, { now: this.now(), deadline: cand.game.deadlineAt });
       const claimed = Boolean(out?.effects?.length) || out?.consume === true;
       if (!claimed) continue;
@@ -345,7 +354,7 @@ export class GroupGameManager {
       g.lastSeenId = Math.max(Number(g.lastSeenId || 0), Number(m.id) || 0);
       const uid = String(m.senderId || '');
       if (!uid) continue;
-      const joinText = String(m.text || '').trim();
+      const joinText = stripQuotePrefix(m.text);
       if (!JOIN_RE.test(joinText) || JOIN_NEG_RE.test(joinText)) continue;
       if (g.state.joiners.some((j) => j.userId === uid)) continue;
       if (g.state.joiners.length >= g.state.maxPlayers) {
@@ -609,13 +618,17 @@ export class GroupGameManager {
     let state = g.state;
     const effects = [];
     for (const m of rows) {
+      // 群聊的引用/@昵称可能还在后台富化：先停在它这里，别把占位正文喂给插件，
+      // 也别把 lastSeenId 推过去（投票“投 @他”必须等 @昵称解析完）。
+      if (m.state === 'deferred') break;
       g.lastSeenId = Math.max(Number(g.lastSeenId || 0), Number(m.id));
       if (m.self) continue;
       // "来晚了"提示：局开了以后，没在册的人发"我玩/报名"要有个回音（以前是默默忽略，
       // 人家以为报上了）。同一人每局只提醒一次。
       const uid = String(m.senderId || '');
+      const cleanText = stripQuotePrefix(m.text);
       const inRoster = (state.roles || []).some((r) => String(r.userId) === uid);
-      if (!inRoster && plugin.meta.needsPrivate && JOIN_RE.test(String(m.text || '').trim()) && !JOIN_NEG_RE.test(String(m.text || ''))) {
+      if (!inRoster && plugin.meta.needsPrivate && JOIN_RE.test(cleanText) && !JOIN_NEG_RE.test(cleanText)) {
         state.lateNoticed = Array.isArray(state.lateNoticed) ? state.lateNoticed : [];
         if (!state.lateNoticed.includes(uid)) {
           state.lateNoticed.push(uid);
@@ -626,7 +639,7 @@ export class GroupGameManager {
       const out = plugin.onMessage(state, {
         userId: String(m.senderId || ''),
         name: sanitizeUserText(String(m.senderName || '')),
-        text: String(m.text || ''),
+        text: cleanText,
         ts: Number(m.ts) || this.now()
       }, { now: this.now(), deadline: g.deadlineAt });
       state = out.state;

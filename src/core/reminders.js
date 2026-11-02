@@ -566,6 +566,11 @@ export class ReminderStore {
     // 周期项：记下这次触发的 dueKey，重算下一次（re-arm），状态保持 pending。
     // 错过补最近一次的语义由 reconcileRecurring 在启动时处理；这里只管"触发后继续"。
     if (it.repeat && typeof it.repeat === 'object') {
+      // 周期项从 failed 重新 arm 时（连续未确认播报耗尽）必须恢复 pending 并清掉终态，
+      // 否则 markFired 只改了 at、状态仍停在 failed，due() 永远不会再收它。
+      it.status = 'pending';
+      it.finishedAt = 0;
+      it.error = '';
       it.dueKeys = [...(Array.isArray(it.dueKeys) ? it.dueKeys : []), { due: Number(it.at) || 0, firedAt: now }].slice(-10);
       it.fireCount = (Number(it.fireCount) || 0) + 1;
       it.lastFiredAt = now;

@@ -110,11 +110,12 @@ export async function forageBilibili({
   log = () => {}
 } = {}) {
   const logger = typeof log === 'function' ? log : () => {};
-  // 搜索词优先用人设 topics / 显式关键词；没有时才退回群聊高频词。
-  // 群聊高频词继续参与打分，但不直接拿去搜 B 站 —— 否则一个刷天气的群会让队列全是天气预报。
-  const sourceTerms = Array.isArray(profile?.searchTerms) && profile.searchTerms.length
+  // 搜索词只用人设 topics / 显式关键词；没有就只拉热门。
+  // 群聊高频词继续参与打分，但**绝不**直接拿去搜 B 站：terms 里可能混有私聊来源的词，
+  // 外发到第三方搜索接口属于隐私泄漏（2026-11-02 全项目审查 P1）。
+  const sourceTerms = Array.isArray(profile?.searchTerms)
     ? profile.searchTerms.map((term) => ({ term }))
-    : (profile?.terms || []);
+    : [];
   const queries = sourceTerms
     .slice(0, 3)
     .map((entry) => String(entry?.term || '').trim())

@@ -63,6 +63,13 @@ test('tar 解析：目录穿越 / 绝对路径 / 符号链接 / pax 长路径头
     [[{ name: dotDot('evil.mjs'), data: 'x' }], /不安全的路径/],
     [[{ name: '/etc/passwd', data: 'x' }], /不安全的路径/],
     [[{ name: 'demo/../../x', data: 'x' }], /不安全的路径/],
+    // Windows 会剥掉段末尾的空格/点：`.. `、`...` 在 Win32 上等价于父目录
+    [[{ name: 'a/.. /config.json', data: 'x' }], /不安全的路径/],
+    [[{ name: 'a/.../config.json', data: 'x' }], /不安全的路径/],
+    [[{ name: 'a/name. /config.json', data: 'x' }], /不安全的路径/],
+    [[{ name: 'a\\..\\config.json', data: 'x' }], /不安全的路径/],
+    [[{ name: 'C:\\evil\\x', data: 'x' }], /不安全的路径/],
+    [[{ name: 'a/nul.txt', data: 'x' }], /不安全的路径/],
     [[{ name: 'x', type: '2', data: 'target' }], /不允许的条目类型/],   // 符号链接
     [[{ name: 'x', type: '1' }], /不允许的条目类型/]                    // 硬链接
   ];

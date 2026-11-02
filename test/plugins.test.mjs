@@ -368,6 +368,18 @@ test('注册表：观察消息真的投给了声明 observe 的插件，停用�
   assert.deepEqual(await host.callTool('counters', {}), { seen: 1, ticks: 0 }, '停用后不该再投递');
 });
 
+test('注册表：stop 之后 reconfigure 不能把插件重新拉起来', async () => {
+  const cfg = { plugins: { enabled: true, enabledIds: ['good'], settings: {} } };
+  const registry = new PluginRegistry({ root: FIXTURES, dataDir, log: () => {}, getConfig: () => cfg });
+  await registry.start();
+  assert.equal(registry.hosts.size, 1);
+  await registry.stop();
+  assert.equal(registry.hosts.size, 0);
+  const result = await registry.reconfigure();
+  assert.equal(result.skipped, 'stopped');
+  assert.equal(registry.hosts.size, 0, '停服期间配置回调不能起子进程');
+});
+
 test('注册表：reconfigure 按新配置重排（改 enabledIds 后工具跟着变）', async (t) => {
   let cfg = { plugins: { enabled: true, enabledIds: [], settings: {} } };
   const registry = new PluginRegistry({ root: FIXTURES, dataDir, log: () => {}, getConfig: () => cfg });

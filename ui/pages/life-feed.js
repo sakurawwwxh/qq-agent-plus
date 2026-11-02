@@ -328,7 +328,7 @@ function renderLifeFeedSection(c) {
           <div class="field"><label>内容来源</label>
             <div class="lifefeed-toggles">
               ${[['bilibili', 'B站'], ['plugin', '插件'], ['rss', 'RSS']].map(([id, label]) =>
-                `<label class="checkbox-row"><input type="checkbox" id="cfg-lifefeed-src-${id}"${(cfg.sources || ['bilibili']).includes(id) ? ' checked' : ''} /> <span>${label}</span></label>`).join('')}
+                `<label class="checkbox-row"><input type="checkbox" id="cfg-lifefeed-src-${id}"${(cfg.sources || ['bilibili', 'plugin']).includes(id) ? ' checked' : ''} /> <span>${label}</span></label>`).join('')}
             </div>
           </div>
           <div class="field"><label>分享模式</label>

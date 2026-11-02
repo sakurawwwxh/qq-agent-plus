@@ -390,11 +390,14 @@ OneBot -> serialized per-chat ingestion -> deduplicated SQLite message
 - `acked`: successfully processed or deliberately skipped by trigger policy.
 - `failed`: invalid configuration, budget exhaustion, or three failed batch attempts.
 - `held`: sending succeeded partially or may have succeeded before failure.
+- `deferred`: reply/@/forward enrichment is running in bounded background; not unread
+  and not visible to prompts until finalized (or released with a placeholder on timeout).
 
 Held batches are normally reviewed manually. The recovery loop also releases a
 held batch automatically once its `outbox.run_id` has no `sending`/`unknown`
 rows left — the uncertainty is resolved, so the batch is acknowledged (not
-resent). A missing `lease_id` or a still-uncertain send stays manual.
+resent). Legacy held rows without a `lease_id` are judged at chat level: they
+are released only when that chat has no `sending`/`unknown` outbox rows at all.
 
 On restart, leases remain durable. Recovery runs every five seconds. Expired
 leases with no send effects become pending; leases with possible send effects

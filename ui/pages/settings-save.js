@@ -262,7 +262,7 @@ async function saveConfig({ quiet = false } = {}) {
       ...(c.lifeFeed || {}),
       enabled: chk('#cfg-lifefeed-enabled', c.lifeFeed?.enabled === true),
       sources: ['bilibili', 'plugin', 'rss'].filter((id) =>
-        chk(`#cfg-lifefeed-src-${id}`, (c.lifeFeed?.sources || ['bilibili']).includes(id))),
+        chk(`#cfg-lifefeed-src-${id}`, (c.lifeFeed?.sources || ['bilibili', 'plugin']).includes(id))),
       shareMode: String(val('#cfg-lifefeed-sharemode', c.lifeFeed?.shareMode || 'auto')) === 'manual' ? 'manual' : 'auto',
       ...(shareGroups ? { shareGroups } : {}),
       rssUrls: splitKeywords('#cfg-lifefeed-rss-urls'),

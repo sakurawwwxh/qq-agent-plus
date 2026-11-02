@@ -97,6 +97,12 @@ test('兴趣画像：人设 topics + 群聊高频二元组', () => {
   assert.ok(profile.personaTopics.length > 0);
 });
 
+test('sources: 缺键用默认 bilibili+plugin，显式空数组表示一个都不开', () => {
+  assert.deepEqual(normalizedLifeFeedConfig({}).sources, ['bilibili', 'plugin']);
+  assert.deepEqual(normalizedLifeFeedConfig({ sources: [] }).sources, []);
+  assert.deepEqual(normalizedLifeFeedConfig({ sources: ['rss'] }).sources, ['rss']);
+});
+
 test('tokenize：剥 URL、拉丁词小写、过滤停用词', () => {
   const terms = tokenize('看看 https://b23.tv/abc 这个 DeepSeek 的独立游戏');
   assert.ok(terms.includes('deepseek'));
@@ -118,7 +124,7 @@ test('觅食：热门 + 搜索合并去重，过滤时长与排除词', async ()
     ['search/type', { code: 0, data: { result: [{ bvid: 'BV1dd', title: '深海 纪录片', description: '海底', duration: '12:34', play: 88, pubdate: NOW / 1000, author: '纪录片UP', mid: 44, tag: '深海,纪录片' }] } }]
   ]);
   const items = await forageBilibili({
-    profile: { terms: [{ term: '深海', weight: 3 }] },
+    profile: { terms: [{ term: '深海', weight: 3 }], searchTerms: ['深海'] },
     limit: 10,
     minDurationSec: 60,
     maxDurationSec: 3600,
@@ -205,6 +211,24 @@ test('手动分享占位不占自动领取额度：未发送时自动 next 仍�
   assert.ok(auto.items?.length, '只是点了手动分享（还没发送）不能把自动领取额度一起吃掉');
   const blocked = manager.next({ count: 1 });
   assert.match(blocked.error, /今天/);
+});
+
+test('手动分享发送成功后也占用每日上限，不能绕过 maxOffersPerDay', async (t) => {
+  const dir = tempDir(t);
+  const cfg = { lifeFeed: { enabled: true, maxPerForage: 10, maxOffersPerDay: 1, maxPicksPerDay: 10, minDurationSec: 60, maxDurationSec: 3600 } };
+  const manager = new LifeFeedManager({
+    dataDir: dir, store: null, config: () => cfg,
+    fetchImpl: fakeFetch([['popular', POPULAR], ['search/type', { code: 0, data: { result: [] } }]]),
+    now: () => NOW, random: () => 0.5
+  });
+  await manager.forageNow();
+  const all = manager.status().candidates;
+  assert.ok(all.length >= 2);
+  const first = manager.takeForShare(all[0].id, { manual: true });
+  assert.ok(first.item, first.error);
+  manager.feedback({ id: all[0].id, action: 'shared', manual: true });
+  const second = manager.takeForShare(all[1].id, { manual: true });
+  assert.match(String(second.error), /今天已经分享/);
 });
 
 test('管理器：dismiss 进 seen 并从候选移除；重复觅食不重复入队', async (t) => {
@@ -301,6 +325,25 @@ test('觅食搜索词：有人设 topics 时不拿群聊高频词去搜 B 站', 
   const searches = urls.filter((url) => url.includes('search/type'));
   assert.ok(searches.some((url) => url.includes(encodeURIComponent('深海与潜水视频'))));
   assert.ok(!searches.some((url) => decodeURIComponent(url).includes('keyword=天气')), '群聊高频词不能直接成为搜索词');
+});
+
+test('没有 searchTerms 时只拉热门，profile.terms（可能含私聊词）绝不上 wire', async () => {
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(String(url));
+    if (String(url).includes('popular')) return { statusCode: 200, body: JSON.stringify({ code: 0, data: { list: [] } }) };
+    return { statusCode: 200, body: JSON.stringify({ code: 0, data: { result: [] } }) };
+  };
+  await forageBilibili({
+    profile: {
+      terms: [{ term: '私聊里的秘密词', weight: 30 }],
+      searchTerms: []
+    },
+    limit: 5,
+    fetchImpl
+  });
+  assert.equal(urls.filter((url) => url.includes('search/type')).length, 0);
+  assert.ok(!urls.some((url) => decodeURIComponent(url).includes('私聊里的秘密词')));
 });
 
 test('候选入库：同一 UP 与同一标签在队列里也限流', async (t) => {

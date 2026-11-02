@@ -708,10 +708,16 @@ export class Orchestrator {
 
   startRecoveryLoop() {
     clearInterval(this.retryTimer);
-    this.store.recoverExpired(Date.now(), { live: this.liveLeases });
-    this.releaseResolvedHeld();
-    this.releaseStaleDeferred();
-    this.store.expireConversationThreads?.();
+    // 启动首轮与周期 tick 同口径：SQLITE_BUSY/磁盘暂时不可用不能把整个进程带崩，
+    // 更不能让 retryTimer 没装上。下一轮 5 秒后重试。
+    try {
+      this.store.recoverExpired(Date.now(), { live: this.liveLeases });
+      this.releaseResolvedHeld();
+      this.releaseStaleDeferred();
+      this.store.expireConversationThreads?.();
+    } catch (error) {
+      log.error('[recovery] 启动首轮回收失败（5 秒后重试）：', error?.message ?? error);
+    }
     this.retryTimer = setInterval(() => {
       // 兜底回收不能把进程带走：SQLITE_BUSY、磁盘满、库损坏都可能在恢复期间抛出，
       // 而 server.js 的 uncaughtException 会直接 process.exit(1)。下一个 tick 再试即可。
@@ -3172,6 +3178,24 @@ export class Orchestrator {
           if (pair.effectId) this.effects.settle(pair.effectId, state, detail);
         }
       };
+      // 连续未确认播报：一次性提醒耗尽后停用（未知不能重发）；周期项耗尽只跳过本期，
+      // 必须 re-arm 到下一次，否则“每天 9 点吃药”会在一次网关故障后永久消失。
+      const retryOrRearm = (pair, later) => {
+        // 周期项已经用完重试次数：直接跳过本期并 re-arm，不能先 retryLater 置 failed
+        //（#prune 可能在 markFired 前把这条已完成记录清掉，导致永久停用）。
+        if (pair.it.repeat && typeof pair.it.repeat === 'object'
+          && Number(pair.it.deliveryAttempts) >= 3) {
+          this.reminders.markFired(pair.it.id, now);
+          return 'rearmed';
+        }
+        const retry = this.reminders.retryLater(pair.it.id, later, { maxAttempts: 3 });
+        if (!retry.exhausted) return retry.missing ? 'missing' : 'retry';
+        if (pair.it.repeat && typeof pair.it.repeat === 'object') {
+          this.reminders.markFired(pair.it.id, now);
+          return 'rearmed';
+        }
+        return 'exhausted';
+      };
       const note = buildReminderNote(batch.map((pair) => pair.it), { now });
       const dispatchedAt = Date.now();
       // 只把**本次唤醒新产生**的 unknown 当成本轮结果不确定：历史遗留的 unknown/sending
@@ -3196,7 +3220,15 @@ export class Orchestrator {
             .some((op) => !unknownBefore.has(op.id));
           if (uncertain) {
             settleAll('unknown', { reason: 'outbox-unknown' });
-            for (const pair of batch) this.reminders.failDelivery(pair.it.id, '发送结果未知，已停止自动重试，请人工核对');
+            for (const pair of batch) {
+              // 周期项不能被一次“结果未知”永久停掉：跳过本期、重排下一次；
+              // 一次性提醒仍保留人工核对语义（未知绝不自动重发）。
+              if (pair.it.repeat && typeof pair.it.repeat === 'object') {
+                this.reminders.markFired(pair.it.id, now);
+              } else {
+                this.reminders.failDelivery(pair.it.id, '发送结果未知，已停止自动重试，请人工核对');
+              }
+            }
             log.error(`[reminder] 有未确认的外发，${batch.length} 条提醒停止自动重试：${chatKey}`);
             return;
           }
@@ -3204,13 +3236,16 @@ export class Orchestrator {
           settleAll('failed', { reason: 'no-send' });
           const later = Date.now() + 5 * 60 * 1000;
           let exhausted = 0;
+          let rearmed = 0;
           for (const pair of batch) {
-            const retry = this.reminders.retryLater(pair.it.id, later, { maxAttempts: 3 });
-            if (retry.exhausted) exhausted += 1;
+            const outcome = retryOrRearm(pair, later);
+            if (outcome === 'exhausted') exhausted += 1;
+            else if (outcome === 'rearmed') rearmed += 1;
           }
-          if (exhausted) {
-            const retried = batch.length - exhausted;
-            log.error(`[reminder] ${exhausted} 条连续未确认播报，已停止自动重试`
+          if (exhausted || rearmed) {
+            const retried = batch.length - exhausted - rearmed;
+            log.error(`[reminder] ${exhausted + rearmed} 条连续未确认播报，已停止自动重试`
+              + (rearmed ? `（其中 ${rearmed} 条周期提醒已重排下一期）` : '')
               + (retried ? `；另外 ${retried} 条 5 分钟后重试` : '') + `：${chatKey}`);
           } else {
             log.warn(`[reminder] 本轮未检测到发送，${batch.length} 条 5 分钟后重试：${chatKey}`);
@@ -3221,14 +3256,18 @@ export class Orchestrator {
           settleAll('failed', { reason: 'wake-error', error: String(error?.message ?? error).slice(0, 200) });
           const later = Date.now() + 5 * 60 * 1000;
           let exhausted = 0;
+          let rearmed = 0;
           for (const pair of batch) {
-            const retry = this.reminders.retryLater(pair.it.id, later, { maxAttempts: 3 });
-            if (retry.exhausted) exhausted += 1;
+            const outcome = retryOrRearm(pair, later);
+            if (outcome === 'exhausted') exhausted += 1;
+            else if (outcome === 'rearmed') rearmed += 1;
           }
-          const retried = batch.length - exhausted;
+          const retried = batch.length - exhausted - rearmed;
           log.error(`[reminder] 唤醒出错，`
             + (exhausted ? `${exhausted} 条已停止重试` : '')
-            + (exhausted && retried ? '，' : '')
+            + (exhausted && rearmed ? '，' : '')
+            + (rearmed ? `${rearmed} 条周期提醒已重排下一期` : '')
+            + ((exhausted || rearmed) && retried ? '，' : '')
             + (retried ? `${retried} 条 5 分钟后重试` : '')
             + ':', error?.message ?? error);
         })
@@ -3948,6 +3987,7 @@ export class Orchestrator {
   #buildNewImpressionPrompt(chatKey, mem) {
     const maxKeep = Number(getConfig().memory?.maxImpressionsPerMember) || 5;
     const uid = String(mem.userId || '');
+    const safeName = sanitizeUserText(safeSlice(String(mem.name || ''), 60));
     const sample = filterBlockedHistory(this.store.recent(chatKey, { limit: 2000 }), chatKey)
       .filter((m) => !m.self && String(m.senderId) === uid)
       .slice(-40)
@@ -3957,7 +3997,7 @@ export class Orchestrator {
     return {
       system: '你是聊天机器人的记忆模块，负责从聊天记录里提炼对某一位群友的长期印象。只提炼"以后跟这个人打交道用得上"的稳定特征，严格依据给定的发言，不要编造。输出必须是严格的 JSON 对象，不要 Markdown 代码块，不要任何解释文字。格式：{"impressions":["…"]}',
       user: [
-        `下面是群友（QQ ${uid}${(mem.name && `，名字 ${mem.name}`) || ''}${(uid && String(getConfig()?.admin?.ownerUin || '').trim() === uid) ? '，**这是机器人管理员本人**（设置角色卡、管这台机器人的人）' : ''}）最近的部分发言，请提炼对他的长期印象：`,
+        `下面是群友（QQ ${uid}${(safeName && `，名字 ${safeName}`) || ''}${(uid && String(getConfig()?.admin?.ownerUin || '').trim() === uid) ? '，**这是机器人管理员本人**（设置角色卡、管这台机器人的人）' : ''}）最近的部分发言，请提炼对他的长期印象：`,
         '1. 只保留稳定特征：说话风格、爱玩的梗、常聊话题、雷点、身份关系。',
         '2. 不要记一次性事件、临时话题，也不要记录流水账。',
         `3. 最多 ${maxKeep} 条，每条不超过 120 字，用第一人称视角（"他/她…"）。`,

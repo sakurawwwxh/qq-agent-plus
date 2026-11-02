@@ -1674,12 +1674,20 @@ function buildApp({
   // 服务重启或协议端断线时事件会丢：消息根本没进库，也就永远没人回。
   // 连上以后从协议端拉一次最近历史，把库里没有的消息补进来；去重靠 mid，重复不会脏数据。
   let lastCatchUpAt = 0;
+  let catchUpTimer = null;
   function scheduleCatchUp() {
+    if (ingestStopping) return;
     if (Date.now() - lastCatchUpAt < 60000) return;   // 断线重连可能连续触发，一分钟内只补一次
     lastCatchUpAt = Date.now();
-    setTimeout(() => { catchUpMissedMessages().catch(() => {}); }, 3000);
+    clearTimeout(catchUpTimer);
+    catchUpTimer = setTimeout(() => {
+      catchUpTimer = null;
+      catchUpMissedMessages().catch(() => {});
+    }, 3000);
+    catchUpTimer.unref?.();
   }
   async function catchUpMissedMessages() {
+    if (ingestStopping) return;
     const cfgNow = getConfig();
     const windowMs = catchupReplyWindowMs(cfgNow);
     const targetMap = new Map();
@@ -1697,6 +1705,7 @@ function buildApp({
     const targets = [...targetMap.values()];
     const count = Math.max(1, Math.min(500, Number(cfgNow.onebot?.catchupHistoryCount) || 100));
     for (const { kind, id } of targets) {
+      if (ingestStopping) break;
       const chatKey = `${kind}:${id}`;
       try {
         const data = kind === 'group'
@@ -1709,6 +1718,7 @@ function buildApp({
         let added = 0;
         let recordedOnly = 0;
         for (const item of list) {
+          if (ingestStopping) break;
           const mid = item?.message_id;
           if (mid === undefined || mid === null) continue;
           if (store.findByMid(chatKey, mid)) continue;         // 库里已有（含自己发的），跳过
@@ -2031,6 +2041,15 @@ function buildApp({
     try { return JSON.stringify(norm(value)); } catch { return null; }
   };
   const server = http.createServer((req, res) => {
+    // 停服第一步就拒绝新请求：否则停服窗口内到达的配置/插件写请求可能在
+    // pluginRegistry.stop() 之后又触发 reconfigure，把插件子进程重新拉起来。
+    if (ingestStopping) {
+      try {
+        res.writeHead(503, { 'content-type': 'application/json', connection: 'close' });
+        res.end(JSON.stringify({ error: '服务正在停止' }));
+      } catch { /* 连接已断 */ }
+      return;
+    }
     handleHttp(req, res).catch((error) => {
       // 4xx 是用户输入/权限问题，不是服务端异常：不要写入异常面板，否则每次输错
       // 管理员 QQ/非法 JSON 都会变成一条 error incident。
@@ -3498,15 +3517,20 @@ function buildApp({
     if (port == null) throw lastError ?? new Error('无法监听端口');
     // 抢到端口才说明是唯一在跑的本实例：此时上一条命留下的 planned 不可能还在执行。
     // 不等 15 分钟 TTL，否则重启落在发送窗口内会让日报/游戏播报被当成 in-flight 跳过当天。
-    effects.markStalePlanned({ olderThanMs: 0, minAgeMs: 0 });
-    effects.prune();
-    // 上一次进程如果在富化途中退出，deferred 消息会留在库里：按占位符放行，
-    // 让恢复循环把它们当普通未读处理，别让它们永远不可见（Issue #85）。
-    if (ingestAbort.signal.aborted) ingestAbort = new AbortController();
-    ingestStopping = false;
-    const staleDeferred = store.releaseStaleDeferred();
-    if (staleDeferred.length) {
-      log(`[ingest] 启动释放 ${staleDeferred.length} 个会话里未完成富化的消息（按占位符处理）`);
+    // 这些都是一次性清扫：瞬时 SQLITE_BUSY/磁盘抖动只应推迟清扫，不能阻止服务启动。
+    try {
+      effects.markStalePlanned({ olderThanMs: 0, minAgeMs: 0 });
+      effects.prune();
+      // 上一次进程如果在富化途中退出，deferred 消息会留在库里：按占位符放行，
+      // 让恢复循环把它们当普通未读处理，别让它们永远不可见（Issue #85）。
+      if (ingestAbort.signal.aborted) ingestAbort = new AbortController();
+      ingestStopping = false;
+      const staleDeferred = store.releaseStaleDeferred();
+      if (staleDeferred.length) {
+        log(`[ingest] 启动释放 ${staleDeferred.length} 个会话里未完成富化的消息（按占位符处理）`);
+      }
+    } catch (error) {
+      log('[start] 启动清扫失败（不影响启动，恢复循环会继续重试）：', error?.message ?? error);
     }
 
     await onebot.connect();
@@ -3609,6 +3633,8 @@ function buildApp({
       killTreeOf(child);
     }
     clearTimeout(timeControlTimer);
+    clearTimeout(catchUpTimer);
+    catchUpTimer = null;
     clearInterval(freshnessTimer);
     clearInterval(sseHeartbeat);
     snowlumaAutoStopped = true;

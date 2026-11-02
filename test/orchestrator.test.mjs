@@ -2016,6 +2016,44 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.equal(runner.reminders.items.find((x) => x.id === 'r-uncertain').status, 'failed');
   });
 
+  it('定时提醒：周期项遇到未知外发 → 只跳过本期并重排，不能永久停用', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-repeat-uncertain.json')) });
+    runner.effects = new EffectLedger(store.db);
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({
+      id: 'r-repeat-uncertain', chatKey: 'group:1', at, text: '吃药', status: 'pending', createdBy: '42',
+      repeat: { kind: 'daily', hour: 9, minute: 0, tz: 'Asia/Shanghai' }
+    });
+    runner.wake = async (chatKey) => {
+      const id = store.beginSend(chatKey, null, { type: 'text' });
+      store.finishSend(id, { error: 'socket timeout', outcome: 'unknown' });
+    };
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const item = runner.reminders.items.find((x) => x.id === 'r-repeat-uncertain');
+    assert.equal(item.status, 'pending', '周期项必须留在 pending');
+    assert.ok(item.at > at, '要重排到下一期');
+    assert.equal(item.occurrenceId, undefined, '下一期换新的 occurrenceId');
+  });
+
+  it('定时提醒：周期项连续未确认耗尽 → 仍要重排下一期，而不是 failed', async (t) => {
+    const { runner, store } = fixture(t, { reminders: new ReminderStore(path.join(root, 'rem-repeat-exhausted.json')) });
+    runner.effects = new EffectLedger(store.db);
+    const at = Date.now() - 1000;
+    runner.reminders.items.push({
+      id: 'r-repeat-exhausted', chatKey: 'group:1', at, text: '吃药', status: 'pending', createdBy: '42',
+      deliveryAttempts: 3,
+      repeat: { kind: 'daily', hour: 9, minute: 0, tz: 'Asia/Shanghai' }
+    });
+    runner.wake = async () => {};
+    runner.fireDueReminders();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const item = runner.reminders.items.find((x) => x.id === 'r-repeat-exhausted');
+    assert.equal(item.status, 'pending', '耗尽后也要 re-arm');
+    assert.ok(item.at > at, '要重排到下一期');
+    assert.equal(item.deliveryAttempts, 0, '新一期重新计尝试次数');
+  });
+
   it('测试用远景时间窗在任何时刻都成立：下一个窗口至少 4 分钟外（跨午夜回归）', () => {
     // 覆盖跨午夜前后与周日→周一（otherDay 走 7→1 分支）的边界时刻。
     // 老写法（写死 '00:01'）在每天 23:57–00:01 之间只剩不到 4 分钟就开窗，

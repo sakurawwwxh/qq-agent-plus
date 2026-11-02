@@ -9,7 +9,7 @@ process.env.QQ_AGENT_DATA_DIR = root;
 const nowMs = Date.parse('2026-09-12T06:00:00Z');
 const nowSec = Math.floor(nowMs / 1000);
 
-const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
+const { DEFAULT_CONFIG, setRuntimeConfig, getConfig } = await import('../src/core/config.js');
 const {
   parseQzoneFeed,
   parseQzoneRawComments,
@@ -121,6 +121,29 @@ function fixture(patch = {}) {
   });
   return { cfg, manager, onebot, qzoneWeb, writes, suppression, sleeps, stateFile };
 }
+
+test('observe/暂停模式：runNow 不拉动态、不调模型、不写 Qzone', async () => {
+  let modelCalls = 0;
+  let feedCalls = 0;
+  const f = fixture({
+    feedCall: async () => { feedCalls += 1; return { feeds: [], has_more: false }; },
+    complete: async () => { modelCalls += 1; return response({ feedActions: [], replyActions: [] }); }
+  });
+  const cfgNow = structuredClone(getConfig());
+  cfgNow.runtime = { ...cfgNow.runtime, mode: 'observe', paused: false };
+  setRuntimeConfig(cfgNow);
+  try {
+    const result = await f.manager.runNow('feed');
+    assert.equal(result.skipped, 'runtime-mode');
+    assert.equal(modelCalls, 0);
+    assert.equal(feedCalls, 0);
+    assert.equal(f.writes.length, 0);
+  } finally {
+    const back = structuredClone(getConfig());
+    back.runtime = { ...back.runtime, mode: 'active', paused: false };
+    setRuntimeConfig(back);
+  }
+});
 
 test('parses structured friend feed text, images, likes, roots, and nested replies', () => {
   const child = commentHtml({ tid: 2, uin: 222, nick: 'B', content: 'nested reply' });

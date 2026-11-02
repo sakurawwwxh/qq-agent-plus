@@ -1,6 +1,6 @@
 // #84：held 过期后的自动收尾。
 // 关键语义：只有该 run 的 outbox 全部终结（或没有 outbox）才释放；
-// 仍有 sending/unknown 的必须留给人工核对；lease_id 缺失的保守跳过。
+// 仍有 sending/unknown 的必须留给人工核对；缺 lease_id 的旧行按会话级 outbox 判断。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

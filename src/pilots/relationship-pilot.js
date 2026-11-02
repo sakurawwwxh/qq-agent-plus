@@ -392,7 +392,13 @@ export class RelationshipPilotManager {
             AND sender_id=? ORDER BY id DESC LIMIT ?) ORDER BY id`).all(
             chatKey, String(uin), bootstrapPerChat
           );
-      for (const row of chunk) rows.push(row);
+      for (const row of chunk) {
+        // 屏蔽名单是"历史消息也不能再进模型"：关系证据按 mid/原文读取，同样要过滤。
+        const [rowKind, rowGroup] = String(row.chat_key || '').split(':');
+        if (rowKind === 'group' && rowGroup
+          && (getConfig().blocklist?.[rowGroup] || []).map(String).includes(String(row.sender_id))) continue;
+        rows.push(row);
+      }
     }
     rows.sort((a, b) => Number(a.ts) - Number(b.ts) || Number(a.id) - Number(b.id));
     const selected = rows.length > maxEvidence ? rows.slice(0, maxEvidence) : rows;

@@ -198,6 +198,11 @@ export class ChatStore {
     ensureColumn(this.db, 'messages', 'deferred_at', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec(`CREATE INDEX IF NOT EXISTS messages_deferred
       ON messages(deferred_at) WHERE state='deferred'`);
+    // /api/metrics 的 queueStats 按 state 聚合、取 MIN(ts/deferred_at)；默认保留期 0 时
+    // 消息表无界，不能每次抓指标都线性扫全历史（2026-11-02 全项目审查 P2）。
+    this.db.exec(`CREATE INDEX IF NOT EXISTS messages_queue_stats
+      ON messages(state, ts, deferred_at)
+      WHERE state IN ('pending','leased','held','deferred')`);
     // getChatMeta 的 total 不能再用 COUNT(*) 扫全历史（每条入站消息 + 5 秒 tick 都调），
     // 但也不能用 next_id-1：保留期清理会删掉旧行，那样会虚报"还有 N 条没加载"。
     // 维护一个随插入/清理增减的计数，老库首次启动按现有行数回填一次。

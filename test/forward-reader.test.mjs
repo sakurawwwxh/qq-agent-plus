@@ -310,6 +310,31 @@ test('视频分享卡片保留来源昵称和自己的动态标记', async () =>
   assert.equal(cardToText(seg, '12345'), '[卡片 [分享] · 你自己的动态：视频 — 简介 — https://b23.tv/AbCdEf1]');
 });
 
+test('read_forward 展开正文命中黑名单时拦截，不写回存档', async () => {
+  const { updateConfig, getConfig } = await import('../src/core/config.js');
+  const before = structuredClone(getConfig().store || {});
+  try {
+    updateConfig({ store: { ...before, blacklistKeywords: ['广告'] } });
+    let updated = false;
+    const entry = { mid: '-456', text: '[合并转发聊天记录]' };
+    const ctx = {
+      chatKey: 'group:1',
+      store: {
+        findByMid: () => entry,
+        updateByMid: () => { updated = true; }
+      },
+      onebot: { call: async () => ({ messages: [{ sender: { nickname: 'A' }, message: [{ type: 'text', data: { text: '广告内容' } }] }] }) }
+    };
+    const tool = buildToolDefs().find((t) => t.name === 'read_forward');
+    const result = await tool.execute(ctx, { messageId: '-456' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    assert.match(JSON.stringify(result), /黑名单/);
+    assert.equal(updated, false, '拦截的内容不能写回存档');
+  } finally {
+    updateConfig({ store: { ...getConfig().store, blacklistKeywords: before.blacklistKeywords || [] } });
+  }
+});
+
 // 「消息类型」关掉自动展开后（issue #34），**按需展开这条路必须还在** ——
 // 关的是"入站顺手展开"，不是"模型想看时看不到"。哪天有人把同一个闸门也加到工具上，
 // 这条用例会红。

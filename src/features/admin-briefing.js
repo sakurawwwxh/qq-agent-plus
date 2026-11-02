@@ -9,6 +9,7 @@ import { DATA_DIR, getConfig } from '../core/config.js';
 import { vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { todayKey } from '../core/util.js';
 import { canRun } from '../core/access.js';
+import { filterBlockedHistory } from '../core/blocklist.js';
 import { chatCompletion, addUsage, emptyUsage } from '../llm/llm.js';
 import { nextAtFromHHMM } from '../core/reminders.js';
 import { displayNameOf } from '../core/display-name.js';
@@ -235,8 +236,9 @@ export class AdminBriefingManager {
     try {
       const since = this.now() - WINDOW_MS;
       const groups = groupKeys.slice(0, MAX_GROUPS).map((chatKey) => {
-        const rows = this.store.recent(chatKey, { limit: 500, includeSelf: true, readOnly: true })
-          .filter((m) => Number(m.ts) >= since && m.eventKind !== 'game-secret');
+        const rows = filterBlockedHistory(
+          this.store.recent(chatKey, { limit: 500, includeSelf: true, readOnly: true }), chatKey
+        ).filter((m) => Number(m.ts) >= since && m.eventKind !== 'game-secret');
         return { chatKey, rows, lines: stratifiedLines(rows) };
       }).sort((a, b) => b.rows.length - a.rows.length);
       const totalMessages = groups.reduce((sum, g) => sum + g.rows.length, 0);

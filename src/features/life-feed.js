@@ -72,9 +72,10 @@ export function normalizedLifeFeedConfig(raw = {}) {
     enabled: cfg.enabled === true,
     graduated: cfg.graduated === true,
     sources: (() => {
-      const list = [...new Set(cleanList(cfg.sources, 4, 20)
+      // 缺键 = 老配置/首次运行，沿用默认；显式空数组 = 用户取消了所有来源，必须尊重。
+      if (!Array.isArray(cfg.sources)) return ['bilibili', 'plugin'];
+      return [...new Set(cleanList(cfg.sources, 4, 20)
         .filter((source) => ['bilibili', 'plugin', 'rss'].includes(source)))];
-      return list.length ? list : ['bilibili', 'plugin'];
     })(),
     forageIntervalMinutes: clampInt(cfg.forageIntervalMinutes, B.forageIntervalMinutes.min, B.forageIntervalMinutes.max, 360),
     maxCandidates: clampInt(cfg.maxCandidates, B.maxCandidates.min, B.maxCandidates.max, 200),
@@ -207,6 +208,12 @@ export class LifeFeedManager {
     return normalizedLifeFeedConfig(this.config()?.lifeFeed);
   }
 
+  /** observe/暂停时停止自动觅食：外发搜索请求本身也是"自动行为"。 */
+  #runtimeAllowsAutomation() {
+    const runtime = this.config()?.runtime || {};
+    return runtime.mode === 'active' && !runtime.paused;
+  }
+
   #personaTemplateId() {
     return String(this.config()?.persona?.templateId || '').trim();
   }
@@ -306,6 +313,10 @@ export class LifeFeedManager {
     const cfg = this.#cfg();
     if (!cfg.enabled) {
       this.started = false;
+      return;
+    }
+    if (!this.#runtimeAllowsAutomation()) {
+      this.#schedule(60000);
       return;
     }
     await this.forageNow({ reason: 'schedule' });
@@ -744,11 +755,10 @@ export class LifeFeedManager {
     const now = this.now();
     const day = dayKey(now);
     this.#load();
-    if (!manual) {
-      const quota = this.#quotaLeft(cfg, day);
-      if (quota.shareLeft <= 0) return { error: `今天已经分享 ${cfg.maxOffersPerDay} 次了` };
-      if (quota.pickLeft <= 0) return { error: `今天已经领取 ${cfg.maxPicksPerDay} 次了` };
-    }
+    // 每日分享上限对自动和手动一视同仁（手动原本只扣份额、不检查，能绕过上限）。
+    const quota = this.#quotaLeft(cfg, day);
+    if (quota.shareLeft <= 0) return { error: `今天已经分享 ${cfg.maxOffersPerDay} 次了` };
+    if (!manual && quota.pickLeft <= 0) return { error: `今天已经领取 ${cfg.maxPicksPerDay} 次了` };
     const item = this.state.candidates.find((candidate) => candidate.id === String(id || ''));
     if (!item) return { error: '这条候选不在队列里（可能已过期或已被分享）' };
     item.offeredAt = now;

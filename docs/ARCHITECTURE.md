@@ -74,6 +74,11 @@ pending -> leased -> acked
                  \-> pending  (retryable failure)
                  \-> failed   (permanent or exhausted)
                  \-> held     (an external send may have happened)
+
+incoming reply/at/forward
+  -> deferred (bounded background enrichment) -> pending
+                                              -> acked (silent/catch-up)
+                                              -> dropped (blacklist)
 ```
 
 A unique partial index permits at most one leased run per chat. The Agent only

@@ -20,7 +20,10 @@ if (!dataDir) {
   process.exit(2);
 }
 fs.mkdirSync(dataDir, { recursive: true });
-fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ qzoneInteractions: { enabled: true } }));
+fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+  runtime: { mode: 'active', paused: false },
+  qzoneInteractions: { enabled: true }
+}));
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');

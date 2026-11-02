@@ -27,6 +27,7 @@ fs.mkdirSync(dataDir, { recursive: true });
 const FEED_MINUTES = 1440;
 const REPLY_MINUTES = 120;
 fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+  runtime: { mode: 'active', paused: false },
   qzoneInteractions: {
     enabled: true,
     feedIntervalMinutes: FEED_MINUTES,
@@ -216,6 +217,7 @@ try {
   // ⑥ 到点在活跃时段之外：不调用接口，排到下一个时段开始（07:00）
   mgr.stop();
   fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+    runtime: { mode: 'active', paused: false },
     qzoneInteractions: {
       enabled: true,
       feedIntervalMinutes: FEED_MINUTES,

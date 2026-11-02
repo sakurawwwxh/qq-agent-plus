@@ -1256,6 +1256,19 @@ async function cmdBackup(args) {
   // 包里是 config.json（含密钥）/console-access.txt/messages.sqlite，权限必须收紧；
   // 默认再加密一层 —— 备份一旦离开主机，明文 tar.gz 就是一份完整凭据。
   fs.mkdirSync(cfg.backupDir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(cfg.backupDir, 0o700); } catch { /* Windows/不支持时忽略 */ }
+  // 上一次加密备份如果被 SIGKILL/掉电打断，可能留下未加密的 .plain；
+  // 只清超过 1 小时的，避免误删另一个正在跑的备份。
+  try {
+    const now = Date.now();
+    for (const name of fs.readdirSync(cfg.backupDir)) {
+      if (!/^\.qq-agent-data-.*\.tar\.gz\.plain$/.test(name)) continue;
+      const file = path.join(cfg.backupDir, name);
+      try {
+        if (now - fs.statSync(file).mtimeMs >= 60 * 60 * 1000) fs.rmSync(file, { force: true });
+      } catch { /* 单个残留不影响本次备份 */ }
+    }
+  } catch { /* 目录读不了交由后面的 tar 报错 */ }
   const stamp = formatStamp();
   const outFile = path.join(cfg.backupDir, `qq-agent-data-${stamp}.tar.gz${noEncrypt ? '' : '.enc'}`);
   const plainFile = noEncrypt ? outFile : path.join(cfg.backupDir, `.qq-agent-data-${stamp}.tar.gz.plain`);
@@ -1315,6 +1328,14 @@ async function cmdBackup(args) {
         ? `pid ${lock.holder.pid}${lock.holder.hostname ? ` @ ${lock.holder.hostname}` : ''}`
         : lock.state;
       ngLine(`数据目录仍被实例占用（${who}），已中止备份；请先停止该实例`);
+      return 1;
+    }
+    // 先以 0600 预创建明文包：tar 覆盖已有文件时保留权限，中断也不会留下 umask 决定的 0644。
+    try {
+      fs.closeSync(fs.openSync(plainFile, 'w', 0o600));
+      try { fs.chmodSync(plainFile, 0o600); } catch { /* Windows 忽略 */ }
+    } catch (error) {
+      ngLine(`无法创建临时备份文件：${error?.message || error}，本次备份作废`);
       return 1;
     }
     const tar = runTarCreate(plainFile, cfg.dataDir, credsExtra);
@@ -1465,18 +1486,46 @@ function runTarList(file) {
   return runTarWithFallback(['-tzf', file], { timeout: 120000 });
 }
 
+/** 详细列表（首列是条目类型）：-tzf 只给名字，识别不了符号链接/硬链接/设备节点。 */
+function runTarVerboseList(file) {
+  return runTarWithFallback(['-tvzf', file], { timeout: 120000 });
+}
+
 function runTarExtract(file, destDir) {
   fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
   return runTarWithFallback(['-xzf', file, '-C', destDir], { timeout: 30 * 60 * 1000 });
 }
 
+function unsafeArchiveName(raw) {
+  let name = String(raw || '').replace(/\\/g, '/');
+  while (name.startsWith('./')) name = name.slice(2);
+  name = name.replace(/\/+$/, '');
+  if (!name || name === '.') return false;
+  if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) return true;
+  return name.split('/').some((segment) => {
+    if (!segment || segment === '.' || segment === '..') return true;
+    if (/[<>:"|?*\x00-\x1f]/.test(segment)) return true;
+    // Windows 会剥掉段末尾的点和空格（restore 也在 Windows 上跑）
+    if (segment.replace(/[. ]+$/g, '') !== segment) return true;
+    return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(segment);
+  });
+}
+
 function validateTarEntries(stdout) {
   const entries = String(stdout || '').split('\n').map((line) => line.trim()).filter(Boolean);
-  const unsafe = entries.filter((entry) => entry.startsWith('/')
-    || /^[A-Za-z]:/.test(entry)
-    || entry.split('/').includes('..'));
+  const unsafe = entries.filter((entry) => unsafeArchiveName(entry));
   if (unsafe.length) throw new Error(`归档包含不安全路径：${unsafe.slice(0, 3).join('、')}`);
   return entries;
+}
+
+/** 拒绝符号链接/硬链接/设备/FIFO：恢复时 cpSync 会把链接原样带进数据目录。 */
+function validateTarTypes(stdout) {
+  const lines = String(stdout || '').split('\n').filter((line) => line.trim());
+  const bad = lines.filter((line) => !['-', 'd'].includes(line[0]));
+  if (bad.length) {
+    throw new Error(`归档包含不允许的条目类型（只允许普通文件/目录）：${bad.slice(0, 3).join('、')}`);
+  }
+  return lines;
 }
 
 /** 归档里数据目录可能在顶层，也可能套了一层（`data/config.json`）。 */
@@ -1532,7 +1581,10 @@ async function runBackupDrill({ cfg, from = null, keyFile = '', noEncrypt = fals
     const listed = runTarList(tarFile);
     if (listed.missing) { ngLine('本机缺少 tar，无法演练'); return 1; }
     if (!listed.ok) { ngLine(`归档读取失败：${(listed.stderr || '').trim().split('\n')[0] || listed.code}`); return 1; }
+    const verbose = runTarVerboseList(tarFile);
+    if (!verbose.ok) { ngLine(`归档类型读取失败：${(verbose.stderr || '').trim().split('\n')[0] || verbose.code}`); return 1; }
     const entries = validateTarEntries(listed.stdout);
+    validateTarTypes(verbose.stdout);
     const extractDir = path.join(temp, 'extract');
     const extracted = runTarExtract(tarFile, extractDir);
     if (!extracted.ok) { ngLine(`解包失败：${(extracted.stderr || '').trim().split('\n')[0] || extracted.code}`); return 1; }
@@ -1583,7 +1635,10 @@ async function cmdRestore(args) {
     const listed = runTarList(tarFile);
     if (listed.missing) { ngLine('本机缺少 tar，无法恢复'); return 1; }
     if (!listed.ok) { ngLine(`归档读取失败：${(listed.stderr || '').trim().split('\n')[0] || listed.code}`); return 1; }
+    const verbose = runTarVerboseList(tarFile);
+    if (!verbose.ok) { ngLine(`归档类型读取失败：${(verbose.stderr || '').trim().split('\n')[0] || verbose.code}`); return 1; }
     const entries = validateTarEntries(listed.stdout);
+    validateTarTypes(verbose.stdout);
     noteLine(`归档条目: ${entries.length}`);
     if (dryRun) {
       for (const entry of entries.slice(0, 20)) noteLine(`  ${entry}`);

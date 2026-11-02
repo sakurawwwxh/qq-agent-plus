@@ -24,6 +24,15 @@ test('relationship settings snapshot user input before any async refresh', () =>
     'save must not refresh the form before capturing the user input');
 });
 
+test('定时刷新不覆盖正在编辑的输入框', () => {
+  const fillStart = source.indexOf('function fill(row, config, status = null, people = [])');
+  const fillEnd = source.indexOf('\n  async function readState', fillStart);
+  assert.ok(fillStart >= 0 && fillEnd > fillStart);
+  const body = source.slice(fillStart, fillEnd);
+  assert.match(body, /row\.contains\(document\.activeElement\)/);
+  assert.match(body, /if \(!editing\) input\.value = String\(value\)/);
+});
+
 test('relationship persistence reads config without filling stale values first', () => {
   const persistStart = source.indexOf('async function persistDraft(row, draft, version)');
   const persistEnd = source.indexOf('\n  function save(row)', persistStart);

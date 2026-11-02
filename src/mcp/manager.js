@@ -51,11 +51,27 @@ export class McpManager {
     this.defs = [];
     this.generation = 0;
     this.starting = null;
+    this.pendingReload = false;
   }
 
   async start() {
-    if (this.starting) return this.starting;
-    this.starting = this.#start().finally(() => { this.starting = null; });
+    if (this.starting) {
+      // 启动期间又有保存/重载：当前这批配置已经读进 #start 了，必须等它结束后再跑一轮，
+      // 否则第二次保存会静默不生效，直到进程重启。
+      this.pendingReload = true;
+      return this.starting;
+    }
+    this.starting = (async () => {
+      try {
+        await this.#start();
+      } finally {
+        this.starting = null;
+        if (this.pendingReload) {
+          this.pendingReload = false;
+          await this.start();
+        }
+      }
+    })();
     return this.starting;
   }
 
@@ -104,6 +120,7 @@ export class McpManager {
 
   stop() {
     this.generation += 1;
+    this.pendingReload = false;
     for (const entry of this.clients.values()) {
       try { entry.client.stop(); } catch { /* 已停止 */ }
     }

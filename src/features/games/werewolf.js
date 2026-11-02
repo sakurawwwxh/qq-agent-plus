@@ -95,9 +95,13 @@ function parseTarget(state, text) {
     }
     return null;
   }
-  // 名片：允许"守 阿猫"或直接"阿猫"（整句）
-  const bare = t.replace(/^(守|刀|杀|查|毒|救|解毒|我选|选择|投)\s*/g, '').replace(/\s*[!！。.~～…]$/, '').trim();
-  return state.roles.find((r) => r.alive && (r.name === t.replace(/\s*[!！。.~～…]$/, '') || r.name === bare)) || null;
+  // 名片：允许"守 阿猫"或直接"阿猫"（整句）；也接受 "投 @阿猫" 的 @ 前缀
+  const bare = t.replace(/^(守|刀|杀|查|毒|救|解毒|我选|选择|投)\s*/g, '')
+    .replace(/^@\s*/, '')
+    .replace(/\s*[!！。.~～…]$/, '').trim();
+  return state.roles.find((r) => r.alive && (
+    r.name === t.replace(/^@\s*/, '').replace(/\s*[!！。.~～…]$/, '') || r.name === bare
+  )) || null;
 }
 
 /** 夜晚行动提示（开局与每晚结算后各发一次）。 */

@@ -433,12 +433,15 @@ export function registerConfigRoutes(router, deps = {}) {
     // "历史里的旧口癖/自称不作数"（换卡后它会被自己的旧发言锚住，实测能锚一天以上）
     if (patch?.persona && typeof patch.persona === 'object') {
       const before = cfgNow.persona || {};
-      // 时间戳只由服务端写：客户端送来的 changedAt 一律丢弃（否则可以伪造/永久压住"刚换过人设"的提醒）
+      const personaBody = sectionBody(patch.persona);
+      // 时间戳只由服务端写：客户端送来的 changedAt 一律丢弃（否则可以伪造/永久压住"刚换过人设"的提醒）。
+      // `__replace__` 形态必须删替换体里的字段；只删外层节点的话，替换体里的 changedAt 会照样生效。
       delete patch.persona.changedAt;
+      delete personaBody.changedAt;
       const changed = ['roleText', 'templateId', 'behaviorProfile', 'customRules', 'botName',
         'selfNickname', 'participation']
-        .some((key) => String(patch.persona[key] ?? before[key] ?? '') !== String(before[key] ?? ''));
-      if (changed) patch.persona.changedAt = Date.now();
+        .some((key) => String(personaBody[key] ?? before[key] ?? '') !== String(before[key] ?? ''));
+      if (changed) personaBody.changedAt = Date.now();
     }
     // 按群人设同理：哪个群的卡/正文变了，就给那个条目打时间戳（只影响该群，不误报全局）
     if (patch?.personaPerChat && typeof patch.personaPerChat === 'object') {
@@ -795,8 +798,11 @@ export function registerConfigRoutes(router, deps = {}) {
       try { await syncSlangPilot(); }
       catch (error) { warn('黑话语料库重排失败', error); }
     }
-    initPriceFeed(next.api?.priceRemoteUrl || '');
-    initChannelPrices(next.api?.channelPriceFeeds || []);
+    // 前面的 await（MCP/身份库/黑话库）可能持续数秒；期间另一个保存可能改了价目 URL。
+    // 副作用一律用"现在"的配置，不能拿 reload 刚开始时的旧快照把运行态改回去。
+    const latest = getConfig();
+    initPriceFeed(latest.api?.priceRemoteUrl || '');
+    initChannelPrices(latest.api?.channelPriceFeeds || []);
 
     auditWrite('config.reload', 'config', { req, changed: changedTopKeys(previous, next) });
     emit('status', { configUpdated: true });

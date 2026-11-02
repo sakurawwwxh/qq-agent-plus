@@ -167,6 +167,7 @@ async function stickerLookupHint(ctx, key) {
 
 import { normalizeMessageList, safeSlice, sanitizeUserText, textWithQuote, unquoteJsonString, stripQuoteMessageId } from '../core/util.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
+import { matchesBlacklistKeyword } from '../core/keyword-rules.js';
 import { displayNameOf } from '../core/display-name.js';
 import { setMemberNote } from '../memory/memory-global.js';
 import { repairUnescapedStringQuotes } from '../core/json-repair.js';
@@ -2106,9 +2107,10 @@ export function buildToolDefs() {
           if (!humanShare) {
             if (feed.shareMode?.() === 'manual') return err('生活层当前是手动分享模式，等管理员在控制台点分享。', { reportIncident: false });
             if (feed.isShareTarget?.(ctx.chatKey) === false) return err('当前会话不在见闻分享目标里。', { reportIncident: false });
-            const left = feed.shareQuotaLeft?.();
-            if (Number.isFinite(left) && left <= 0) return err('今天的自动分享额度已经用完，明天再继续');
           }
+          // 每日分享上限对人工和自动都生效（手动只跳过“手动模式/目标白名单”这两道，不跳过额度）。
+          const left = feed.shareQuotaLeft?.();
+          if (Number.isFinite(left) && left <= 0) return err('今天的分享额度已经用完，明天再继续');
           const comment = safeSlice(String(args.comment ?? ''), 300);
           const text = buildShareText(item, comment);
           // 先发正文：正文失败时还没发封面，重试不会重复封面；封面失败只降级成文本。
@@ -2429,7 +2431,9 @@ export function buildToolDefs() {
       async execute(ctx, args) {
         try {
           const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          if (!modelVisible(entry) || !filterBlockedHistory([entry], ctx.chatKey).length) {
+            return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          }
           // 存档里已是展开文本（收消息时已展开/之前展开过）→ 直接给，不再请求 QQ
           if (String(entry.text || '').startsWith('[合并转发 共')) {
             return ok({ messageId: entry.mid, text: entry.text, note: '该转发已展开（读的是存档）' });
@@ -2437,6 +2441,11 @@ export function buildToolDefs() {
           const nodes = await readForwardMessages(ctx.onebot, entry.mid);
           const ex = await expandForwardNodes(nodes, { fetchNested: (rid) => readForwardNodesById(ctx.onebot, rid) });
           if (!ex || !ex.text) return err('转发内容为空或已被 QQ 服务端丢弃（发送时间太久）');
+          // 自动展开关闭时正文只在这里取回：写入/返回模型前必须补一次黑名单检查，
+          // 否则“合并转发里的广告”会绕过入站过滤（2026-11-02 全项目审查 P2）。
+          if (matchesBlacklistKeyword(ex.text, getConfig().store?.blacklistKeywords)) {
+            return err('转发内容命中消息关键词黑名单，已拦截，不写入存档。', { reportIncident: false });
+          }
           // 写回存档：一次展开，永久升级这条记录（模型/存档页/金句墙都受益）
           ctx.store.updateByMid(ctx.chatKey, entry.mid, { text: ex.text, appendMedia: ex.media || [] });
           return ok({ messageId: entry.mid, text: ex.text, images: (ex.media || []).length });
@@ -2802,8 +2811,11 @@ export function buildToolDefs() {
       },
       async execute(ctx, args) {
         const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-        // game-secret 的行当作"不存在"：不确认它的存在，也不回正文（2026-09-29 审查 P1）
-        if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+        // game-secret 的行当作"不存在"：不确认它的存在，也不回正文（2026-09-29 审查 P1）。
+        // 屏蔽名单是"历史也不能再进工具结果"：按 mid 直读同样要过滤（2026-11-02 全项目审查 P2）。
+        if (!modelVisible(entry) || !filterBlockedHistory([entry], ctx.chatKey).length) {
+          return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+        }
         return ok({
           messageId: entry.mid,
           time: new Date(entry.ts).toLocaleString('zh-CN', { hour12: false }),

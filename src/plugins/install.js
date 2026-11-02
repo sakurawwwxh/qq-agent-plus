@@ -125,7 +125,8 @@ export function parseTarGz(buffer) {
         : '（符号链接/硬链接/设备节点都不允许）';
       throw fail('E_ARCHIVE', `归档里有不允许的条目类型 ${type}${hint}`);
     }
-    if (!full || full.startsWith('/') || /^[A-Za-z]:/.test(full) || full.split('/').some((seg) => seg === '..')) {
+    if (!full || full.startsWith('/') || /^[A-Za-z]:/.test(full)
+      || full.split('/').some(unsafePathSegment)) {
       throw fail('E_ARCHIVE', `归档里有不安全的路径：${full || '(空)'}`);
     }
     total += size;
@@ -140,11 +141,25 @@ export function parseTarGz(buffer) {
   return entries;
 }
 
+/** 跨平台路径段校验：Windows 会吃掉段末尾的点和空格，必须按“归一化后”的名字判。 */
+function unsafePathSegment(segment) {
+  if (!segment || segment === '.' || segment === '..') return true;
+  // 控制字符、Windows 非法字符与 ADS 冒号：插件包不应包含这些文件名。
+  if (/[<>:"|?*\x00-\x1f]/.test(segment)) return true;
+  const trimmed = segment.replace(/[. ]+$/g, '');
+  // 末尾点/空格（`.. `、`...`、`name.`）在 Win32 打开时会被剥掉，可能变成父目录穿越。
+  if (!trimmed || trimmed !== segment) return true;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(trimmed)) return true;
+  return false;
+}
+
+
 /** 把条目写进目标目录（只在解析器已经校验过路径的前提下调用）。 */
 export function extractEntries(entries, targetDir) {
+  const root = path.resolve(targetDir);
   for (const entry of entries) {
-    const full = path.join(targetDir, entry.name);
-    if (full !== targetDir && !full.startsWith(targetDir + path.sep)) {
+    const full = path.resolve(root, entry.name);
+    if (full !== root && !full.startsWith(root + path.sep)) {
       throw fail('E_ARCHIVE', `拒绝写出目录外：${entry.name}`);
     }
     if (entry.type === 'dir') { fs.mkdirSync(full, { recursive: true }); continue; }

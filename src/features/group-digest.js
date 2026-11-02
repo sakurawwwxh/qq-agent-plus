@@ -6,6 +6,7 @@ import { DATA_DIR, getConfig } from '../core/config.js';
 import { vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { todayKey } from '../core/util.js';
 import { canRun } from '../core/access.js';
+import { filterBlockedHistory } from '../core/blocklist.js';
 import { chatCompletion, addUsage, emptyUsage } from '../llm/llm.js';
 import { nextAtFromHHMM } from '../core/reminders.js';
 import { displayNameOf } from '../core/display-name.js';
@@ -237,8 +238,9 @@ export class GroupDigestManager {
     const settle = (state, detail = {}) => { settled = true; if (effectId) this.effects.settle(effectId, state, detail); };
     try {
       const since = this.now() - WINDOW_MS;
-      const rows = this.store.recent(chatKey, { limit: 400, includeSelf: true, readOnly: true })
-        .filter((m) => Number(m?.ts) >= since);
+      const rows = filterBlockedHistory(
+        this.store.recent(chatKey, { limit: 400, includeSelf: true, readOnly: true }), chatKey
+      ).filter((m) => Number(m?.ts) >= since);
       // 媒体/分享占位不是系统噪声：日报里保留它们，才能看到群里发过图、卡片、转发和分享。
       const mediaPlaceholder = /^\[(?:图片|表情包|卡片|合并转发|视频|语音|B站分享|插件分享)/;
       const speakable = rows.filter((m) => {

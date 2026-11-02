@@ -93,10 +93,13 @@ import { esc } from './core/dom.js';
       '#cfg-relationship-daily-budget': settings.maxEvaluationsPerDay,
       '#cfg-relationship-friction-half-life': settings.frictionHalfLifeHours
     };
+    // 15 秒轮询不能覆盖用户正在编辑但还没保存的值：整行有焦点时只刷新状态/预览，不动输入框。
+    const editing = row.contains(document.activeElement)
+      && document.activeElement?.matches('input, textarea, select');
     for (const [selector, value] of Object.entries(fields)) {
       const input = row.querySelector(selector);
       if (input) {
-        input.value = String(value);
+        if (!editing) input.value = String(value);
         input.disabled = config?.identityPilot?.enabled !== true;
       }
     }

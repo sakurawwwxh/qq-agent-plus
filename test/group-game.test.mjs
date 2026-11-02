@@ -477,6 +477,36 @@ test('报名扫描不因 deferred 行错过 45 秒窗口：占位正文里的报
     '放行后不应重复报名');
 });
 
+test('引用回复里的“猜 42”不能盖过玩家真正说的“猜 10”', async () => {
+  const w = makeWorld({ players: 6, rng: () => 0.42 });
+  const started = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  assert.equal(w.mgr.games.get('group:1').state.secret, 43);
+  say(w.store, 'u1', '群友1', '[引用#9·我：猜 42]猜 10');
+  await w.mgr.handleNewMessages('group:1');
+  const state = w.mgr.games.get('group:1').state;
+  assert.equal(state.low, 10, '必须按真实正文猜 10，而不是引用块里的 42');
+  assert.equal(state.high, 101);
+});
+
+test('handleNewMessages 遇到 deferred 行先停住，放行后再计猜测', async () => {
+  const w = makeWorld({ players: 6, rng: () => 0.42 });
+  const started = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(started.ok, true, JSON.stringify(started));
+  const before = Number(w.mgr.games.get('group:1').lastSeenId) || 0;
+  const deferred = w.store.appendIncoming('group:1', {
+    mid: 'deferred-guess', ts: Date.now(), senderId: 'u1', senderName: '群友1', text: '猜 10', media: []
+  }, { deferred: true });
+
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(w.mgr.games.get('group:1').state.low, 0, 'deferred 正文不能被当成猜测');
+  assert.equal(Number(w.mgr.games.get('group:1').lastSeenId) || 0, before, '水位不能越过 deferred');
+
+  w.store.finalizeDeferred('group:1', deferred.id);
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(w.mgr.games.get('group:1').state.low, 10, '放行后要补上这次猜测');
+});
+
 test('审查回归：报名消息还是 pending（模型那边在飞）也必须能报上名', async () => {
   // 以前报名扫描带 readOnly（== 只看 acked），同一群里正好有一次模型运行在飞时，
   // 这批「我玩」对引擎不可见 → 45 秒到点直接"人数不够"（2026-09-29 审查 P2）

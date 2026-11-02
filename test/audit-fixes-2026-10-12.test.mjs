@@ -68,6 +68,24 @@ test('P2：get_message_detail 的 reply 与补出的引用前缀都弱化，id �
   assert.equal(payload.reply.senderId, '2003', 'reply.senderId 保留');
 });
 
+test('P2：get_message_detail 按 mid 读被屏蔽成员的历史也拿不到正文', async () => {
+  const { updateConfig, getConfig } = await import('../src/core/config.js');
+  const before = structuredClone(getConfig().blocklist || {});
+  try {
+    updateConfig({ blocklist: { ...before, 1: ['2002'] } });
+    const entry = {
+      mid: '-124', ts: 1700000000000, self: false, senderId: '2002', senderName: '群友',
+      text: '屏蔽前的历史正文', eventKind: 'message', reply: null
+    };
+    const ctx = { chatKey: 'group:1', store: { findByMid: () => entry, recent: () => [] } };
+    const result = await tool('get_message_detail').execute(ctx, { messageId: '-124' });
+    assert.equal(result.isError, true, JSON.stringify(result));
+    assert.ok(!JSON.stringify(result).includes('屏蔽前的历史正文'));
+  } finally {
+    updateConfig({ blocklist: before });
+  }
+});
+
 test('P2：quotePrefixFor 从结构化 reply 补前缀时是弱化形态（buildQuoteRef 内洗的不变量）', () => {
   const entry = {
     text: '展开后的正文（没有前缀）',
