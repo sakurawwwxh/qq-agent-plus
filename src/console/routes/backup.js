@@ -57,6 +57,19 @@ export function registerBackupRoutes(router, deps = {}) {
     child.on('error', (error) => finish({ ok: false, code: null, stdout, stderr: `${stderr}${error?.message || error}` }));
     child.on('close', (code) => finish({ ok: code === 0, code, timedOut: false, stdout, stderr }));
   });
+  /** 实际服务名：deploy.sh --service 自定义过时必须与部署元数据/环境变量同口径。 */
+  const serviceName = () => {
+    const deploymentService = (() => {
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(ROOT, '.deployment.json'), 'utf8'));
+        return String(meta?.service || '').trim();
+      } catch { return ''; }
+    })();
+    return process.env.QQ_AGENT_SERVICE || deploymentService || 'qq-agent-linux.service';
+  };
+  /** shell 单引号转义：打印给管理员复制执行的命令必须能处理空格/特殊字符。 */
+  const shellQuote = (value) => `'${String(value).replace(/'/g, `'\''`)}'`;
+
   /**
    * 把会 stop 自身服务的 ops 命令排进独立 transient unit：
    * 直接用 spawn 时 console 和 ops 在同一个 service cgroup，stop 会把自己一起杀掉。
@@ -71,16 +84,7 @@ export function registerBackupRoutes(router, deps = {}) {
       return { ok: false, error: '本机没有可用的 systemd-run；请用 SSH 执行 ops 命令' };
     }
     const dataDirAbs = path.resolve(DATA_DIR);
-    // 服务名优先取部署元数据：deploy.sh --service <自定义名> 时硬编码的 qq-agent-linux
-    // 会让 ops 判成"服务未加载"，于是备份不停服务（tar 正在写的 SQLite）、恢复在服务运行时
-    // 换数据目录。与环境变量、AutoUpdateManager.deployment() 同一口径。
-    const deploymentService = (() => {
-      try {
-        const meta = JSON.parse(fs.readFileSync(path.join(ROOT, '.deployment.json'), 'utf8'));
-        return String(meta?.service || '').trim();
-      } catch { return ''; }
-    })();
-    const service = process.env.QQ_AGENT_SERVICE || deploymentService || 'qq-agent-linux.service';
+    const service = serviceName();
     const unit = `qq-agent-${kind}-${Date.now()}`;
     const setenv = (key, value) => `--setenv=${key}=${value}`;
     const args = [
@@ -128,8 +132,12 @@ export function registerBackupRoutes(router, deps = {}) {
       dir,
       keyExists: fs.existsSync(backupKeyPath()),
       files,
+      // 必须带 --data/--service：SSH 会话里没有服务进程的环境变量，照默认值执行会
+      // 恢复到 /data/qq-agent/data、停错服务（2026-11-01 盲审 P1）。
       restoreCli: files[0]
-        ? `node src/ops.js restore --from ${path.join(dir, files[0].name)} --confirm`
+        ? `node src/ops.js restore --from ${shellQuote(path.join(dir, files[0].name))}`
+          + ` --data ${shellQuote(path.resolve(DATA_DIR))}`
+          + ` --service ${shellQuote(serviceName())} --confirm`
         : ''
     });
   });
@@ -165,11 +173,14 @@ export function registerBackupRoutes(router, deps = {}) {
     const full = path.join(backupDirPath(), name);
     if (!fs.existsSync(full)) return json(res, 404, { ok: false, error: '备份文件不存在' });
     const result = await runOpsCommand(['restore', '--from', full, '--dry-run', '--data', DATA_DIR], 5 * 60 * 1000);
+    const output = `${result.stdout}${result.stderr}`.slice(-4000);
     return json(res, result.ok ? 200 : 500, {
       ok: result.ok,
       code: result.code,
       timedOut: result.timedOut,
-      output: `${result.stdout}${result.stderr}`.slice(-4000)
+      output,
+      // 前端 api() 只显示 error：失败时必须把 ops 的原因带出来，否则页面只剩 HTTP 500。
+      ...(result.ok ? {} : { error: output.slice(-400) || `备份校验失败（退出码 ${result.code}）` })
     });
   });
 

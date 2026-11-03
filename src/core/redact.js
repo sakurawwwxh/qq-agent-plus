@@ -30,7 +30,11 @@ export function redactSecretValue(value) {
     // 裸的供应商密钥前缀（sk-/pk-/rk-，OpenAI/Stripe 风格；连字符与下划线两种分隔都认，
     // Stripe 是 sk_live_… 形态）：错误文本与粘贴的配置里常以裸串出现，前面几种形态
     // （查询串 / JSON / 头）都拦不住它。命中面同"宁多脱勿漏"，至少 8 位才算（2026-09-30 #6 补）。
-    .replace(/\b(sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gi, '$1-[redacted]');
+    .replace(/\b(sk|pk|rk)[-_][A-Za-z0-9_-]{8,}/gi, '$1-[redacted]')
+    // GitHub / GitLab / Slack / AWS / JWT 等常见凭据前缀（审计与日志共用）。
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})/g, '[redacted]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[redacted]');
 }
 
 /** 日志行用：值形态脱敏 + 去 NUL + 掐头去尾空白 + 截断。 */

@@ -36,6 +36,8 @@ test('不安全的正则：顺序量词/嵌套重复/超大重复/断言/反向�
   assert.match(validateBlacklistKeywordRules(['re:^a+a+a+b$']), /不限长度的量词/);
   assert.match(validateBlacklistKeywordRules(['re:^a{1,}a{2,}b$']), /不限长度的量词/);
   assert.match(validateBlacklistKeywordRules(['re:(a+)+']), /量词|不能重复/);
+  // ? 也是量词：^(a?){200}b$ 是嵌套量词爆炸，不能漏检（2026-11-01 盲审）
+  assert.match(validateBlacklistKeywordRules(['re:^(a?){200}b$']), /不能重复|变长量词/);
   assert.match(validateBlacklistKeywordRules(['re:(?=广告)广告']), /不支持/);
   assert.match(validateBlacklistKeywordRules(['re:(a)\\1']), /不支持/);
   assert.match(validateBlacklistKeywordRules(['re:^a{1,100000}$']), /上下界/);

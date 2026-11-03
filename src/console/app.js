@@ -2173,9 +2173,12 @@ function buildApp({
     let value = null;
     try {
       const usage = buildUsageStats({ range: 'today' });
+      // 与 /api/status 同口径：台账包含记忆整理/日报等不写 session 的后台调用，
+      // 监控里的今日花费不能系统性偏低（2026-11-01 盲审 P2）。
+      const ledgerCost = Number(sessions.todayUsage(todayKey())?.estimatedYuan) || 0;
       value = {
         calls: Number(usage?.totals?.runs) || 0,
-        cost: Math.round((Number(usage?.totals?.cost) || 0) * 10000) / 10000,
+        cost: Math.round(Math.max(Number(usage?.totals?.cost) || 0, ledgerCost) * 10000) / 10000,
         promptTokens: Number(usage?.totals?.promptTokens) || 0,
         completionTokens: Number(usage?.totals?.completionTokens) || 0,
         totalTokens: Number(usage?.totals?.totalTokens) || 0

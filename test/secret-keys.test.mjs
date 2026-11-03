@@ -108,14 +108,18 @@ test('sanitizeConfigSecrets：MCP env/args 用 ****** 掩码，不能把真 Key 
       servers: [{
         id: 'github',
         command: 'npx',
-        args: ['-y', '@x/y', '--token=ghp_secret'],
-        env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_secret', ROOT: '/data/knowledge' }
+        args: ['-y', '@x/y', '--token=ghp_secret', '--api-key', 'sk-live-secret'],
+        env: { GITHUB_TOKEN: 'ghp_secret', DATABASE_URL: 'postgres://u:p@h/db', ROOT: '/data/knowledge' }
       }]
     }
   });
   const server = out.mcp.servers[0];
-  assert.equal(server.env.GITHUB_PERSONAL_ACCESS_TOKEN, '******');
-  assert.equal(server.env.ROOT, '/data/knowledge');
-  assert.equal(server.args.at(-1), '******');
+  assert.equal(server.env.GITHUB_TOKEN, '******');
+  assert.equal(server.env.DATABASE_URL, '******', 'env 值一律掩码（键名不可靠）');
+  assert.equal(server.env.ROOT, '******');
+  assert.equal(server.args.at(-1), '******', '分参数写法的值也要掩');
+  assert.equal(server.args.at(-2), '--api-key');
   assert.equal(server.args[0], '-y');
+  assert.ok(!JSON.stringify(out).includes('sk-live-secret'));
+  assert.ok(!JSON.stringify(out).includes('ghp_secret'));
 });

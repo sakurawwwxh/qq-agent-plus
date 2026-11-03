@@ -62,3 +62,65 @@ test('同一 method+path 不允许重复注册（后者会被静默遮蔽）', (
   }
   assert.deepEqual(duplicates, [], `重复注册：${duplicates.join(' / ')}`);
 });
+
+// 顺序敏感的真正意义：后注册的字面量路由不能被前面的参数/正则路由抢先命中。
+// 现有快照只对比字符串，允许“先写 /api/x/:id、后写 /api/x/y，再 --write”这种静默遮蔽
+//（2026-11-01 盲审 P2）。
+function matcherFor(routePath) {
+  // listRoutes 把 RegExp 投影成字符串；现有正则路由统一以 ^ 开头，字面量路径不会。
+  if (routePath.startsWith('/^')) {
+    const regex = /^\/(.*)\/([a-z]*)$/.exec(routePath);
+    if (!regex) return null;
+    try { return new RegExp(regex[1], regex[2]); } catch { return null; }
+  }
+  if (!routePath.includes(':')) return null;
+  const escape = (s) => [...s].map((ch) => ('\\^$.*+?()[]{}|'.includes(ch) ? `\\${ch}` : ch)).join('');
+  const source = `^${routePath.split('/').map((seg) => (seg.startsWith(':') ? '[^/]+' : escape(seg))).join('/')}$`;
+  return new RegExp(source);
+}
+
+function findShadowed(routes) {
+  const earlier = [];
+  const shadowed = [];
+  for (const route of routes) {
+    const isRegex = route.path.startsWith('/^');
+    const isPattern = !isRegex && route.path.includes(':');
+    if (!isRegex && !isPattern) {
+      for (const prev of earlier) {
+        if (prev.method !== route.method) continue;
+        const matcher = matcherFor(prev.path);
+        if (matcher && matcher.test(route.path)) shadowed.push(`${route.method} ${route.path} ← ${prev.path}`);
+      }
+    }
+    earlier.push(route);
+  }
+  return shadowed;
+}
+
+test('遮蔽检查器自身有效：参数路由与正则路由都能抓到后面的字面量', () => {
+  const synthetic = [
+    { method: 'GET', path: '/api/items/:id' },
+    { method: 'GET', path: String(/^\/api\/items\/\d+$/) },
+    { method: 'GET', path: '/api/items/special' },
+    { method: 'GET', path: '/api/items/123' },
+    { method: 'GET', path: '/api/items/special/extra' }
+  ];
+  assert.deepEqual(findShadowed(synthetic), [
+    'GET /api/items/special ← /api/items/:id',
+    'GET /api/items/123 ← /api/items/:id',
+    'GET /api/items/123 ← /^\\/api\\/items\\/\\d+$/'
+  ]);
+});
+
+test('字面量路由不会被前面的参数/正则路由遮蔽', () => {
+  const app = createApp({ log: () => {} });
+  installManualFriendReviewRoute(app);
+  let routes;
+  try {
+    routes = app.listRoutes();
+  } finally {
+    try { app.store?.close?.(); } catch { /* 已关闭 */ }
+  }
+  const shadowed = findShadowed(routes);
+  assert.deepEqual(shadowed, [], `这些字面量路由会被前面的模式路由遮蔽：\n${shadowed.join('\n')}`);
+});

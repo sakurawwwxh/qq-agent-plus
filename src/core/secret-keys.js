@@ -108,10 +108,24 @@ export function sanitizeConfigSecrets(cfg) {
       const original = byId.get(String(server?.id || '')) || {};
       const env = {};
       for (const [key, value] of Object.entries(original.env || {})) {
-        env[key] = SECRET_KEY_PATTERN.test(key) && String(value ?? '').trim() ? '******' : value;
+        // env 的键名不可靠（GITHUB_TOKEN / DATABASE_URL / SENTRY_AUTH_TOKEN 都可能不含
+        // 模式里那几个词），与 doctor 同口径：值一律掩码，键名保留。前端保存时按
+        // id+key 的 '******' 回填原值（routes/config.js 已处理）。
+        env[key] = String(value ?? '').trim() ? '******' : value;
       }
-      const args = (Array.isArray(original.args) ? original.args : []).map((arg) =>
-        /(token|key|secret|password)=/i.test(String(arg)) ? '******' : arg);
+      // args 除了 --token=xxx 的内联形态，还要掩“敏感 flag 的下一个参数”：
+      // ["--api-key", "sk-live"] 这种分参数写法原先会原样下发。
+      const flag = /^--?(?:.*[-_])?(?:key|token|secret|pass(word|wd)?|auth|authorization|header|cookie)/i;
+      const args = [];
+      const list = Array.isArray(original.args) ? original.args : [];
+      for (let i = 0; i < list.length; i += 1) {
+        const arg = String(list[i] ?? '');
+        args.push(/(token|key|secret|password)=/i.test(arg) ? '******' : arg);
+        if (!arg.includes('=') && flag.test(arg) && i + 1 < list.length) {
+          args.push('******');
+          i += 1;
+        }
+      }
       return { ...server, env, args };
     });
   }

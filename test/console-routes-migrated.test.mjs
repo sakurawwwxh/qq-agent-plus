@@ -17,10 +17,17 @@ const targets = [
   'src/console/manual-friend-review-route.js',
   'src/server.js'
 ];
-try {
-  for (const name of fs.readdirSync(ROUTE_DIR)) {
-    if (name.endsWith('.js')) targets.push(path.join(ROUTE_DIR, name));
+function walkJs(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walkJs(full, out);
+    else if (entry.isFile() && entry.name.endsWith('.js')) out.push(full);
   }
+  return out;
+}
+try {
+  // 递归：以后按子目录拆 routes/ 时，auth:false / if 链检查不能静默漏检（2026-11-01 盲审 P2）。
+  targets.push(...walkJs(ROUTE_DIR));
 } catch { /* 还没有 routes/ 目录 */ }
 
 const sources = targets.map((file) => ({
