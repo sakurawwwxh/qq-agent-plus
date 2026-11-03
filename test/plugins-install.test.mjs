@@ -58,6 +58,41 @@ test('tar 解析：普通文件/目录/./ 前缀都能解；外层单目录自�
   assert.equal(hasRootManifest, false, '解析器本身不做剥壳（剥壳在安装路径上，见下一条）');
 });
 
+function fixTarChecksum(buffer) {
+  for (let i = 148; i < 156; i += 1) buffer[i] = 0x20;
+  let sum = 0;
+  for (let i = 0; i < 512; i += 1) sum += buffer[i];
+  buffer.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii');
+}
+
+test('tar 数字字段必须严格是八进制；base-256/非法字符直接拒绝', () => {
+  const original = buildTar([
+    { name: 'plugin.json', data: '{}' },
+    { name: 'index.mjs', data: 'x' }
+  ], { compress: false });
+  for (const [label, mutate] of [
+    ['非法八进制', (b) => b.write('00000000008\0', 124, 'ascii')],
+    ['base-256', (b) => { b.fill(0, 124, 136); b[124] = 0x80; }]
+  ]) {
+    const bad = Buffer.from(original);
+    mutate(bad);
+    fixTarChecksum(bad);
+    assert.throws(() => parseTarGz(bad), /数字字段/, label);
+  }
+});
+
+test('安装前校验包内 engines.minVersion，避免升级后才在加载期消失', async () => {
+  const tarball = buildTar([
+    { name: 'plugin.json', data: manifest('demo', { engines: { minVersion: '9.9.9' } }) },
+    { name: 'index.mjs', data: 'export const ok = true;\n' }
+  ]);
+  await assert.rejects(
+    () => installPlugin({ tarball, id: 'demo', dataDir, hostVersion: '0.9.13' }),
+    /E_ENGINE|要求宿主/
+  );
+  assert.equal(fs.existsSync(path.join(pluginsRoot, 'demo')), false, '失败不能留下半装目录');
+});
+
 test('tar 解析：目录穿越 / 绝对路径 / 符号链接 / pax 长路径头 一律拒绝', () => {
   const cases = [
     [[{ name: dotDot('evil.mjs'), data: 'x' }], /不安全的路径/],

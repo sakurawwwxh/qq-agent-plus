@@ -28,7 +28,7 @@ Cookie 由宿主加密保存、立即生效；控制台插件设置里手动粘 
 | `watch` | 取 DASH 音视频，宿主合流 mp4，按设置发到当前群 | 否（高清需要） |
 | `interact` | 点赞 / 投币 / 收藏 / 关注（可取消）/ **一键三连**（点赞+投币 1 枚+收藏到默认收藏夹，已做过的自动跳过） | 是 |
 | `comment` | 发评论；传 `rpid` 时内联回复那条具体评论（`root` 用于楼中楼），`timestamps:true` 把正文里的 `mm:ss` 换成可跳转时间戳链接 | 是 |
-| `danmaku` | 读弹幕 / 发弹幕 | 发弹幕需要 |
+| `danmaku` | 读弹幕；发弹幕用 `danmaku_send` | 否 |
 
 只读视频工具（`video` / `read` / `watch` / `danmaku`）除裸 BV 号、av 号外，也接受
 `bilibili.com/video/...` 链接和 `b23.tv` 分享短链。短链只经宿主 HTTP 能力跟随，

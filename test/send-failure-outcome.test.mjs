@@ -62,6 +62,22 @@ it('确认未送达的裸 fetch 失败记成 failed（可重试），不占"待�
   store.close();
 });
 
+it('重试等待中暂停/停止：保留第一次"确定未送达"的定性，不升级成 unknown', async () => {
+  const store = new ChatStore(0, { dataDir: dir });
+  let calls = 0;
+  const sender = new SendQueue({
+    store,
+    onebot: { sendText: async () => { calls += 1; throw fetchFailure('ECONNREFUSED'); } }
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+  await assert.rejects(() => sender.sendTextBatch('group:1', ['hi'], { signal: controller.signal }));
+  assert.equal(calls, 1, '中止后不能再发第二次');
+  assert.equal(store.getChatMeta('group:1').held, 0, '确定没送达不能变成待核对');
+  assert.equal(outboxState(store, 'group:1'), 'failed');
+  store.close();
+});
+
 it('结果未知的失败仍记成 unknown（持有待人工核对）', async () => {
   const store = new ChatStore(0, { dataDir: dir });
   const sender = new SendQueue({ store, onebot: { sendText: async () => { throw fetchFailure('ECONNRESET'); } } });

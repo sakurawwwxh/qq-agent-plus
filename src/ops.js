@@ -33,6 +33,7 @@ import { idList } from './core/list.js';
 import { listSessionFiles, readSessionFile } from './core/session-files.js';
 import { EffectLedger } from './core/effects.js';
 import { inspectInstanceLock } from './core/instance-lock.js';
+import { backupKeyFile, loadBackupKey } from './core/backup-key.js';
 import {
   storageBreakdown, sessionStorage, redactedConfig, pluginSummary, incidentSummary,
   effectSummary, logTail, buildDiagnoseEntries, writeDiagnoseArchive
@@ -1186,8 +1187,11 @@ function cmdScan(args) {
 // GNU tar 会把 "C:/..." 当成远程主机（Windows 盘符），失败时退回不带 --force-local 的形式
 // （bsdtar 不认该选项，但它本身不解析远程归档，可以直接处理盘符路径）。
 function runTarCreate(outFile, dataDir, extra = null) {
-  const parent = path.dirname(dataDir);
-  const base = path.basename(dataDir);
+  // 数据目录可能是软链（数据盘单独挂载的受支持布局）。tar 默认不跟随软链，
+  // 直接归档链接本身会生成恢复侧明确拒绝的 symlink 条目，备份看似成功却不可恢复。
+  const sourceDir = fs.realpathSync(dataDir);
+  const parent = path.dirname(sourceDir);
+  const base = path.basename(sourceDir);
   // 部署快照 / 更新缓存都是可重建的大目录；与 scripts/manage.mjs backup 的排除清单保持一致，
   // 否则每周定时备份会把它们整套再打包一份（2026-10 审查 P3）。
   const excludes = ['--exclude=deploy-backups', '--exclude=update-work', '--exclude=update-repository.git',
@@ -1308,12 +1312,17 @@ async function cmdBackup(args) {
   }
 
   let serviceManaged = false;
+  let serviceWasActive = false;
+  let restartFailed = false;
   let tarOk = false;
   try {
     serviceManaged = serviceLoaded(cfg.service);
     if (!serviceManaged) {
       skipLine(`服务 ${cfg.service} 不存在或不可用：跳过停服务（直接打包）`);
     } else {
+      // 原本停着的服务，备份完不能被顺手拉起来；原本在跑的才恢复。
+      const activeProbe = systemctlUser(['is-active', cfg.service]);
+      serviceWasActive = String(activeProbe.stdout || '').trim() === 'active';
       const stop = systemctlUser(['stop', cfg.service], { timeout: 60000 });
       if (!stop.ok) {
         // 备份要打的是"停服后的一致性快照"：停不下来就宁可不打，也不生成可能损坏的归档。
@@ -1347,13 +1356,19 @@ async function cmdBackup(args) {
     if (credsTemp) {
       try { fs.rmSync(credsTemp, { recursive: true, force: true }); } catch { /* 忽略 */ }
     }
-    // 无论 tar 成败都要把服务拉起来——备份失败可以下次再试，机器人停着才是事故。
-    if (serviceManaged) {
+    // 只恢复原本在跑的服务；备份前就停着的保持停止，不能被一次备份顺手拉起。
+    if (serviceManaged && serviceWasActive) {
       const start = systemctlUser(['start', cfg.service], { timeout: 60000 });
       await sleep(3000);
       const state = systemctlUser(['is-active', cfg.service]);
+      const active = String(state.stdout || '').trim() === 'active';
       noteLine(`服务: ${state.stdout.trim() || text(state) || '未知'}`);
-      if (!start.ok) ngLine(`服务重启失败（返回码 ${start.code}）：请手动检查 systemctl --user status ${cfg.service}`);
+      if (!start.ok || !active) {
+        restartFailed = true;
+        ngLine(`服务重启失败（返回码 ${start.code}）：请手动检查 systemctl --user status ${cfg.service}`);
+      }
+    } else if (serviceManaged) {
+      noteLine(`服务 ${cfg.service} 备份前未运行，保持停止状态`);
     }
   }
   if (!tarOk) {
@@ -1364,7 +1379,7 @@ async function cmdBackup(args) {
   // 服务已经恢复，加密放在这里做：不占停机时间。
   if (!noEncrypt) {
     try {
-      await encryptBackupFile(plainFile, outFile, loadBackupKey({ create: true, keyFile }));
+      await encryptBackupFile(plainFile, outFile, loadBackupKey({ create: true, keyFile, note: noteLine }));
       try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
     } catch (error) {
       try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
@@ -1384,44 +1399,16 @@ async function cmdBackup(args) {
   okLine(`备份完成: ${size} MB ${outFile}`);
   if (!noEncrypt) noteLine(`加密: AES-256-GCM；密钥 ${String(process.env.QQ_AGENT_BACKUP_KEY || '').trim() ? '来自环境变量' : keyFile || keyPath}`);
   for (const item of backups.slice(0, keep)) noteLine(`  ${item.name}`);
+  if (restartFailed) {
+    ngLine('备份文件已生成，但服务未能恢复运行：本次命令按失败返回，请检查服务状态');
+    return 1;
+  }
   return 0;
 }
 
 // ─────────────────────────── 备份加密 / 恢复 ───────────────────────────
 
 const BACKUP_MAGIC = Buffer.from('QQAGENT1');
-
-function backupKeyFile(explicit = '') {
-  return explicit || envStr('QQ_AGENT_BACKUP_KEY_FILE', path.join(os.homedir(), '.config', 'qq-agent', 'backup.key'));
-}
-
-/** 密钥来源：QQ_AGENT_BACKUP_KEY（64 位 hex 或口令）优先，其次密钥文件；备份时缺文件会自动生成。 */
-function loadBackupKey({ create = false, keyFile = '' } = {}) {
-  const envKey = String(process.env.QQ_AGENT_BACKUP_KEY || '').trim();
-  if (envKey) {
-    if (/^[0-9a-fA-F]{64}$/.test(envKey)) return Buffer.from(envKey, 'hex');
-    // 口令：固定 salt 是为了同一口令在不同机器上能解开同一份备份（备份恢复不依赖本机状态）。
-    return crypto.scryptSync(envKey, 'qq-agent-backup-v1', 32);
-  }
-  const file = backupKeyFile(keyFile);
-  try {
-    const raw = fs.readFileSync(file);
-    const textValue = raw.toString('utf8').trim();
-    if (/^[0-9a-fA-F]{64}$/.test(textValue)) return Buffer.from(textValue, 'hex');
-    if (raw.length === 32) return raw;
-    throw new Error('密钥文件格式不对（需要 64 位十六进制或 32 字节）');
-  } catch (error) {
-    if (!create) {
-      throw new Error(`找不到可用的备份密钥：${file}（${error?.message || error}）。`
-        + '请设置 QQ_AGENT_BACKUP_KEY 或用 --key-file 指定');
-    }
-    const key = crypto.randomBytes(32);
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(file, `${key.toString('hex')}\n`, { mode: 0o600 });
-    noteLine(`已生成备份密钥: ${file}（请与备份分开保管；丢了备份无法恢复）`);
-    return key;
-  }
-}
 
 async function encryptBackupFile(inFile, outFile, key) {
   const iv = crypto.randomBytes(12);
@@ -1662,7 +1649,11 @@ async function cmdRestore(args) {
     if (!dataRoot) { ngLine('归档里没有 config.json，不像 QQ Agent 数据目录'); return 1; }
 
     const stamp = formatStamp();
-    const pre = `${cfg.dataDir}.pre-restore-${stamp}`;
+    // 数据目录可能是软链：恢复要替换链接指向的真实目录，保留软链布局，
+    // 否则 rename 会把链接本身挪走、cpSync 在原路径建一个真实目录，数据落到错误磁盘。
+    let targetDir = cfg.dataDir;
+    try { targetDir = fs.realpathSync(cfg.dataDir); } catch { /* 目录不存在/断链：按原路径处理 */ }
+    const pre = `${targetDir}.pre-restore-${stamp}`;
     const serviceManaged = serviceLoaded(cfg.service);
     if (!serviceManaged) {
       skipLine(`服务 ${cfg.service} 不存在或不可用：跳过停服务（只恢复数据）`);
@@ -1691,36 +1682,36 @@ async function cmdRestore(args) {
     let committed = false;
     let rolledBackPrevious = false;
     let previousMoved = false;
-    const hadPrevious = exists(cfg.dataDir);
+    const hadPrevious = exists(targetDir);
     try {
-      if (hadPrevious) { fs.renameSync(cfg.dataDir, pre); previousMoved = true; }
-      fs.mkdirSync(path.dirname(cfg.dataDir), { recursive: true });
-      fs.cpSync(dataRoot, cfg.dataDir, { recursive: true, force: true });
+      if (hadPrevious) { fs.renameSync(targetDir, pre); previousMoved = true; }
+      fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+      fs.cpSync(dataRoot, targetDir, { recursive: true, force: true });
       // 旧归档可能带着源主机的锁/中断标记（pid/hostname 都不属于本机）：恢复后必须清掉。
       for (const runtimeFile of ['.server.lock', '.auto-update.lock', '.auto-update.lock.takeover',
         '.deploy.lock', '.deploy.lock.takeover', '.deploy-in-progress']) {
-        try { fs.rmSync(path.join(cfg.dataDir, runtimeFile), { recursive: true, force: true }); } catch { /* 忽略 */ }
+        try { fs.rmSync(path.join(targetDir, runtimeFile), { recursive: true, force: true }); } catch { /* 忽略 */ }
       }
-      try { fs.chmodSync(cfg.dataDir, 0o700); } catch { /* 忽略 */ }
+      try { fs.chmodSync(targetDir, 0o700); } catch { /* 忽略 */ }
       committed = true;
     } catch (error) {
       ngLine(`恢复失败：${error?.message || error}`);
       // cpSync 在创建目标目录之后失败会留下半套数据；旧逻辑只在"目标不存在"时才回滚，
       // 结果服务会带着部分恢复的目录启动（2026-10-31 盲审 P1）。这里先挪走半成品再换回旧数据。
       try {
-        if (previousMoved && exists(cfg.dataDir)) {
+        if (previousMoved && exists(targetDir)) {
           if (hadPrevious) {
-            const partial = `${cfg.dataDir}.restore-partial-${stamp}`;
-            fs.renameSync(cfg.dataDir, partial);
+            const partial = `${targetDir}.restore-partial-${stamp}`;
+            fs.renameSync(targetDir, partial);
             ngLine(`部分恢复的数据留在 ${partial}`);
           } else {
-            fs.rmSync(cfg.dataDir, { recursive: true, force: true });
+            fs.rmSync(targetDir, { recursive: true, force: true });
           }
         }
         if (previousMoved && hadPrevious && exists(pre)) {
-          fs.renameSync(pre, cfg.dataDir);
+          fs.renameSync(pre, targetDir);
           rolledBackPrevious = true;
-        } else if (!previousMoved && hadPrevious && exists(cfg.dataDir)) {
+        } else if (!previousMoved && hadPrevious && exists(targetDir)) {
           // 改名就没成功：旧目录还是完整的，可以直接启动。
           rolledBackPrevious = true;
         }
@@ -1743,9 +1734,9 @@ async function cmdRestore(args) {
           ngLine('恢复后服务起不来：正在回滚到恢复前的数据');
           systemctlUser(['stop', cfg.service], { timeout: 60000 });
           try {
-            const failed = `${cfg.dataDir}.restore-failed-${stamp}`;
-            if (exists(cfg.dataDir)) fs.renameSync(cfg.dataDir, failed);
-            if (exists(pre)) fs.renameSync(pre, cfg.dataDir);
+            const failed = `${targetDir}.restore-failed-${stamp}`;
+            if (exists(targetDir)) fs.renameSync(targetDir, failed);
+            if (exists(pre)) fs.renameSync(pre, targetDir);
             systemctlUser(['start', cfg.service], { timeout: 60000 });
             ngLine(`已回滚；恢复失败的数据留在 ${failed}`);
           } catch (rollbackError) {
@@ -2947,13 +2938,13 @@ function cmdInstallTimers(args) {
   }
   const reload = systemctlUser(['daemon-reload']);
   if (reload.missing) {
-    skipLine('缺少 systemctl：请手动执行 systemctl --user daemon-reload && systemctl --user enable --now qq-agent-backup.timer process-guard.timer qq-agent-health.timer qq-agent-audit-prune.timer');
+    skipLine('缺少 systemctl：请手动执行 systemctl --user daemon-reload && systemctl --user enable --now qq-agent-backup.timer qq-agent-backup-drill.timer process-guard.timer qq-agent-health.timer qq-agent-audit-prune.timer');
     return 0;
   }
   if (!reload.ok) ngLine(`daemon-reload 失败: ${text(reload)}`);
   const reloadOk = reload.ok;
-  const enable = systemctlUser(['enable', '--now', 'qq-agent-backup.timer', 'process-guard.timer', 'qq-agent-health.timer', 'qq-agent-audit-prune.timer'], { timeout: 60000 });
-  if (enable.ok) okLine('定时器已启用：qq-agent-backup.timer（每周日 04:10）、process-guard.timer（每 10 分钟）、qq-agent-health.timer（每 5 分钟巡检）、qq-agent-audit-prune.timer（每月 1 日 04:20 清理审计日志）');
+  const enable = systemctlUser(['enable', '--now', 'qq-agent-backup.timer', 'qq-agent-backup-drill.timer', 'process-guard.timer', 'qq-agent-health.timer', 'qq-agent-audit-prune.timer'], { timeout: 60000 });
+  if (enable.ok) okLine('定时器已启用：qq-agent-backup.timer（每周日 04:10）、qq-agent-backup-drill.timer（每月恢复演练）、process-guard.timer（每 10 分钟）、qq-agent-health.timer（每 5 分钟巡检）、qq-agent-audit-prune.timer（每月 1 日 04:20 清理审计日志）');
   else ngLine(`启用定时器失败: ${text(enable)}`);
   // 挂在部署链上时退出 0 等于告诉 systemd"成功"，而四个定时器其实一个都没起来（2026-10-03 全量审查）
   return reloadOk && enable.ok ? 0 : 1;

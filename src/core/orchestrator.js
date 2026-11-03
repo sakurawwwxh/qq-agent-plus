@@ -647,6 +647,11 @@ export class Orchestrator {
    * 到点的提醒内容吞掉，2026-10-04 复审 P2）。
    * block：一律会丢。degrade：群里当前未读里没有 @ 的会丢（闸门判的就是这个）。
    */
+  #budgetHardBlock() {
+    const b = budgetStatus(getConfig(), this.sessions?.todayUsage?.(todayKey()) || {});
+    return Boolean(b.enabled && b.exceeded && b.onExceed === 'block');
+  }
+
   #budgetWouldDrop(chatKey) {
     const b = budgetStatus(getConfig(), this.sessions?.todayUsage?.(todayKey()) || {});
     if (!b.enabled || !b.exceeded) return false;
@@ -2174,8 +2179,10 @@ export class Orchestrator {
     // 上下文统计
     const tenMinAgo = Date.now() - 600000;
     const recentCount = this.store.recent(chatKey, { limit: 200 }).filter((m) => m.ts >= tenMinAgo).length;
-    const myMessages = this.store.recent(chatKey, { limit: 100 }).filter((m) => m.self);
-    const selfLastMessageAt = myMessages.length ? myMessages[myMessages.length - 1].ts : 0;
+    // 直接查最新一条 self；活跃群 100 条窗口里可能已经没有自己，误判成“从没发过言”。
+    const selfLastMessageAt = typeof this.store.lastSelfMessageAt === 'function'
+      ? this.store.lastSelfMessageAt(chatKey)
+      : 0;
     const lastMessageAt = (() => {
       const all = this.store.recent(chatKey, { limit: 10 });
       return all.length ? all[all.length - 1].ts : Date.now();
@@ -2987,10 +2994,15 @@ export class Orchestrator {
       // （与定时提醒同一类静默丢失，2026-09-29 审查）。顺延一轮再试，而不是丢掉。
       // paced 不在此列：它每次运行结束都会由 #ensurePacedWake 重新排，不需要这里兜。
       // 不走 scheduleInitiativeWake 重排：那个函数按默认 noteLimit(200) 截断留言，这里原样保留。
-      if (!item.paced && this.#wakeBlockedNow(chatKey, cfgNow)) {
-        const timer = setTimeout(() => { try { this.fireDueScheduledWakes(); } catch { /* 忽略 */ } }, WAKE_RETRY_MS + 50);
+      // 只有 block 会让 proactive 唤醒也静默 return；degrade 只挡非 proactive（私聊/主动
+      // 唤醒照常），不能把它一起顺延 24 小时，否则"过会儿回来看"的留言会被无谓压一天。
+      const budgetDrop = !item.paced && this.#budgetHardBlock();
+      if (!item.paced && (budgetDrop || this.#wakeBlockedNow(chatKey, cfgNow))) {
+        const delay = budgetDrop ? 24 * 60 * 60 * 1000 : WAKE_RETRY_MS;
+        const timer = setTimeout(() => { try { this.fireDueScheduledWakes(); } catch { /* 忽略 */ } }, delay + 50);
         if (timer.unref) timer.unref();
-        this.scheduledWakes.set(chatKey, { ...item, at: Date.now() + WAKE_RETRY_MS, timer });
+        this.scheduledWakes.set(chatKey, { ...item, at: Date.now() + delay, timer });
+        if (budgetDrop) log.info(`[wake] ${chatKey} 预算闸门会丢掉这次主动唤醒，顺延 24 小时（留言保留）`);
         continue;
       }
       this.wake(chatKey, item.paced

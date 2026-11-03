@@ -5,12 +5,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
 import { DATA_DIR, getConfig } from './config.js';
 import { estimateCost } from '../llm/llm.js';
 import { vendorOfConfig } from '../pricing/model-prices.js';
 import { todayKey } from './util.js';
 import { isSessionFileName, sessionIdOfFile, listSessionFiles, readSessionFile } from './session-files.js';
 
+const gzipAsync = promisify(zlib.gzip);
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 
 // 摘要索引（追加式 JSONL）。隐藏名 + 不是 .json 后缀，不会被留档扫描当成会话文件。
@@ -670,7 +672,7 @@ export class SessionRegistry {
    * 顺序是"写 .gz → rename → 删明文"：任何一步崩溃都至少留一份完整文件，
    * 下次启动按 id 去重时优先明文，压缩会在下一轮重试。
    */
-  compressSessions(olderThanDays = this.compressAfterDays, { maxFiles = 100 } = {}) {
+  async compressSessions(olderThanDays = this.compressAfterDays, { maxFiles = 100 } = {}) {
     const days = clampDays(olderThanDays, 0);
     if (!(days > 0)) return { compressed: 0, bytesBefore: 0, bytesAfter: 0 };
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
@@ -700,7 +702,9 @@ export class SessionRegistry {
           bytesAfter += fs.statSync(target).size;
           continue;
         }
-        const gz = zlib.gzipSync(fs.readFileSync(entry.file), { level: 9 });
+        // 异步 gzip：100 个较大留档同步压缩会把事件循环阻塞数秒到数十秒，
+        // 期间入站/SSE/心跳全部停摆。gzipAsync 每次 await 让出事件循环。
+        const gz = await gzipAsync(fs.readFileSync(entry.file), { level: 9 });
         const tmp = `${target}.${process.pid}.tmp`;
         try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
         fs.writeFileSync(tmp, gz, { mode: 0o600 });

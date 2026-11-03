@@ -3,9 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { createCapabilities } from '../src/plugins/capabilities.js';
-import { CAP_METHODS } from '../src/plugins/protocol.js';
-import { LifeFeedManager } from '../src/features/life-feed.js';
+
+// 必须在加载 src 之前重定向数据目录：capabilities/config 首次 import 就可能触发
+// 稳定特性迁移并把默认 data/config.json 落盘（2026-11-03 全量审查 P1）。
+const __dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-feed-test-'));
+process.env.QQ_AGENT_DATA_DIR = __dir;
+process.on('exit', () => { try { fs.rmSync(__dir, { recursive: true, force: true }); } catch { /* 忽略 */ } });
+
+const { createCapabilities } = await import('../src/plugins/capabilities.js');
+const { CAP_METHODS } = await import('../src/plugins/protocol.js');
+const { LifeFeedManager } = await import('../src/features/life-feed.js');
 
 const NOW = 1792900000000;
 
@@ -46,7 +53,7 @@ test('cap.feed.publish：只收公开元数据、按 id 去重、每插件每天
 test('cap.feed.publish：内网封面地址被丢弃（协议端会去取，不能当 SSRF 跳板）', async (t) => {
   const { getConfig } = await import('../src/core/config.js');
   if (getConfig().security?.allowPrivateImageHosts === true) {
-    t.diagnostic('本机配置显式允许私网图片，跳过');
+    t.skip('本机配置显式允许私网图片');
     return;
   }
   const dir = tempDir(t);

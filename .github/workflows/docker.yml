@@ -88,6 +88,16 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run test:unit
+      - run: node src/ops.js scan --strict
+      - run: npm run test:local
+      - run: npm run test:regression
+      - name: 发布元数据一致性（CHANGES / compose / README / DOCKER / tag 提交）
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            node scripts/release-check.mjs --tag "$GITHUB_REF_NAME"
+          else
+            node scripts/release-check.mjs --allow-unreleased
+          fi
 
   smoke:
     needs: verify

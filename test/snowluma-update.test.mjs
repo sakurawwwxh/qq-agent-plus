@@ -529,6 +529,30 @@ test('QQ_AGENT_NO_SUDO_DOCKER=1 时不走 sudo 回退（给不想让服务提权
   }
 });
 
+test('跨进程锁与 journal：并发/中断未收尾时拒绝再次更新，正常结束清理锁', async () => {
+  const dir = makeProject({ image: 'mirror.ccs.tencentyun.com/motricseven7/snowluma:v1.14.15' });
+  const target = 'mirror.ccs.tencentyun.com/motricseven7/snowluma:v1.14.22';
+  const docker = fakeDocker({ dir });
+  fs.mkdirSync(path.join(dir, '.snowluma-update.lock'));
+  const locked = await makeUpdater(dir, docker).update({ to: target });
+  assert.equal(locked.ok, false);
+  assert.equal(locked.busy, true, '另一个进程持有锁时不能开始更新');
+  fs.rmSync(path.join(dir, '.snowluma-update.lock'), { recursive: true, force: true });
+
+  fs.writeFileSync(path.join(dir, '.snowluma-update.json'), JSON.stringify({ to: target, startedAt: Date.now() }));
+  const interruptedUpdater = makeUpdater(dir, docker);
+  assert.ok((await interruptedUpdater.status()).interrupted, 'status 要能看见未收尾 journal');
+  const refused = await interruptedUpdater.update({ to: target });
+  assert.equal(refused.ok, false);
+  assert.match(String(refused.error), /没有正常收尾/);
+  fs.rmSync(path.join(dir, '.snowluma-update.json'), { force: true });
+
+  const ok = await makeUpdater(dir, docker).update({ to: target });
+  assert.equal(ok.ok, true);
+  assert.equal(fs.existsSync(path.join(dir, '.snowluma-update.lock')), false, '成功后要释放跨进程锁');
+  assert.equal(fs.existsSync(path.join(dir, '.snowluma-update.json')), false, '成功后要清理 journal');
+});
+
 test('Issue #30：pull 阶段才发现没权限（例如 docker info 恰好能过）也要给可执行提示', async () => {
   const dir = makeProject({ image: 'mirror.ccs.tencentyun.com/motricseven7/snowluma:v1.14.15' });
   const docker = fakeDocker({ dir });

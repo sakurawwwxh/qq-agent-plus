@@ -49,11 +49,15 @@ function parseJson(msg) {
   return null;
 }
 
-export async function seedAsrTranscribe(pcmBuffer, { apiKey, signal, timeoutMs = 10 * 60 * 1000 } = {}) {
+export async function seedAsrTranscribe(pcmBuffer, {
+  apiKey, signal, timeoutMs = 10 * 60 * 1000,
+  // 测试注入：生产默认走火山官方 WSS，单测用本地 WebSocketServer 钉帧与错误映射。
+  wsUrl = WS_URL, WebSocketImpl = WebSocket
+} = {}) {
   if (!apiKey) throw new Error('未配置语音识别服务（缺少 ASR API Key），无法转写音频');
   signal?.throwIfAborted?.();
   const reqid = randomUUID();
-  const ws = new WebSocket(WS_URL, {
+  const ws = new WebSocketImpl(wsUrl, {
     headers: {
       'X-Api-Key': apiKey,
       'X-Api-Resource-Id': RESOURCE,

@@ -41,8 +41,8 @@ test('deploy.sh：失败/回滚路径的防线都在（trap、健康闸门、权
   const source = fs.readFileSync(path.join(repo, 'deploy.sh'), 'utf8');
 
   // ① 出错/中断必须自动回滚：没有这条，一次半途而废的部署会把服务留在坏状态
-  assert.match(source, /^trap rollback_deployment ERR INT TERM$/m,
-    '必须装 ERR/INT/TERM → rollback_deployment 的 trap（失败与 Ctrl-C 都要退回去）');
+  assert.match(source, /^trap rollback_deployment ERR INT TERM HUP$/m,
+    '必须装 ERR/INT/TERM/HUP → rollback_deployment 的 trap（SSH 断线也要退回去）');
   assert.match(source, /^rollback_deployment\(\) \{$/m, 'rollback_deployment 本体要存在（trap 指向的函数）');
 
   // ② 健康检查是"装好了"的唯一判据：失败必须回滚 + 非 0 退出，不能打印成功
@@ -487,8 +487,9 @@ test('manage backup：所有 SQLite 库都走在线 backup API，不直接拷 WA
   assert.match(manage, /name\.endsWith\('\.sqlite'\)/);
   assert.match(manage, /isSqliteFile\(/,
     '后缀是 .sqlite 的普通文件不能当数据库打开，否则整次备份中断');
-  assert.match(manage, /await backup\(db, out\)/);
+  assert.match(manage, /await backup\(db, dst\)/);
   assert.ok(manage.includes('/\\.sqlite-(wal|shm)$/'), 'WAL/SHM 不单独拷贝');
+  assert.match(manage, /const copyTree = async/, '嵌套目录要递归，不能把 living-memory 等库裸拷贝');
 });
 
 test('凭据轮换时预检不再用旧 token 拦截', () => {

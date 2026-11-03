@@ -70,7 +70,9 @@ test('manifest 校验 fail-closed：坏形状逐一被拒，并给出可读原�
       properties: { big: { type: 'string', description: 'x'.repeat(20000) } }
     } }] }, /parameters 太大/],
     [{ ...base, capabilities: ['schedule'], schedule: [{ name: 'tick', everyMs: 10 }] }, /everyMs 必须是/],
-    [{ ...base, schedule: [{ name: 'tick', everyMs: 60000 }] }, /必须在 capabilities 里带上 "schedule"/]
+    [{ ...base, schedule: [{ name: 'tick', everyMs: 60000 }] }, /必须在 capabilities 里带上 "schedule"/],
+    [{ ...base, capabilities: ['schedule'], schedule: Array.from({ length: 25 }, (_, i) => ({ name: `t${i}`, everyMs: 60000 })) }, /超过 24 条/],
+    [{ ...base, capabilities: ['schedule'], schedule: [{ name: 'tick', everyMs: 60000 }, { name: 'tick', everyMs: 60000 }] }, /周期任务名重复/]
   ];
   for (const [raw, pattern] of cases) {
     const parsed = parsePluginManifest(raw, { dir });
@@ -186,7 +188,7 @@ test('宿主：起进程、调工具、storage 落盘、observe/schedule 投递�
 });
 
 test('隔离是真的：读不到插件目录外的文件、起不了子进程、写不了文件、环境变量已被剥掉', async (t) => {
-  if (!permissionFlagSupported()) return;   // 没有权限模型的机器上这条不成立（fail-closed 由注册表负责）
+  if (!permissionFlagSupported()) { t.skip('没有 Node --permission 支持'); return; }
   const host = new PluginHost({
     manifest: fixtureManifest('good'),
     dataDir,
@@ -238,7 +240,12 @@ test('崩溃：进程退出后自动重启，连续崩够次数就停用（不�
   t.after(() => host.stop());
   assert.equal(await host.start(), true, host.lastError);
 
-  await assert.rejects(() => host.callTool('boom', {}), /退出/);
+  await assert.rejects(() => host.callTool('boom', {}), (error) => {
+    assert.match(error.message, /退出/);
+    assert.equal(error.code, 'E_PLUGIN_DOWN',
+      '进程退出必须标成 E_PLUGIN_DOWN；否则 registry 会当确定失败退款，模型重试会重复写');
+    return true;
+  });
   assert.equal(await waitFor(() => host.state === 'running' && host.restarts === 1), true,
     `崩一次后应自动重启（state=${host.state}, restarts=${host.restarts}）`);
 
@@ -686,9 +693,9 @@ test('P2-3 回归：requireIsolation 是**真**开关（探测失败时默认拒
   assert.equal((await loose.callTool('echo', { text: '降级' })).echo.text, '降级');   // 夹具的 echo 原样回显入参
 });
 
-test('P2-4 回归：隔离探测按**插件目录**分别做（缓存不许把一个目录的结论套给另一个）', async () => {
+test('P2-4 回归：隔离探测按**插件目录**分别做（缓存不许把一个目录的结论套给另一个）', async (t) => {
   const { probeIsolation, resetIsolationProbe, permissionFlagSupported } = await import('../src/plugins/isolation.js');
-  if (!permissionFlagSupported()) return;   // 没有权限模型的机器上探测直接返回"不支持"，这条不成立
+  if (!permissionFlagSupported()) { t.skip('没有 Node --permission 支持'); return; }
   resetIsolationProbe();
   const calls = [];
   // 注入一个"只对坏目录失败"的假 spawn：这样"缓存是否带目录键"就变成了可观测的行为差异

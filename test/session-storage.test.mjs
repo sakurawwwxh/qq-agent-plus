@@ -108,14 +108,14 @@ test('崩溃残留的 running/waiting 启动时回收成 aborted，并写回文�
   assert.equal(stored.waitUntil, null);
 });
 
-test('压缩：旧归档可透明读取、重复压缩幂等、运行中状态的旧文件不压', () => {
+test('压缩：旧归档可透明读取、重复压缩幂等、运行中状态的旧文件不压', async () => {
   resetDir();
   writeSession('m5001', {}, { ageDays: 40 });
   const reg = new SessionRegistry(0);
   // 启动回收会把构造前就存在的 running 改成 aborted，所以"运行中不压"要在构造之后造：
   // 一份 status=running 且 mtime 很旧的文件（模拟另一个进程正在跑的会话）。
   writeSession('m5002', { status: 'running', endedAt: null }, { ageDays: 40 });
-  const first = reg.compressSessions(30);
+  const first = await reg.compressSessions(30);
   assert.equal(first.compressed, 1, '只有已结束的旧归档被压');
   assert.ok(fs.existsSync(path.join(dir, 'm5001.json.gz')), '压缩产物存在');
   assert.equal(fs.existsSync(path.join(dir, 'm5001.json')), false, '压缩后明文要删掉');
@@ -125,7 +125,7 @@ test('压缩：旧归档可透明读取、重复压缩幂等、运行中状态�
   assert.equal(stored?.id, 'm5001', '详情读取要能解压');
   assert.ok(reg.index.some((e) => e.id === 'm5001'), '列表仍然看得到');
 
-  const again = reg.compressSessions(30);
+  const again = await reg.compressSessions(30);
   assert.equal(again.compressed, 0, '已经压过的不重复压');
   const stats = reg.storageStats({ fresh: true });
   assert.ok(stats.compressedFiles >= 1);

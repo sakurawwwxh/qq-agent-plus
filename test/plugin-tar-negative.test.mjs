@@ -27,5 +27,5 @@ test('负 size 的 tar 条目被拒绝，不进入死循环', () => {
     tarHeader('evil.txt', '-0000001000'),
     Buffer.alloc(512)
   ]);
-  assert.throws(() => parseTarGz(archive), (error) => error.code === 'E_ARCHIVE' && /长度非法/.test(error.message));
+  assert.throws(() => parseTarGz(archive), (error) => error.code === 'E_ARCHIVE' && /长度非法|数字字段/.test(error.message));
 });

@@ -116,6 +116,40 @@ function readPluginConfig(dataDir) {
  * degrade：只回 @，其余保留未读；block：整批不跑，消息留到明天 —— 两种都会让消息堆着，
  * 只豁免 degrade 的话 block 用户每天都会收到一条"收发链路可能停滞"的误报（2026-10-08 审查）。
  */
+/** 读“按设计不会处理”的会话：incident block / deny.private|group / 明确不在 allow 清单里。 */
+function readIntentionalChatState(dataDir) {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')); } catch { /* 无配置 */ }
+  const blocked = new Set();
+  try {
+    const db = openDatabase(path.join(dataDir, 'incident-pilot.sqlite'), { readOnly: true });
+    try {
+      for (const row of db.prepare("SELECT chat_key AS chatKey FROM chat_runtime_controls WHERE mode='blocked'").all()) {
+        blocked.add(String(row.chatKey || ''));
+      }
+    } finally { db.close(); }
+  } catch { /* 实验功能未启用/旧库没有表 */ }
+  const list = (value) => (Array.isArray(value) ? value : []).map(String);
+  return {
+    blocked,
+    allowGroups: list(cfg?.allow?.groups),
+    allowPrivate: list(cfg?.allow?.private),
+    denyGroups: list(cfg?.deny?.groups),
+    denyPrivate: list(cfg?.deny?.private)
+  };
+}
+
+function intentionallyNotProcessed(chatKey, state) {
+  const key = String(chatKey || '');
+  if (state.blocked.has(key)) return true;
+  const [kind, id] = key.split(':');
+  const deny = kind === 'private' ? state.denyPrivate : state.denyGroups;
+  if (deny.includes(id)) return true;
+  const allow = kind === 'private' ? state.allowPrivate : state.allowGroups;
+  // allow 为空时语义是“未配置”，不在这里替管理员下结论；非空时明确不在清单里 = 设计上不处理。
+  return allow.length > 0 && !allow.includes(id);
+}
+
 function readBudgetKeepPending(dataDir) {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
@@ -151,6 +185,7 @@ export async function runHealthCheck(opts = {}) {
     containerRuntime = null,   // 可注入（测试）：null＝按运行环境判断
     noNewPrivsStatus = null,   // 可注入（测试）：null＝自动探测主服务进程
     sudoDockerProbe = null,    // 可注入（测试）：null＝走真实 probeSudoDocker()
+    isolationProbe = isolationSummary, // 可注入（测试）：返回 isolationSummary() 的形状
     outboundStaleMs = OUTBOUND_STALE_MS,
     notify = null,
     fetchImpl = globalThis.fetch,
@@ -325,15 +360,23 @@ export async function runHealthCheck(opts = {}) {
           // ② failed（重试耗尽）且发生在最后一次成功出站之后（见上方注释的取舍）。
           // 两类都限定在观察窗口内：窗口外的历史遗留不追打。
           const lastOutTs = outAge === null ? 0 : now - outAge;
-          const stuck = db.prepare(
-            "SELECT" +
+          const rows = db.prepare(
+            "SELECT chat_key AS chatKey," +
             " COALESCE(SUM(state='pending'),0) AS pendingCount," +
             " COALESCE(SUM(state='failed' AND ts > ?),0) AS failedCount," +
             " min(ts) AS oldest" +
             " FROM messages" +
             " WHERE self=0 AND ts > ? AND max(ts, available_at) <= ?" +
-            "   AND (state='pending' OR (state='failed' AND ts > ?))"
-          ).get(lastOutTs, now - outboundStaleMs, now - STUCK_INBOUND_MS, lastOutTs);
+            "   AND (state='pending' OR (state='failed' AND ts > ?))" +
+            " GROUP BY chat_key"
+          ).all(lastOutTs, now - outboundStaleMs, now - STUCK_INBOUND_MS, lastOutTs);
+          const intentional = readIntentionalChatState(dataDir);
+          const active = rows.filter((row) => !intentionallyNotProcessed(row.chatKey, intentional));
+          const stuck = {
+            pendingCount: active.reduce((sum, row) => sum + Number(row.pendingCount || 0), 0),
+            failedCount: active.reduce((sum, row) => sum + Number(row.failedCount || 0), 0),
+            oldest: active.length ? Math.min(...active.map((row) => Number(row.oldest) || now)) : now
+          };
           const stuckCount = Number(stuck.pendingCount || 0) + Number(stuck.failedCount || 0);
           const outDetail = outAge === null ? '；还没有出站记录' : `；出站距今 ${Math.round(outAge / 60000)} 分钟`;
           if (stuckCount > 0) {
@@ -456,8 +499,10 @@ export async function runHealthCheck(opts = {}) {
       const cannotRun = !permissionFlagSupported() && pluginCfg.requireIsolation !== false;
       // 网络隔离：本机做不到时——要求了就报红（fail-closed 说好的不许装），没要求就如实说明（不报红，
       // 否则 Windows/macOS 上每次巡检都红，等于把红变成噪音）
-      const netOk = isolationSummary().net;
-      const netBlocked = pluginCfg.networkIsolation !== false && pluginCfg.requireNetworkIsolation === true && !netOk;
+      const netOk = (isolationProbe ?? isolationSummary)().net;
+      // requireNetworkIsolation 会强制启隔离（host.js），与 networkIsolation 是否勾选无关；
+      // 只看要求位，否则"要求了但又取消勾选"时插件全被拒载、巡检却报绿。
+      const netBlocked = pluginCfg.requireNetworkIsolation === true && !netOk;
       const revoked = pluginCfg.revoked.length
         ? `撤回名单 ${pluginCfg.revoked.length} 条（${pluginCfg.revoked.slice(0, 3).join(', ')}${pluginCfg.revoked.length > 3 ? ' …' : ''}）`
         : '';

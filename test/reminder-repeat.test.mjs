@@ -18,6 +18,19 @@ const {
 // 固定基准：2026-10-24 12:00 UTC = 上海 20:00（周六）
 const BASE = Date.UTC(2026, 9, 24, 12, 0, 0);
 
+test('周期提醒取消后，迟到的 markFired 不能把它复活', () => {
+  const store = new ReminderStore(path.join(dir, 'cancel-race.json'));
+  const now = Date.now();
+  const item = store.add({
+    chatKey: 'group:1', at: now + 60_000, text: '每天站会',
+    repeat: { kind: 'daily', hour: 9, minute: 0, tz: 'Asia/Shanghai' }
+  });
+  store.cancel({ id: item.id, chatKey: 'group:1' });
+  store.markFired(item.id, now + 120_000);
+  const after = store.list('group:1', { includeDone: true }).find((x) => x.id === item.id);
+  assert.equal(after.status, 'canceled', '取消必须压过异步派发收尾的 markFired');
+});
+
 test('夏令时：春季调时不跳成 46 小时后，秋季回拨返回严格未来', () => {
   // 美东 2026-03-08 春季调时：00:00 EST 之后，当天 23:00 已是 EDT。
   // 旧实现按挂钟分钟差 + 回读校正会再加一整天（实测 46 小时）。
@@ -110,6 +123,8 @@ test('cron：解析白名单与下一个匹配点', () => {
   assert.equal(parseCron5('99 9 * * *'), null);
   assert.equal(parseCron5('*/15 * * * *')?.minutes.size, 4);
   assert.ok(parseCron5('0 9 * * mon-fri').dows.has(1));
+  assert.equal(parseCron5('0 9 * * 7')?.dows.has(0), true, '标准 cron 的 7 = 周日');
+  assert.equal(parseCron5('0 9 * * 5-7')?.dows.has(0), true, '范围 5-7 也要归一');
   // 周一到周五 09:30：基准周六 → 下一个是周一
   const next = nextCronAt('30 9 * * mon-fri', 'Asia/Shanghai', BASE);
   assert.equal(zonedWallClock(next, 'Asia/Shanghai').dow, 1);

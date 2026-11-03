@@ -541,7 +541,7 @@ rollback_deployment() {
   # 显式调用点（npm 缺失、健康检查失败）是在 printf 之后进来的，此时 $? 已经是 0；
   # 那种情况必须按失败退出，否则调用方（自动更新按退出码判定）会把回滚过的部署当成成功。
   ((status != 0)) || status=1
-  trap - ERR INT TERM
+  trap - ERR INT TERM HUP
   set +e
   ROLLBACK_FAILED=false
   # 注意：清标记必须放在**恢复动作之后**（原来放在这里）：
@@ -611,11 +611,12 @@ rollback_deployment() {
   clear_deploy_marker
   exit "$status"
 }
-trap rollback_deployment ERR INT TERM
+trap rollback_deployment ERR INT TERM HUP
 
+# 从这里到健康检查通过是"服务可能停着、代码可能半拷贝"的窗口：先落标记。
+# 即使服务原本是 stopped，也必须标记：SIGKILL/掉电后下一次启动要能发现半更新。
+mark_deploy_in_progress
 if [[ "$WAS_ACTIVE" == true ]]; then
-  # 从这里到健康检查通过是"服务可能停着、代码可能半拷贝"的窗口：先落标记
-  mark_deploy_in_progress
   systemctl --user stop "$SERVICE.service"
 fi
 if [[ "$ROOT" != "$INSTALL_DIR" ]]; then
@@ -685,7 +686,7 @@ for _ in {1..90}; do
   sleep 1
 done
 [[ "$HEALTHY" == true ]] || { printf 'Service health check failed\n' >&2; rollback_deployment; exit 1; }
-trap - ERR INT TERM
+trap - ERR INT TERM HUP
 clear_deploy_marker
 # 每份快照是整个安装目录（含 node_modules），而自动更新会无人值守地反复部署：
 # 不清理会把数据盘慢慢填满。保留最近的 3 份。

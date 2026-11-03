@@ -868,10 +868,13 @@ export class ChatStore {
     });
   }
 
-  listUnknownOperations(chatKey, limit = 100) {
+  listUnknownOperations(chatKey, limit = 100, { includeSending = false } = {}) {
+    // 默认只列真正的 unknown：sending 仍在发送队列里，核对接口会拒绝它，
+    // 列给控制台只会得到一排必然 404 的按钮。内部需要"在途证据"时显式 includeSending。
+    const states = includeSending ? "IN ('sending','unknown')" : "= 'unknown'";
     return this.db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey,
       state, payload, message_id AS messageId, error
-      FROM outbox WHERE chat_key=? AND state IN ('sending','unknown')
+      FROM outbox WHERE chat_key=? AND state ${states}
       ORDER BY rowid DESC LIMIT ?`).all(
       String(chatKey || ''),
       Math.min(500, Math.max(1, Number(limit) || 100))
@@ -887,8 +890,10 @@ export class ChatStore {
       throw new Error('未知写入核对结果必须是 sent 或 failed');
     }
     return this.#transaction(() => {
+      // 只允许核对真正的 unknown：sending 仍在本进程发送队列里，提前改终态会让
+      // finishSend 找不到行、hasUncertainEffects 失去证据，最终可能重复发送。
       const row = this.db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey
-        FROM outbox WHERE id=? AND state IN ('sending','unknown')`).get(String(operationId || ''));
+        FROM outbox WHERE id=? AND state='unknown'`).get(String(operationId || ''));
       if (!row) return null;
       this.db.prepare(`UPDATE outbox SET state=?, error=? WHERE id=?`).run(
         result === 'sent' ? 'reconciled_sent' : 'reconciled_failed',
@@ -1355,6 +1360,13 @@ export class ChatStore {
       sourceMessageIds,
       createdAt: Number(row.created_at) || 0
     };
+  }
+
+  /** 最近一条机器人自己发言的时间；不要从 recent(limit:100) 里过滤（活跃群会误判成没说过）。 */
+  lastSelfMessageAt(chatKey) {
+    const row = this.db.prepare(`SELECT ts FROM messages
+      WHERE chat_key=? AND self=1 ORDER BY ts DESC, id DESC LIMIT 1`).get(String(chatKey || ''));
+    return Number(row?.ts) || 0;
   }
 
   recent(chatKey, { limit = 80, offset = 0, includeSelf = true, readOnly = false, afterId = 0, beforeId = 0, fromId = null, scope = 'chat' } = {}) {

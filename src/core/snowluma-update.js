@@ -410,8 +410,44 @@ export function createSnowlumaUpdater(options = {}) {
   let usedSudoDocker = false;
   const readyTimeoutMs = Number(options.readyTimeoutMs) || 120000;
   const readyPollMs = Number(options.readyPollMs) || 2000;
+  const lockDir = path.join(dir, '.snowluma-update.lock');
+  const journalFile = path.join(dir, '.snowluma-update.json');
   let busy = null;                  // 同一时刻只允许一个更新在跑
   let lastResult = null;            // 最近一次更新结果（供"回滚到上一版"用）
+
+  const readJournal = () => {
+    try { return JSON.parse(fs.readFileSync(journalFile, 'utf8')); } catch { return null; }
+  };
+  const writeJournal = (entry) => {
+    const tmp = `${journalFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(entry, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, journalFile);
+  };
+  const clearJournal = () => {
+    try { fs.rmSync(journalFile, { force: true }); } catch { /* 忽略 */ }
+  };
+  const acquireLock = () => {
+    try {
+      fs.mkdirSync(lockDir, { recursive: false });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') return false;
+      // 崩溃遗留的锁：超过 30 分钟才接管，避免误伤正在 pull 的另一个进程。
+      let ageMs = 0;
+      try { ageMs = Date.now() - fs.statSync(lockDir).mtimeMs; } catch { ageMs = 0; }
+      if (ageMs < 30 * 60_000) return false;
+      try { fs.rmSync(lockDir, { recursive: true, force: true }); fs.mkdirSync(lockDir, { recursive: false }); }
+      catch { return false; }
+    }
+    try {
+      fs.writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({
+        pid: process.pid, hostname: os.hostname(), startedAt: Date.now()
+      }), { mode: 0o600 });
+    } catch { /* 锁目录存在即可；owner 只是诊断 */ }
+    return true;
+  };
+  const releaseLock = () => {
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  };
 
   /**
    * 跑一条 docker 命令：先按当前进程的身份跑；如果撞上“套接字没权限”这种只有组缺失才会有的错，
@@ -511,6 +547,9 @@ export function createSnowlumaUpdater(options = {}) {
       minRecommended: SNOWLUMA_MIN_RECOMMENDED,
       baseline,
       busy: Boolean(busy),
+      lockHeld: fs.existsSync(lockDir),
+      // 非空 = 上一次更新的进程在写 .env/compose 时死掉了，需要管理员按 journal 检查。
+      interrupted: readJournal(),
       lastResult
     };
   }
@@ -591,6 +630,9 @@ export function createSnowlumaUpdater(options = {}) {
     const backup = backupComposeFiles(dir, Date.now(), { log });
     const envFile = path.join(dir, '.env');
     const originalEnv = fs.readFileSync(envFile, 'utf8');
+    // journal 必须在改 .env 之前落盘：进程在 pull/up 中途死掉时，下一次启动能看出
+    // "env 可能已被改成 to、容器可能是 from"；正常结束由 update() 的 finally 清掉。
+    writeJournal({ from, to: target, backupDir: backup.dir, pid: process.pid, hostname: os.hostname(), startedAt: Date.now() });
     const lines = [];
     const push = (s) => { const line = String(s).trim(); if (line) { lines.push(line); log(`[snowluma] ${line}`); } };
 
@@ -650,9 +692,25 @@ export function createSnowlumaUpdater(options = {}) {
   /** 串行化：同一时刻只跑一个更新（并发点击/自动+手动撞车时直接拒绝）。 */
   function update(options = {}) {
     if (busy) return Promise.resolve({ ok: false, error: '已经有一个协议端更新在进行中', busy: true });
+    if (!dir || !fs.existsSync(dir)) {
+      return Promise.resolve({ ok: false, error: `没找到协议端的 compose 项目（${dir || '(未配置目录)'}）` });
+    }
+    const interrupted = readJournal();
+    if (interrupted) {
+      return Promise.resolve({
+        ok: false,
+        busy: false,
+        interrupted,
+        error: '上一次协议端更新没有正常收尾（journal 仍在）：请先检查 .env/容器状态并删除 '
+          + `${journalFile} 后再试`
+      });
+    }
+    if (!acquireLock()) {
+      return Promise.resolve({ ok: false, busy: true, error: '另一个进程正在更新协议端（跨进程锁已占用）' });
+    }
     busy = Promise.resolve()
       .then(() => runUpdate(options))
-      .finally(() => { busy = null; });
+      .finally(() => { clearJournal(); releaseLock(); busy = null; });
     return busy;
   }
 

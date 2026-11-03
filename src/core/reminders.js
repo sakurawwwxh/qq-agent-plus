@@ -195,8 +195,9 @@ export function parseCron5(expr) {
   };
   const minutes = parseField(minF, 0, 59);
   const hours = parseField(hourF, 0, 23);
-  const dows = parseField(dowF, 0, 6, DOW_NAMES);
+  const dows = parseField(dowF, 0, 7, DOW_NAMES);
   if (!minutes || !hours || !dows) return null;
+  // 标准 cron 里 0 和 7 都表示周日；先允许解析到 7，再归一成 0。
   if (dows.has(7)) { dows.delete(7); dows.add(0); }
   return { minutes, hours, dows };
 }
@@ -563,6 +564,9 @@ export class ReminderStore {
   markFired(id, now = Date.now()) {
     const it = this.items.find((x) => x.id === id);
     if (!it) return null;
+    // 派发是异步的：用户可能在唤醒还在飞时取消/过期。收尾的 markFired 不能把
+    // canceled/expired 的周期项改回 pending，否则取消会被静默撤销（2026-11-03 全量审查 P2）。
+    if (it.status === 'canceled' || it.status === 'expired') return it;
     // 周期项：记下这次触发的 dueKey，重算下一次（re-arm），状态保持 pending。
     // 错过补最近一次的语义由 reconcileRecurring 在启动时处理；这里只管"触发后继续"。
     if (it.repeat && typeof it.repeat === 'object') {

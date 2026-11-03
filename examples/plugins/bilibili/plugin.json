@@ -312,7 +312,7 @@
     {
       "name": "login",
       "timeoutMs": 30000,
-      "description": "B 站扫码登录。action=start：请求一张登录二维码（channel=chat 发到当前会话；channel=console 返回给控制台网页显示）；action=poll：查扫码结果，成功把 Cookie 安全保存并立即生效；action=status / logout。控制台「扫码登录」按钮走的就是这条路。",
+      "description": "B 站扫码登录。action=start：请求一张登录二维码并发到当前会话；action=poll：查扫码结果，成功把 Cookie 安全保存并立即生效；action=status / logout。控制台「扫码登录」按钮走的是宿主的 console 通道，不需要模型传 channel；聊天内 start/logout 仅管理员可用。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -325,14 +325,6 @@
               "logout"
             ],
             "description": "start 发码 / poll 查结果 / status 看登录 / logout 退出"
-          },
-          "channel": {
-            "type": "string",
-            "enum": [
-              "chat",
-              "console"
-            ],
-            "description": "二维码去向：chat=发到当前会话（默认）；console=返回给控制台网页（不占发送队列）"
           }
         },
         "required": [
@@ -489,14 +481,6 @@
           "bvid": {
             "type": "string",
             "description": "BV 号、av 号、B 站视频链接或 b23.tv 短链"
-          },
-          "text": {
-            "type": "string",
-            "description": "要发送的弹幕（不填=只读取）"
-          },
-          "progressMs": {
-            "type": "number",
-            "description": "弹幕出现的时间（毫秒），默认 5000"
           }
         },
         "required": [

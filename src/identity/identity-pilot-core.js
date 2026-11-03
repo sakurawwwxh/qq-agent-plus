@@ -1238,7 +1238,9 @@ export class IdentityPilotManager {
     for (const userId of relatedIds) {
       if (!friendIds.has(userId)) continue;
       try {
-        await this.allowPrivateUser(userId);
+        // 启动/重排时的"已知好友"同步只补 allow：管理员可能刚把这个人写进 deny.private，
+        // 不能因为一次重启就被自动白名单流程静默删掉。
+        await this.allowPrivateUser(userId, { clearDeny: false });
         for (const request of incoming.filter((item) =>
           item.userId === userId && item.status === 'accepted')) {
           this.identityStore.markIncomingFriendWhitelist(request.id, { applied: true });

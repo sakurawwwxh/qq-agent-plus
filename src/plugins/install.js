@@ -52,10 +52,16 @@ function verifyTarChecksum(header) {
 
 /** 解一段八进制字段（tar 里都是 "\0" 结尾的八进制串）。 */
 function readOctal(buffer) {
+  // base-256（首字节 0x80）是 GNU 扩展；本解析器不支持，必须明确拒绝。
+  // 以前 parseInt 失败返回 0，会让后续数据块被当成新的 tar 头继续解析 ——
+  // 标准 tar 与安装器看到两套文件树，等于供应链审阅被绕过。
+  if (buffer[0] & 0x80) throw fail('E_ARCHIVE', '归档数字字段用了 base-256 编码，不支持（请用 ustar）');
   const text = buffer.toString('utf8').replace(/\0.*$/, '').trim();
   if (!text) return 0;
+  if (!/^[0-7]+$/.test(text)) throw fail('E_ARCHIVE', `归档数字字段不是合法八进制：${JSON.stringify(text)}`);
   const value = Number.parseInt(text, 8);
-  return Number.isFinite(value) ? value : 0;
+  if (!Number.isSafeInteger(value)) throw fail('E_ARCHIVE', '归档数字字段超出安全范围');
+  return value;
 }
 
 /**
@@ -270,6 +276,12 @@ export async function installPlugin({
     const parsed = parsePluginManifest(raw, { dir: staging });
     if (!parsed.ok) throw fail('E_MANIFEST', parsed.error);
     if (id && parsed.manifest.id !== id) throw fail('E_ID_MISMATCH', `包里的 id（${parsed.manifest.id}）与预期（${id}）不一致`);
+    // 安装/升级前就校验包内 engines.minVersion：只在加载时拒绝会让管理员看到
+    // “安装成功”但插件从此消失，旧版本也被换走了。hostVersion 未知时不做有罪推定。
+    const minEngine = parsed.manifest.engines?.minVersion || '';
+    if (minEngine && hostVersion && compareSemver(hostVersion, minEngine) < 0) {
+      throw fail('E_ENGINE', `插件要求宿主 ≥ ${minEngine}，当前是 ${hostVersion}，已中止安装`);
+    }
     // 索引声明 vs 包内 manifest：索引把权限写窄、包里却更宽，是最容易被忽略的信任缺口。
     // 只在索引**确实声明了**对应字段时比较（没写的旧条目不做有罪推定）。
     if (indexMeta && typeof indexMeta === 'object' && !allowIndexMismatch) {

@@ -46,10 +46,10 @@ const waitFor = async (predicate, timeoutMs = 8000, stepMs = 25) => {
 
 // ── 网络真拦 ────────────────────────────────────────────────────────────────
 test('网络隔离：起来之后插件直连连不出去（ENETUNREACH），经宿主那条路照旧可用', async (t) => {
-  if (!isLinux) { t.diagnostic('本平台没有 unshare/netns，这条在服务器 Linux 矩阵上跑'); return; }
+  if (!isLinux) { t.skip('本平台没有 unshare/netns'); return; }
   resetIsolationProbe();
   const probe = networkIsolationSupported();
-  if (!probe.ok) { t.diagnostic(`本机网络命名空间不可用（${probe.error}），跳过`); return; }
+  if (!probe.ok) { t.skip(`本机网络命名空间不可用（${probe.error}）`); return; }
 
   const host = new PluginHost({ manifest: manifestOf('netprobe'), dataDir, log: () => {}, getSettings: () => ({}) });
   t.after(() => host.stop());
@@ -149,7 +149,7 @@ test('内存上限：超了就重启该插件进程（并留下计数），堆�
   const spec = pluginLaunchSpec({ pluginDir: FIXTURES, memoryMb: 32, spawn: () => ({ status: 0 }) });
   assert.ok(spec.args.includes('--max-old-space-size=32'), 'V8 堆上限要在启动参数里');
 
-  if (!isLinux) { t.diagnostic('/proc 采样只有 Linux 有，这条在服务器 Linux 矩阵上跑'); return; }
+  if (!isLinux) { t.skip('/proc 采样只有 Linux 有'); return; }
   const host = new PluginHost({
     manifest: manifestOf('lazy-tools'), dataDir, log: () => {}, getSettings: () => ({}),
     // 16MB 堆：对一个什么都不做的插件够用（不会启动就被 V8 带走）；常驻阈值是它的 1.5 倍 = 24MB，

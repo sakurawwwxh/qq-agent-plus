@@ -48,7 +48,7 @@ OneBot 事件新鲜度不是巡检项，而是控制台侧的告警：连接显�
 
 ```bash
 node src/ops.js install-timers --print     # 预演，看将要写入的单元
-node src/ops.js install-timers --confirm   # 写入并启用 backup / process-guard / health / audit-prune 四个 timer
+node src/ops.js install-timers --confirm   # 写入并启用 backup / backup-drill / process-guard / health / audit-prune 五个 timer
 ```
 
 
@@ -113,7 +113,7 @@ npm run test:coverage                          # Node 内置覆盖率基线（�
 | `deploy` | `ops/deploy_qq_agent.sh` | 非交互部署：设置模型凭据后调用源码目录的 `deploy-all.sh -y` | 新机器初始化、CI 或远程 SSH 环境中的部署 |
 | `console` | `ops/qq-console.bat` | 使用系统 `ssh` 建立控制台 / WebUI / 远程桌面三个端口的隧道，就绪后提示或打开控制台（Windows/macOS/Linux 通用） | 日常打开控制台 |
 | `plugins` | —（插件生态新增） | 插件管理：`list` 列出已装插件（版本/能力/来源）与已授权清单；`install <文件.tar.gz>` **从本地文件装**（别人发的包、自己打的包）——sha256 由它算给你核对，装完来源记录写「本地文件：<文件名>」；`uninstall <id> [--purge-data]` 卸载并可选删除插件数据 | 不打开控制台就能装/看；小白用户拿到包只会在控制台装，命令行这条给运维与作者自测 |
-| `install-timers` | `ops/systemd/` | 生成并安装四个 systemd user 定时器：备份（每周日 04:10）、进程看门狗（每 10 分钟）、健康巡检（每 5 分钟）、审计日志清理（每月 1 日 04:20） | 安装定时任务 |
+| `install-timers` | `ops/systemd/` | 生成并安装五个 systemd user 定时器：备份（每周日 04:10）、恢复演练、进程看门狗（每 10 分钟）、健康巡检（每 5 分钟）、审计日志清理（每月 1 日 04:20） | 安装定时任务 |
 
 ## 部署纪律：只改 `ui/` 就不要重启服务
 
@@ -279,7 +279,7 @@ node src/ops.js install-timers --confirm
 | `SNOWLUMA_IMAGE` | `motricseven7/snowluma:v1.14.22` | 协议端镜像（`deploy`）；已部署的实例可在控制台「设置 → OneBot → 协议端」一键升级/回滚 |
 | `QQ_AGENT_SNOWLUMA_DIR` | `<root>/snowluma` | 协议端 compose 项目目录（一键更新与体检读它的 `.env`） |
 | `QQ_AGENT_IMAGE_MIRROR` | 空 | 追加自己的镜像站（逗号分隔多个；等价于 `deploy-all.sh --image-mirror`），排在**内置兜底列表之前**。留空时也会先用内置的公共加速站（`docker.1panel.live`、`docker.m.daocloud.io`），所以国内直连不上 Docker Hub 的开箱安装通常不用设它；用法见 `docs/LINUX.md` |
-| `QQ_AGENT_ONEBOT_WS_PORT` | `3391` | 协议端 WebSocket 端口（`deploy`） |
+| `QQ_AGENT_ONEBOT_WS_PORT` | `3001` | 协议端 WebSocket 端口（`deploy`；与 install.sh 全栈默认一致） |
 | `SSHHOST` / `QQ_AGENT_SSH` | **必填**（缺失直接报错退出） | 服务器地址；两种写法都支持：`SSHHOST=host` 或 `SSHHOST=user@host` / `QQ_AGENT_SSH=user@host` |
 | `SSHUSER` | `ubuntu` | SSH 登录用户 |
 | `SSHPORT` | `22` | SSH 端口 |
@@ -317,11 +317,13 @@ node src/ops.js install-timers --confirm
 
 ## 定时任务
 
-`install-timers` 生成四个 unit。`--print` 仅打印内容，`--confirm` 写入
+`install-timers` 生成五个 unit。`--print` 仅打印内容，`--confirm` 写入
 `~/.config/systemd/user/` 并执行 `systemctl --user daemon-reload && enable --now`：
 
 - `qq-agent-backup.timer`：`OnCalendar=Sun *-*-* 04:10:00`、`Persistent=true`，
   调用 `node src/ops.js backup --confirm`；
+- `qq-agent-backup-drill.timer`：每月执行一次 `ops backup --drill --confirm`，验证备份可解密、
+  tar 与 SQLite 完整性；
 - `process-guard.timer`：`OnBootSec=3min`、`OnUnitActiveSec=10min`，
   调用 `node src/ops.js guard --confirm`；
 - `qq-agent-health.timer`：`OnBootSec=5min`、`OnUnitActiveSec=5min`，

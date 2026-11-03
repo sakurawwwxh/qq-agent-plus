@@ -582,6 +582,45 @@ test('插件：总开关关着跳过；开着且 manifest 合法为绿；manifes
   assert.match(bad.detail, /demo/);
 });
 
+test('巡检：requireNetworkIsolation 在本机做不到时报红（即使 networkIsolation=false）', async () => {
+  const dir = makeDataDir({ withDb: false });
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+    plugins: {
+      enabled: true,
+      enabledIds: [],
+      requireIsolation: false,
+      networkIsolation: false,
+      requireNetworkIsolation: true
+    }
+  }));
+  const r = await runHealthCheck({
+    dataDir: dir,
+    fetchImpl: okFetch,
+    statfs: okStatfs,
+    notify: null,
+    isolationProbe: () => ({ net: false })
+  });
+  const item = r.checks.find((c) => c.name === 'plugins');
+  assert.ok(item, '巡检必须包含 plugins 项');
+  assert.equal(item.ok, false, '要求网络隔离但做不到 = 插件不会加载，巡检不能报绿');
+  assert.match(String(item.detail), /要求网络隔离/);
+});
+
+test('巡检：明确移出 allow 清单的会话，pending 堆积不算收发停滞', async () => {
+  const dir = makeDataDir({ withDb: true });
+  const old = Date.now() - 2 * 60 * 60 * 1000;
+  const db = openDatabase(path.join(dir, 'messages.sqlite'));
+  db.prepare("UPDATE messages SET ts=?, available_at=0 WHERE self=0").run(old);
+  db.close();
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+    allow: { groups: ['999'], private: [] }
+  }));
+  const r = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });
+  const item = r.checks.find((c) => c.name === 'outbound-freshness');
+  assert.ok(item, '巡检必须包含 outbound-freshness 项');
+  assert.equal(item.ok, true, `被移出 allow 的会话不应触发停滞告警：${item.detail}`);
+});
+
 test('控制台交互体检：persist=false 不写 health.json，integrityCheck=false 跳过全库扫描', async () => {
   const dir = makeDataDir({ withDb: true });
   const healthFile = path.join(dir, 'health.json');

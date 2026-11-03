@@ -26,6 +26,16 @@ describe('ChatStore', () => {
     assert.deepEqual(store.recent('group:1', { limit: 1, offset: 1 }).map((m) => m.mid), ['1']);
   });
 
+  it('lastSelfMessageAt 直接查库，不被最近 100 条窗口截断', (t) => {
+    const { store } = fixture(t);
+    const base = Date.now() - 200_000;
+    store.appendSelf('group:1', { mid: 'self-1', text: '我说过话', ts: base });
+    for (let i = 0; i < 120; i += 1) append(store, i + 1000, `m${i}`);
+    assert.equal(store.lastSelfMessageAt('group:1'), base);
+    assert.equal(store.recent('group:1', { limit: 100 }).some((m) => m.self), false,
+      '前提：最近 100 条里确实没有自己');
+  });
+
   it('claims a snapshot without acknowledging it and keeps later messages pending', (t) => {
     const { store } = fixture(t);
     append(store, 1);
@@ -133,10 +143,10 @@ describe('ChatStore', () => {
     assert.equal(store.getChatMeta('group:1').held, 2, '前提：一条在途 + 一条主动唤醒的未知残骸');
     assert.equal(store.resolveHeld('group:1'), 1, '清掉的是残骸数，不是把在途那条也算进去');
     assert.equal(store.hasEffects(batch.id), true, '在途租约的 sending 行被删了：收尾会当成没发过');
-    assert.ok(store.listUnknownOperations('group:1').some((op) => op.id === live), '在途证据仍在库里');
+    assert.ok(store.listUnknownOperations('group:1', 100, { includeSending: true }).some((op) => op.id === live), '在途证据仍在库里');
     // 主动唤醒没有 runs 行（runId 是合成值），残骸 run_id 在 runs 里查无此人 ——
     // 只按终态 run 取交集的写法会永远清不掉它，控制台一直显示"待核对"。
-    assert.equal(store.listUnknownOperations('group:1').some((op) => op.id === orphan), false,
+    assert.equal(store.listUnknownOperations('group:1', 100, { includeSending: true }).some((op) => op.id === orphan), false,
       '主动唤醒的未知残骸要能清掉，否则人工核对永远点不干净');
     assert.equal(store.getChatMeta('group:1').held, 1, '清完之后只剩在途那条');
   });
@@ -162,6 +172,21 @@ describe('ChatStore', () => {
     assert.equal(two.remaining, 0);
     assert.equal(store.findByMid('group:9', message.mid).state, 'acked');
     assert.equal(store.getChatMeta('group:9').held, 0);
+  });
+
+  it('reconcile 不允许把仍在发送的 sending 行提前改成终态', (t) => {
+    const { store } = fixture(t);
+    append(store, 1);
+    const lease = store.claimUnread('group:1');
+    const live = store.beginSend('group:1', lease.id, { text: 'in flight' });
+    assert.equal(store.reconcileUnknownOperation(live, 'sent'), null,
+      '在途发送不是 unknown，管理员不能提前核对');
+    assert.equal(store.listUnknownOperations('group:1').some((op) => op.id === live), false,
+      '控制台默认只列 unknown，sending 的按钮必然核对失败');
+    assert.equal(store.listUnknownOperations('group:1', 100, { includeSending: true }).some((op) => op.id === live), true,
+      '在途证据必须保留，finishSend/hasUncertainEffects 还要用');
+    store.finishSend(live, { error: 'response lost' });
+    assert.equal(store.reconcileUnknownOperation(live, 'sent').result, 'sent');
   });
 
   it('persists leases and recovers an interrupted unsent run after reopening', (t) => {

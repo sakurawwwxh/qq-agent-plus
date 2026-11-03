@@ -57,6 +57,7 @@ const MAX_GROUPS = 8;
 const MAX_FIELDS = 32;
 const MAX_OPTIONS = 20;
 const MAX_ACTIONS = 24;
+const MAX_SCHEDULES = 24;
 const MAX_DOMAIN = 120;
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/;
@@ -393,15 +394,23 @@ export function parsePluginManifest(raw, { dir = '' } = {}) {
     tools.push(result.tool);
   }
 
-  const rawSchedule = raw.schedule ?? [];  if (!Array.isArray(rawSchedule)) return { ok: false, error: 'schedule 必须是数组' };
+  const rawSchedule = raw.schedule ?? [];
+  if (!Array.isArray(rawSchedule)) return { ok: false, error: 'schedule 必须是数组' };
+  if (rawSchedule.length > MAX_SCHEDULES) {
+    return { ok: false, error: `schedule 超过 ${MAX_SCHEDULES} 条上限` };
+  }
   if (rawSchedule.length && !capabilities.includes('schedule')) {
     return { ok: false, error: '声明了 schedule 就必须在 capabilities 里带上 "schedule"' };
   }
   const schedule = [];
+  const scheduleNames = new Set();
   for (const [index, item] of rawSchedule.entries()) {
     const result = validateSchedule(item, index);
     if (result.error) return { ok: false, error: result.error };
-    if (schedule.some((s) => s.name === result.schedule.name)) return { ok: false, error: `周期任务名重复：${result.schedule.name}` };
+    if (scheduleNames.has(result.schedule.name)) {
+      return { ok: false, error: `周期任务名重复：${result.schedule.name}` };
+    }
+    scheduleNames.add(result.schedule.name);
     schedule.push(result.schedule);
   }
 

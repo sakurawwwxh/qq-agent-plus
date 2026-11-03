@@ -39,7 +39,9 @@ export async function sendOwnerText({ httpPort = 3390, httpUrl = '', token = '',
     const res = await fetchImpl(`${base}/send_private_msg`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ user_id: Number(owner), message: text })
+      body: JSON.stringify({ user_id: Number(owner), message: text }),
+      // 巡检是 oneshot：OneBot 半开连接不能把整个健康检查进程无限挂住。
+      signal: AbortSignal.timeout(8000)
     });
     if (!res.ok) return { ok: false, detail: `OneBot HTTP ${res.status}` };
     const data = await readJsonBounded(res, 256 * 1024).catch(() => ({}));

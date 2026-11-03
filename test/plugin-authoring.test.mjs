@@ -135,7 +135,7 @@ test('collectPluginFiles：跳过隐藏文件与 node_modules；符号链接一�
   try { fs.symlinkSync(path.join(dir, 'index.mjs'), path.join(dir, 'link.mjs'), 'file'); linked = true; }
   catch { /* Windows 非开发者模式建不了符号链接 */ }
   if (!linked) {
-    t.diagnostic('本机建不了符号链接（Windows 需要开发者模式/管理员），这条在 Linux 矩阵上跑');
+    t.skip('本机建不了符号链接（Windows 需要开发者模式/管理员）');
     return;
   }
   assert.throws(() => collectPluginFiles(dir), /不支持的东西/, '符号链接不能进包（安装器本来也会拒）');

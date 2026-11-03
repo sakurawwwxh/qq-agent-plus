@@ -153,6 +153,12 @@ test('B站插件：主人 UID 绑定、whoami 与一键三连已声明，所有�
     assert.equal(manifest.tools.find((tool) => tool.name === name)?.timeoutMs, 30000,
       `${name} 走短链时可能先跟随一次重定向，默认 20 秒太紧`);
   }
+  const danmakuTool = manifest.tools.find((tool) => tool.name === 'danmaku');
+  assert.equal(danmakuTool.parameters.properties.text, undefined, 'danmaku 只读，发送参数应只在 danmaku_send');
+  assert.equal(danmakuTool.parameters.properties.progressMs, undefined, 'danmaku 只读，时间参数应只在 danmaku_send');
+  const loginTool = manifest.tools.find((tool) => tool.name === 'login');
+  assert.equal(loginTool.parameters.properties.channel, undefined,
+    'channel 必须由宿主 context 注入，不能作为模型可控参数');
 
   const src = fs.readFileSync(path.join(dirOf('bilibili'), 'index.mjs'), 'utf8');
   assert.match(src, /async function requireWriteAuth/, '要有统一的写操作鉴权（登录 + 主人 UID 核对）');
@@ -238,4 +244,23 @@ test('B站插件：只读视频工具接受完整链接和 b23.tv 短链，非�
     /需要 BV 号/
   );
   assert.deepEqual(calls, [], '非法主机必须在宿主 HTTP 之前被拒绝');
+});
+
+test('B站插件：模型伪造 channel=console 不能绕过管理员；私人账号数据要求 owner', async (t) => {
+  const host = await startHost('bilibili');
+  t.after(() => host.stop());
+  await assert.rejects(
+    () => host.callTool('login', { action: 'start', channel: 'console' }, {
+      context: { chatKey: 'private:12345', senderIsOwner: false }
+    }),
+    /只有管理员/,
+    'channel 只能由宿主 context 设置，模型参数不能冒充控制台'
+  );
+  await assert.rejects(
+    () => host.callTool('account', { what: 'history' }, {
+      context: { chatKey: 'group:12345', senderIsOwner: false }
+    }),
+    /只有管理员/,
+    '历史/收藏/关注/通知是管理员私人数据'
+  );
 });

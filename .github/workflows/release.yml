@@ -76,6 +76,8 @@ jobs:
             exit 1
           fi
           echo "版本号一致：$TAG_VERSION"
+      - name: 发布元数据一致性（CHANGES / compose / README / DOCKER / tag 提交）
+        run: node scripts/release-check.mjs --tag "$GITHUB_REF_NAME"
       - name: Shell 脚本语法检查
         run: |
           set -e

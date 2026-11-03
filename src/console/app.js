@@ -1079,7 +1079,7 @@ function buildApp({
           signal
         );
       },
-      allowPrivateUser: async (userId) => {
+      allowPrivateUser: async (userId, { clearDeny = true } = {}) => {
         const current = getConfig();
         const id = String(userId || '').trim();
         if (!/^\d{1,15}$/.test(id)) throw new Error('好友 QQ 号无效');
@@ -1087,12 +1087,16 @@ function buildApp({
           ...idList(current.allow?.private),
           id
         ])];
-        const privateDeny = idList(current.deny?.private)
-          .filter((item) => item !== id);
-        updateConfig({
-          allow: { ...(current.allow || {}), private: privateAllow },
-          deny: { ...(current.deny || {}), private: privateDeny }
-        });
+        const patch = { allow: { ...(current.allow || {}), private: privateAllow } };
+        // 自动同步"已知好友"只补 allow，绝不能把管理员手写的 deny.private 删掉；
+        // 只有管理员当场批准好友申请的路径才允许清 deny。
+        if (clearDeny) {
+          patch.deny = {
+            ...(current.deny || {}),
+            private: idList(current.deny?.private).filter((item) => item !== id)
+          };
+        }
+        updateConfig(patch);
         emit('status', { configUpdated: true, friendWhitelisted: id });
       }
     });

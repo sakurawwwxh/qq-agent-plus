@@ -21,7 +21,7 @@ export function registerStorageRoutes(router, deps = {}) {
   // 手动触发一次"压缩 N 天前的留档"（幂等：已经压过的跳过）。
   // 不做删除——删除只走保留期调度与总量预算，避免控制台按钮变成不可逆操作。
   router.add('POST', '/api/storage/compress', async (req, res) => {
-    const result = sessions.compressSessions();
+    const result = await sessions.compressSessions();
     return json(res, 200, {
       ok: true,
       ...result,

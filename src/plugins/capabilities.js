@@ -144,6 +144,16 @@ export function createCapabilities({
   const incidentLogs = [];
   const stats = { storageWrites: 0, storageBytes: 0, logLines: 0, incidentLogs: 0, httpRequests: 0, sends: 0, mediaDownloads: 0, approvals: 0 };
   const sendTimes = [];
+  // send.text 与 send.file 共用同一个每分钟出站桶：否则插件可以绕过 6 条/分钟
+  // 的防刷屏上限，用文件/图片刷满全局 80 条/分钟（2026-11-03 全量审查 P2）。
+  const takeSendSlot = () => {
+    const cutoff = nowFn() - 60000;
+    while (sendTimes.length && sendTimes[0] < cutoff) sendTimes.shift();
+    if (sendTimes.length >= MAX_SENDS_PER_MIN) {
+      throw fail('E_RATE', `发送太频繁（每分钟上限 ${MAX_SENDS_PER_MIN} 条）`);
+    }
+    sendTimes.push(nowFn()); // 先记再发：失败也占额度，避免失败重试无限刷
+  };
   // manifest 决定白名单：凭据字段、可授权动作、配额、http 域名。没声明的一律不认（fail-closed）。
   const secretKeys = secretFieldKeys(pluginManifest?.settings);
   const approvalActions = new Set((pluginManifest?.approvals || []).map((item) => item.action));
@@ -250,10 +260,7 @@ export function createCapabilities({
       if (!body) throw fail('E_ARGS', 'text 不能为空');
       const sender = senderOf();
       if (!sender?.sendTextBatch) throw fail('E_NO_SENDER', '宿主没有可用的发送队列（插件暂时发不了言）');
-      const cutoff = nowFn() - 60000;
-      while (sendTimes.length && sendTimes[0] < cutoff) sendTimes.shift();
-      if (sendTimes.length >= MAX_SENDS_PER_MIN) throw fail('E_RATE', `说话太频繁（每分钟上限 ${MAX_SENDS_PER_MIN} 句）`);
-      sendTimes.push(nowFn());     // 先记时间再发：失败也占额度，免得一个总失败的插件无限重试刷屏
+      takeSendSlot();
       await sender.sendTextBatch(target, [body], {});
       stats.sends += 1;
       log(`[plugin:${pluginId}] 以机器人身份在 ${target} 说了一句：${body.slice(0, 60)}`);
@@ -562,6 +569,7 @@ export function createCapabilities({
       const size = fs.statSync(source).size;
       if (size > MAX_MEDIA_BYTES) throw fail('E_TOO_BIG', `文件超过 ${MAX_MEDIA_BYTES / 1024 / 1024}MB，不能发送`);
       const sender = senderOf();
+      takeSendSlot();
       const displayName = String(name || path.basename(source)).replace(/[\\/:*?"<>|]/g, '_').slice(0, 100);
       // NTQQ 的 upload_group_file 只收文件，图片会被 rich media transfer failed。
       // 文件名可能没有扩展名，按魔数识别；是图片就走 image 消息段，否则保持群文件。

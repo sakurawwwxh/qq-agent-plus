@@ -515,7 +515,13 @@ const tools = {
     };
   },
 
-  async account({ what, mediaId, page, cursor, kind, limit } = {}) {
+  async account({ what, mediaId, page, cursor, kind, limit } = {}, context = {}) {
+    // 历史/收藏/关注/未读通知是管理员账号的私人数据：聊天里的模型不能替群友读。
+    // 控制台直调走已鉴权的 callConsoleTool，带 context.channel='console'。
+    if (['history', 'favorites', 'followings', 'notifications'].includes(String(what || ''))
+      && context?.channel !== 'console' && context?.senderIsOwner !== true) {
+      throw new Error('只有管理员可以查看 B 站历史/收藏/关注/通知；群友请让管理员自己来问');
+    }
     // 只读接口有 SESSDATA 就够；doctor 要在 mid 检查之前（它就是用来排查配置缺项的）
     const auth = await requireLogin({ write: false });
     if (what === 'doctor' || what === 'whoami') {
@@ -563,11 +569,11 @@ const tools = {
   },
 
   // ── 扫码登录（聊天内完成，Cookie 进加密凭据、立即生效） ──
-  async login({ action, channel: channelArg } = {}, context = {}) {
+  async login({ action } = {}, context = {}) {
     const PASSPORT = 'https://passport.bilibili.com';
-    // 控制台直调时宿主会带 context.channel='console'；旧版前端只给 start 传了 channel，
-    // poll 没传，曾把控制台自己的轮询误判成"非管理员在群里扫码"（issue #21）。
-    const channel = String(channelArg || context?.channel || 'chat');
+    // 只信宿主注入的 context.channel；模型传入的 channel 参数不能当控制台凭据。
+    // （旧版前端只给 start 传 channel 的历史问题由宿主 callConsoleTool 统一补 context 解决。）
+    const channel = context?.channel === 'console' ? 'console' : 'chat';
     // 聊天内登录/退出只允许管理员：私聊白名单里的普通好友不能把机器人绑到自己账号上，
     // 也不能把管理员的凭据清掉。控制台走已鉴权的 callConsoleTool，不受这条限制。
     // poll 只读且不产生凭据（凭据是 B 站确认后随响应回来的），并且 pendingLogin.chatKey
@@ -589,8 +595,8 @@ const tools = {
       const url = String(data?.data?.url || '');
       const key = String(data?.data?.qrcode_key || '');
       if (!url || !key) throw new Error('拿不到登录二维码（passport 接口没返回 url/qrcode_key）');
-      pendingLogin = { key, url, at: Date.now() };
-      if (String(channelArg || 'chat') === 'console') {
+      pendingLogin = { key, url, at: Date.now(), origin: channel };
+      if (channel === 'console') {
         // 控制台流程：二维码原文交回网页渲染（本地 SVG，不经第三方）；
         // 登录链接只在 B 站 ↔ 本机之间走，不落日志
         return { ok: true, channel: 'console', qrcodeDataUrl: qrDataUrl(url), note: '用手机 B 站 App 扫这个码，手机上点确认后点「查扫码结果」（8 分钟内有效）。' };
@@ -613,6 +619,9 @@ const tools = {
     if (action === 'poll') {
       if (!pendingLogin.key || Date.now() - pendingLogin.at > 8 * 60_000) {
         throw new Error('没有进行中的扫码，或二维码已过期：请重新开始登录');
+      }
+      if (channel !== 'console' && pendingLogin.origin === 'console') {
+        throw new Error('这个扫码登录是在控制台发起的：请在控制台完成');
       }
       if (channel !== 'console' && pendingLogin.chatKey
         && String(context?.chatKey || '') !== pendingLogin.chatKey) {

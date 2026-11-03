@@ -199,10 +199,13 @@ export class PluginHost {
       // 启动方式（命令 + 参数）由 isolation.js 现算：隔离参数按**本插件自己的目录**算
       // （probeIsolation 只返回"能不能用"的结论，不缓存参数 —— 缓存一份会把第一个插件的目录发给所有插件）
       // 未隔离时用最朴素的参数起（不加 --permission —— 那组参数在本机跑不起来）
+      // requireNetworkIsolation=true 时即使 networkIsolation=false 也必须隔离：
+      // 两个独立开关允许这种组合，不能让它静默退化成"带网络启动"。
+      const isolateNetwork = this.requireNetworkIsolation || this.networkIsolation;
       const spec = pluginLaunchSpec({
         pluginDir: this.#pluginDir(),
         unconfined: this.unconfined,
-        networkIsolation: this.networkIsolation,
+        networkIsolation: isolateNetwork,
         memoryMb: this.limits.memoryMb,
         spawn: this.spawnSyncImpl,
         nodePath: this.nodePath
@@ -504,7 +507,12 @@ export class PluginHost {
 
   async #onExit(code, signal) {
     this.#stopHeartbeat();
-    this.#rejectAll(new Error(`插件进程退出（code=${code}, signal=${signal}）`));
+    // 进程在写操作中途退出 = 结果未知：必须带 E_PLUGIN_DOWN，让 registry 走 unknown 而不是
+    // 当"确定失败"退款——插件可能已经把评论/弹幕发出去了（2026-11-03 全量审查 P1）。
+    this.#rejectAll(Object.assign(
+      new Error(`插件进程退出（code=${code}, signal=${signal}）`),
+      { code: 'E_PLUGIN_DOWN' }
+    ));
     // 旧代发起的能力调用可能还在宿主里跑（下载/HTTP 没有总截止）。计数不归零的话，
     // 新进程的 media.* 会一直被上一代占着并发位、永久 E_BUSY。
     this.capInFlight = 0;

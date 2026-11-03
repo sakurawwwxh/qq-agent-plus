@@ -122,7 +122,12 @@ docker run -d --name qq-agent \
 ## 3. 配置从哪来
 
 容器模式下，下面这些**环境变量只用于首次播种**（配置里已有值时不会被覆盖，
-避免重启把控制台里改过的设置顶回去）：
+避免重启把控制台里改过的设置顶回去）。
+
+> `docker compose` 只会把 `docker-compose.yml` 的 `environment:` 里列出的变量传进容器；
+> 下表是 entrypoint 支持的变量。未在 compose 文件里列出的（例如 `QQ_AGENT_API_*`、
+> `QQ_AGENT_PRINT_TOKEN`、`LIVING_MEMORY_VECTOR_SCAN_LIMIT`）需要自行加到
+> `agent.environment`，或用 `docker run -e`。直接写进 `.env` 只会参与 compose 变量替换。
 
 | 变量 | 作用 |
 | --- | --- |

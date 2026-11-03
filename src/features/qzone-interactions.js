@@ -637,7 +637,8 @@ export class QzoneInteractionManager {
         },
         comment: { ...comment },
         rootComment: root ? { ...root } : (!comment.parentTid ? { ...comment } : null),
-        context: (post.comments || []).map((item) => ({
+        // 每条待回复评论都复制整份线程会让状态按 C×K 膨胀；模型/回复只需要最近几条上下文。
+        context: (post.comments || []).slice(-10).map((item) => ({
           ...item,
           self: String(item.uin) === selfId
         }))
@@ -742,6 +743,10 @@ export class QzoneInteractionManager {
           commentCount: Number(item.comment_num) || 0
         };
         if (!post.tid) continue;
+        // 自己的动态也必须受 maxAgeHours 约束：列表里可能还有几周前的旧动态，
+        // 评论数一变就回复会让"只处理最近 N 小时"失效。
+        const ageMs = this.now() - Number(post.time) * 1000;
+        if (!post.time || ageMs > cfg.maxAgeHours * HOUR_MS) continue;
         const previous = this.state.watchedPosts.find((watch) => watch.key === qzonePostKey(post));
         this.#watchPost(post, { own: true });
         if (post.commentCount > 0

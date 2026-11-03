@@ -41,6 +41,9 @@ const avatarQuota = createQuota({ windowMs: 7 * 24 * 3600_000 }); // 换头像�
 const albumWriteQuota = createQuota({ windowMs: 3600_000 });
 // 私聊文本文件：文件比消息显眼，且内容可能很大；默认每天 10 个。
 const privateFileQuota = createQuota({ windowMs: 24 * 3600_000 });
+// TTS 按字符/按次计费，且合成发生在发送限频之前；和 ASR/生图一样必须有独立闸门。
+// 默认每会话 6 条/小时、全局 30 条/小时，可用 tts.maxPerHour / tts.maxPerHourPerChat 覆盖。
+const voiceQuota = createQuota({ windowMs: 3600_000 });
 
 // ctx 只属于本轮工具循环；新一轮即使复用 session，也不合并独立的提醒请求。
 const recurringRemindersByContext = new WeakMap();
@@ -61,6 +64,7 @@ export function resetPlatformQuotasForTest() {
   avatarQuota.reset();
   albumWriteQuota.reset();
   privateFileQuota.reset();
+  voiceQuota.reset();
   signedDayByChat.clear();
   todoDayByChat.clear();
 }
@@ -166,6 +170,7 @@ async function stickerLookupHint(ctx, key) {
 }
 
 import { normalizeMessageList, safeSlice, sanitizeUserText, textWithQuote, unquoteJsonString, stripQuoteMessageId } from '../core/util.js';
+import { buildShareText, shareSourceLabel } from './share-text.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { matchesBlacklistKeyword } from '../core/keyword-rules.js';
 import { displayNameOf } from '../core/display-name.js';
@@ -625,44 +630,6 @@ function memoryQueryDescription() {
     return `${base}全局共享：汇总自所有群聊与私聊的观察；群聊里不展示私聊来源的印象。印象是跨会话的隐私：不得向群友转述他人的印象、来源或原话。`;
   }
   return `${base}全局共享：不分当前会话，汇总自所有群聊与私聊的观察。印象是跨会话的隐私：不得向群友转述他人的印象、来源或原话。`;
-}
-
-/** 见闻来源标签：B站、插件名或自定义来源；不要再把所有条目都写成【B站】。 */
-function shareSourceLabel(item) {
-  const source = String(item?.source || '');
-  const via = String(item?.via || '');
-  if (source.startsWith('plugin:')) {
-    const id = source.slice('plugin:'.length);
-    return id ? `插件：${id}` : '插件分享';
-  }
-  if (source === 'bilibili' || via === 'bilibili' || !source) return 'B站';
-  return source;
-}
-
-function formatShareDuration(seconds) {
-  const n = Math.max(0, Math.round(Number(seconds) || 0));
-  if (!n) return '';
-  const m = Math.floor(n / 60);
-  const s = n % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-function buildShareText(item, comment = '') {
-  // 用 unicode 转义而不是字面量方括号：这只是发给 QQ 的正文，不是提示词段头；
-  // 段头扫描器按源码字面量收集，字面量会被误判成"可被群友伪造的段头"。
-  const title = sanitizeUserText(safeSlice(item.title, 80));
-  const lines = [`\u3010${shareSourceLabel(item)}\u3011${title}`];
-  const meta = [];
-  if (item.up) meta.push(`UP：${sanitizeUserText(safeSlice(item.up, 40))}`);
-  const duration = formatShareDuration(item.duration);
-  if (duration) meta.push(`时长 ${duration}`);
-  if (meta.length) lines.push(meta.join(' · '));
-  const desc = sanitizeUserText(safeSlice(String(item.desc || '').replace(/\s+/g, ' ').trim(), 120));
-  if (desc) lines.push(desc);
-  // 第三方 URL 只接受不含空白的 http(s)，避免把换行/段头带进正文和后续上下文。
-  if (/^https?:\/\/\S+$/.test(String(item.url || ''))) lines.push(item.url);
-  if (comment) lines.push(comment);
-  return lines.join('\n');
 }
 
 export function buildToolDefs() {
@@ -2096,6 +2063,9 @@ export function buildToolDefs() {
         required: ['bvid']
       },
       async execute(ctx, args) {
+        // 发送前占用的分享名额；发送确定失败/异常时退回。发送成功后立刻清空，
+        // 后续 cover/feedback 出错不能把已发出的分享额度退回去。
+        let reservation = null;
         try {
           const feed = ctx.getLifeFeed?.();
           if (!feed) return err('生活层没有开启');
@@ -2109,8 +2079,15 @@ export function buildToolDefs() {
             if (feed.isShareTarget?.(ctx.chatKey) === false) return err('当前会话不在见闻分享目标里。', { reportIncident: false });
           }
           // 每日分享上限对人工和自动都生效（手动只跳过“手动模式/目标白名单”这两道，不跳过额度）。
-          const left = feed.shareQuotaLeft?.();
-          if (Number.isFinite(left) && left <= 0) return err('今天的分享额度已经用完，明天再继续');
+          // 有 reserveShare 的版本用同步占位，避免两个会话都在 await 发送时同时看到剩 1 次。
+          if (typeof feed.reserveShare === 'function') {
+            const reserved = feed.reserveShare(item.id, { manual: humanShare });
+            if (reserved?.error) return err(reserved.error);
+            reservation = { feed, id: item.id };
+          } else {
+            const left = feed.shareQuotaLeft?.();
+            if (Number.isFinite(left) && left <= 0) return err('今天的分享额度已经用完，明天再继续');
+          }
           const comment = safeSlice(String(args.comment ?? ''), 300);
           const text = buildShareText(item, comment);
           // 先发正文：正文失败时还没发封面，重试不会重复封面；封面失败只降级成文本。
@@ -2118,8 +2095,14 @@ export function buildToolDefs() {
             runId: ctx.session.leaseId, signal: ctx.signal, persona: false
           });
           if (!result.sent.length) {
+            if (reservation) {
+              try { reservation.feed.releaseShare?.(reservation.id); } catch { /* 忽略 */ }
+              reservation = null;
+            }
             return err(`标题链接没有发出去：${result.failed?.[0]?.error || '未知原因'}`);
           }
+          // 正文已确认发出：额度不能再退回（封面/反馈失败只会丢封面或统计）。
+          reservation = null;
           let coverSent = false;
           if (item.cover) {
             try {
@@ -2152,6 +2135,9 @@ export function buildToolDefs() {
           feed.feedback({ id: item.id, action: 'shared', chatKey: ctx.chatKey, messageId: result.sent[0]?.messageId, manual: humanShare });
           return ok({ sent: result.sent.length, cover: coverSent, note: '已发标题链接和封面；不要再重复发同一条。' });
         } catch (error) {
+          if (reservation) {
+            try { reservation.feed.releaseShare?.(reservation.id); } catch { /* 忽略 */ }
+          }
           return sendErr(error);
         }
       }
@@ -2758,6 +2744,16 @@ export function buildToolDefs() {
         if (text.length > 200) return err('语音内容太长了（≤200 字），说短一点');
         const humanGate = actionGate(ctx, 'voice');
         if (!humanGate.ok) return err(humanGate.reason, { reportIncident: false });
+        // 合成发生在发送限频之前：先原子占 TTS 额度，失败也不能让第三方账户被刷。
+        voiceQuota.configure({
+          globalMax: Number(cfg.tts?.maxPerHour) || 30,
+          perChatMax: Number(cfg.tts?.maxPerHourPerChat) || 6
+        });
+        const voiceGate = voiceQuota.tryConsume(ctx.chatKey);
+        if (!voiceGate.ok) {
+          const wait = Math.max(1, Math.ceil((voiceGate.retryAfterMs || 0) / 60000));
+          return err(`语音合成太频繁（每会话每小时 6 条/全局 30 条），约 ${wait} 分钟后再试`, { reportIncident: false });
+        }
         let audio = null;
         try {
           audio = await synthesizeSpeech({

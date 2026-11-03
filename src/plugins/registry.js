@@ -1061,6 +1061,17 @@ export class PluginRegistry {
     if (!ready || ready.state !== 'running') {
       return { content: JSON.stringify({ error: `插件 ${host.id} 未在运行（${ready?.lastError || '按需启动失败'}）` }), isError: true };
     }
+    // 工具定义是每轮开始时快照的；本轮中途升级/重载/回滚后，旧定义的 action 可能与
+    // 新代码不一致（旧版无 action 的新写工具会绕过批准）。定义变了就让模型下一轮重取。
+    const liveTool = (ready.manifest.tools || []).find((item) => item.name === tool.name);
+    if (!liveTool || JSON.stringify(liveTool) !== JSON.stringify(tool)) {
+      return {
+        content: JSON.stringify({
+          error: `插件 ${host.id} 的工具定义已更新（可能刚升级/重载），本轮调用已取消；请下一轮重新调用`
+        }),
+        isError: true
+      };
+    }
     // 写操作三层门（开关在工具表生成时已挡掉"关"的情况，这里再判一次是纵深）：
     // 60s 间隔 → 对象级批准（未批则登记待批并通知管理员）→ 当天配额。全部宿主侧强制。
     let gate = null;

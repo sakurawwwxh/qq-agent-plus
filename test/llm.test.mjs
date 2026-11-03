@@ -15,11 +15,32 @@ const {
   cachedTokensOfUsage,
   chatCompletion,
   chatCompletionWithRetry,
-  isRetryableError
+  isRetryableError,
+  resolveApiKey
 } = await import('../src/llm/llm.js');
 const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
 
 describe('LLM client', () => {
+  it('选了 provider 但没有该家 Key 时绝不回退顶层 api.apiKey', () => {
+    assert.equal(resolveApiKey({
+      api: { provider: 'openrouter', apiKey: 'OLD-A6API-KEY' },
+      providers: []
+    }), '', '跨厂商不能把旧 Key 发给新端点');
+    assert.equal(resolveApiKey({
+      api: { provider: 'openrouter', apiKey: 'OLD-A6API-KEY' },
+      providerKeys: { openrouter: 'OR-KEY' },
+      providers: []
+    }), 'OR-KEY');
+    assert.equal(resolveApiKey({
+      api: { provider: 'openrouter' },
+      providers: [{ id: 'openrouter', apiKey: 'LEGACY-INLINE' }]
+    }), 'LEGACY-INLINE', '老配置内联 Key 仍认');
+    assert.equal(resolveApiKey({
+      api: { provider: '', apiKey: 'MANUAL-KEY' },
+      providers: []
+    }), 'MANUAL-KEY', '手动模式仍用顶层 Key');
+  });
+
   it('reads cached input tokens from supported provider response shapes', () => {
     assert.equal(cachedTokensOfUsage({
       prompt_tokens_details: { cached_tokens: 120 }

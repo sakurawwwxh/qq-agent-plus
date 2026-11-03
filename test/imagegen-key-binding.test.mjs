@@ -137,8 +137,10 @@ test('/api/imagegen/key：同域复用时不回显模型 Key（P2）', async (t)
   // 清掉自有 Key，改成"与聊天模型同域"：这时才会走复用那条（都在 start 之前设好）
   C.updateConfig({
     server: { ...cfg.server, host: '127.0.0.1', port, token: '' },
-    imageGen: { ...cfg.imageGen, baseUrl: 'https://gateway.example.com/v1', apiKey: '' },
-    api: { ...cfg.api, baseUrl: 'https://gateway.example.com/v1', apiKey: 'model-key' }
+    imageGen: { ...cfg.imageGen, baseUrl: 'https://gateway.example.com/v1', apiKey: '', apiKeyHost: '', keys: { __replace__: {} } },
+    // 这条测的是"同域复用模型 Key"的手动模式；provider 非空时顶层 apiKey 是旧字段，
+    // 按安全口径不能复用（见 resolveApiKey 的回归用例）。
+    api: { ...cfg.api, provider: '', baseUrl: 'https://gateway.example.com/v1', apiKey: 'model-key' }
   });
   const app = createApp({ log: () => {} });
   t.after(async () => { await app.stop(); });

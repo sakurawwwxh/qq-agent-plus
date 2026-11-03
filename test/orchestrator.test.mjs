@@ -2175,6 +2175,29 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.equal(runner.scheduledWakes.has('group:1'), false);
   });
 
+  it('预算 degrade 不拦 proactive 自安排唤醒；只有 block 才顺延 24 小时', async (t) => {
+    const { runner, cfg } = fixture(t, {});
+    runner.sessions.todayUsage = () => ({ estimatedYuan: 999 });
+    let woke = 0;
+    runner.wake = async () => { woke += 1; return { sent: [] }; };
+    const note = '【自安排】过会儿回来看看';
+
+    setRuntimeConfig({ ...cfg, api: { ...cfg.api, budget: { enabled: true, dailyYuan: 0.01, onExceed: 'degrade' } } });
+    runner.scheduledWakes.set('group:1', { at: Date.now() - 1000, note, kind: 'selfWake' });
+    runner.fireDueScheduledWakes();
+    assert.equal(woke, 1, 'degrade 只挡非 proactive，自安排唤醒应该照常发出');
+    assert.equal(runner.scheduledWakes.has('group:1'), false);
+
+    setRuntimeConfig({ ...cfg, api: { ...cfg.api, budget: { enabled: true, dailyYuan: 0.01, onExceed: 'block' } } });
+    runner.scheduledWakes.set('group:1', { at: Date.now() - 1000, note, kind: 'selfWake' });
+    runner.fireDueScheduledWakes();
+    assert.equal(woke, 1, 'block 下不能真的唤醒（#wake 会静默 return）');
+    const kept = runner.scheduledWakes.get('group:1');
+    assert.ok(kept, 'block 下必须保留安排与留言');
+    assert.equal(kept.note, note);
+    assert.ok(kept.at > Date.now() + 23 * 60 * 60 * 1000, '预算按日重置，顺延接近 24 小时');
+  });
+
   it('定时提醒：@ 落在第 51–100 条未读里时 degrade 不会丢这次唤醒，提醒也不该被顺延', async (t) => {
     // 派发预检与 #wake 的 degrade 闸门必须看同一批未读（都是 100 条）。看少 50 条时，
     // @ 落在第 51–100 条会被预检判成"会丢"→ 提醒无谓顺延 24 小时，而 #wake 其实照常派发

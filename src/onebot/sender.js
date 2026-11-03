@@ -418,7 +418,14 @@ export class SendQueue {
           const { definite, uncertain } = classifyTransportFailure(error);
           if (attempt >= 2 || !definite || uncertain || options.signal?.aborted) throw error;
           log.info(`[sender] 发送失败（可确认未送达），1.5 秒后重试一次（${message.slice(0, 80)}）`);
-          await sleep(1500);
+          // 等待要可中止；中止后必须抛**第一次的 definite 错误**，不能抛 AbortError ——
+          // 后者会被归类为 unknown，把一个可安全重试的"确定未送达"变成人工核对阻塞。
+          try {
+            await sleepAbortable(1500, options.signal);
+          } catch {
+            throw error;
+          }
+          if (options.signal?.aborted) throw error;
         }
       }
       try {

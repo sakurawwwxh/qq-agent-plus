@@ -213,6 +213,25 @@ test('手动分享占位不占自动领取额度：未发送时自动 next 仍�
   assert.match(blocked.error, /今天/);
 });
 
+test('分享名额发送前原子占位：并发时只有一个能拿到最后一次', async (t) => {
+  const dir = tempDir(t);
+  const cfg = { lifeFeed: { enabled: true, maxPerForage: 10, maxOffersPerDay: 1, maxPicksPerDay: 10, minDurationSec: 60, maxDurationSec: 3600 } };
+  const manager = new LifeFeedManager({
+    dataDir: dir, store: null, config: () => cfg,
+    fetchImpl: fakeFetch([['popular', POPULAR], ['search/type', { code: 0, data: { result: [] } }]]),
+    now: () => NOW, random: () => 0.5
+  });
+  await manager.forageNow();
+  const all = manager.status().candidates;
+  assert.ok(all.length >= 2);
+  assert.ok(manager.reserveShare(all[0].id).item);
+  assert.match(String(manager.reserveShare(all[0].id).error), /正在分享中/,
+    '同一条候选被两个会话同时分享时必须拒绝第二次');
+  assert.match(String(manager.reserveShare(all[1].id).error), /今天已经分享/);
+  manager.releaseShare(all[0].id);
+  assert.ok(manager.reserveShare(all[1].id).item, '释放后名额应该退回');
+});
+
 test('手动分享发送成功后也占用每日上限，不能绕过 maxOffersPerDay', async (t) => {
   const dir = tempDir(t);
   const cfg = { lifeFeed: { enabled: true, maxPerForage: 10, maxOffersPerDay: 1, maxPicksPerDay: 10, minDurationSec: 60, maxDurationSec: 3600 } };

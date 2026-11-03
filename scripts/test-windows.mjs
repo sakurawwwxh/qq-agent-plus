@@ -18,11 +18,22 @@ const unitFiles = fs.readdirSync(path.join(root, 'test'))
 
 const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-win-unit-'));
 const reportFile = path.join(reportDir, 'spec.txt');
+// 与主 test-suite 同口径：重定向临时目录、关掉启动期真实索引/网络探测、限制并发。
+// 不做这三件事时 Windows job 会打真实外网、临时目录散落，并复现端口抢占。
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-win-tmp-'));
 try {
-  const run = spawnSync(process.execPath, ['--test', '--test-reporter=spec', ...unitFiles], {
+  const run = spawnSync(process.execPath, [
+    '--test-concurrency=4', '--test', '--test-reporter=spec', ...unitFiles
+  ], {
     cwd: root,
     encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024
+    maxBuffer: 64 * 1024 * 1024,
+    env: {
+      ...process.env,
+      TMPDIR: tmpRoot, TMP: tmpRoot, TEMP: tmpRoot,
+      QQ_AGENT_SKIP_INDEX_WARM: '1',
+      QQ_AGENT_SKIP_NETWORK_PROBES: '1'
+    }
   });
   const output = `${run.stdout || ''}${run.stderr || ''}`;
   fs.writeFileSync(reportFile, output);
@@ -41,4 +52,5 @@ try {
   process.exitCode = code;
 } finally {
   fs.rmSync(reportDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

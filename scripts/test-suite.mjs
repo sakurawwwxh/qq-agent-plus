@@ -71,7 +71,11 @@ const preexisting = new Set(fs.readdirSync(baseTmp).filter((n) => n.startsWith('
 // 运维脚本的 qq-agent-face-names-/qq-agent-model-key-）。它们和"漏网测试子进程的产物"
 // 从名字上无法区分，只能按已知前缀排除：在部署机上跑 npm test 时误删正在跑的 ffmpeg
 // 工作目录，会让那次图片/GIF 处理直接失败（2026-10-09 审查）。新增运行时 tmp 前缀时同步这里。
-const RUNTIME_TMP_PREFIXES = ['qq-ffmpeg-', 'qq-ffprobe-', 'qq-agent-face-names-', 'qq-agent-model-key-'];
+const RUNTIME_TMP_PREFIXES = [
+  'qq-ffmpeg-', 'qq-ffprobe-', 'qq-agent-face-names-', 'qq-agent-model-key-',
+  'qq-diagnose-', 'qq-diagnose-fallback-', 'qq-stack-creds-',
+  'qq-backup-drill-', 'qq-restore-', 'qq-agent-local-'
+];
 const tmpRoot = fs.mkdtempSync(path.join(baseTmp, 'qq-test-root-'));
 let cleaned = false;
 function rmBestEffort(target) {

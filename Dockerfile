@@ -24,7 +24,7 @@ WORKDIR /app
 
 # 先装依赖再拷源码：改业务代码时不必重装 node_modules。
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund \
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
  && npm cache clean --force
 
 COPY . .

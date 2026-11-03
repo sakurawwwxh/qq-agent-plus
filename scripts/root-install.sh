@@ -7,7 +7,7 @@
 #
 # 这里只做 root 才能做的准备：
 #   1) 创建/复用一个普通服务用户（默认 qqagent，或沿用现有安装的属主 / SUDO_USER）；
-#   2) 安装 Docker、把服务用户加入 docker 组、开启 linger；
+#   2) 安装 Docker、按显式 opt-in 把服务用户加入 docker 组、开启 linger；
 #   3) 把部署根目录与源码副本交给服务用户；
 #   4) 以服务用户重新执行 install.sh，真正的部署与运行都不再是 root。
 #
@@ -144,7 +144,7 @@ print_plan() {
 源码副本：$SRC_DIR
 将执行：
   1. 创建/复用用户 $SERVICE_USER，并确保有可登录 shell 与 home
-  2. 安装/检查 Docker、把 $SERVICE_USER 加入 docker 组
+  2. 安装/检查 Docker、按 QQ_AGENT_ALLOW_DOCKER_GROUP=1 可选把 $SERVICE_USER 加入 docker 组
   3. loginctl enable-linger $SERVICE_USER，保证退出 SSH 后服务仍在
   4. 复制源码到 $SRC_DIR，属主交给 $SERVICE_USER
   5. 以 $SERVICE_USER 执行 install.sh（真正的部署）
@@ -304,11 +304,15 @@ docker compose version >/dev/null 2>&1 \
 
 getent group docker >/dev/null 2>&1 \
   || die '系统里没有 docker 组；rootless Docker 不在这个安装器的支持范围内'
-# 注意：降权降的是应用进程身份；docker 组仍等价于宿主 root（组内进程可挂载宿主文件系统）。
-# 这是控制台“更新协议端”的前提，代价已写在 docs/LINUX.md。不要把它误当成完整沙箱。
-usermod -aG docker "$SERVICE_USER" || die "无法把 $SERVICE_USER 加入 docker 组"
-id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx docker \
-  || die "docker 组没有生效：$SERVICE_USER"
+# docker 组等价于宿主 root（组内进程可挂载宿主文件系统）。和 deploy.sh 同一口径：
+# 默认不加组，只有显式 QQ_AGENT_ALLOW_DOCKER_GROUP=1 才执行 usermod。
+if [[ "${QQ_AGENT_ALLOW_DOCKER_GROUP:-}" == "1" ]]; then
+  usermod -aG docker "$SERVICE_USER" || die "无法把 $SERVICE_USER 加入 docker 组"
+  id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx docker \
+    || die "docker 组没有生效：$SERVICE_USER"
+else
+  printf '跳过 docker 组自动加入（需要显式设置 QQ_AGENT_ALLOW_DOCKER_GROUP=1；控制台「更新协议端」可能权限不足）\n'
+fi
 
 # ── linger + 用户管理器 ─────────────────────────────────────────────────────
 command -v loginctl >/dev/null 2>&1 || die '缺少 loginctl（systemd 用户服务需要）'

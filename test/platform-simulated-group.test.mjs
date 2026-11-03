@@ -597,7 +597,12 @@ it('提示词门控：平台开关关掉后不再教用法（工具已被摘除�
     cfg.platform = { ...base.platform, ...platform };
     // 光 enabled=true 不算"能用"：ttsConfigured 还要求填了地址（与 orchestrator 摘
     // send_voice 的条件同一个函数），所以这里连 baseUrl 一起给上
-    cfg.tts = { ...cfg.tts, enabled: ttsEnabled, baseUrl: ttsEnabled ? 'https://tts.example/v1' : '' };
+    cfg.tts = {
+      ...cfg.tts,
+      enabled: ttsEnabled,
+      baseUrl: ttsEnabled ? 'https://tts.example/v1' : '',
+      model: ttsEnabled ? 'test-tts' : ''
+    };
     setRuntimeConfig(cfg);
     return buildSystemPrompt({ persona: cfg.persona, selfNickname: '犊子', platform: cfg.platform, chatKey: '' });
   };

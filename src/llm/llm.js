@@ -62,8 +62,9 @@ function getOpencodeSessionId() {
  * 优先级：**当前选中的目录提供商的 Key > 顶层 api.apiKey**。
  *
  * 注意顺序很重要：api.apiKey 是手动模式遗留字段，一旦用户在 UI 里选了某个
- * 目录提供商，就该用它对应的 Key。否则会出现「选了 openrouter，却拿着 a6api 的
- * Key 去请求 openrouter.ai」的情况 —— 表现为全部会话 401 Missing Authentication。
+ * 目录提供商，就只能用它对应的 Key。否则会出现「选了 openrouter，却拿着 a6api 的
+ * Key 去请求 openrouter.ai」的情况 —— 不只会全部会话 401，还会把上一家的 Key
+ * 明文发给新厂商。没有该提供商的 Key 时宁可报"未配置"，也绝不回退顶层 Key。
  *
  * 兼容历史数据：providers[].apiKey 也可能存有明文（老配置），也认。
  */
@@ -75,6 +76,7 @@ export function resolveApiKey(cfg) {
     const p = (cfg?.providers || []).find((x) => x.id === pid);
     const legacy = String(p?.apiKey ?? '').trim();
     if (legacy && legacy !== '******') return legacy;
+    return '';
   }
   const direct = String(cfg?.api?.apiKey ?? '').trim();
   return direct === '******' ? '' : direct;

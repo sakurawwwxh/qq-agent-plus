@@ -50,7 +50,10 @@ test('synthesizeSpeech：请求形状正确、空音频/非 200 报错、未配�
   );
   await assert.rejects(synthesizeSpeech({ cfg: { baseUrl: '' }, text: 'hi', fetchFn: fakeFetch }), /Base URL/);
   assert.equal(ttsConfigured({ tts: { enabled: false, baseUrl: 'https://x' } }), false);
-  assert.equal(ttsConfigured({ tts: { enabled: true, baseUrl: 'https://x' } }), true);
+  assert.equal(ttsConfigured({ tts: { enabled: true, baseUrl: 'https://x' } }), false,
+    'openai 兼容缺 model 时注入也必然失败');
+  assert.equal(ttsConfigured({ tts: { enabled: true, baseUrl: 'https://x', model: 'm' } }), true);
+  assert.equal(ttsConfigured({ tts: { enabled: true, provider: 'mimo' } }), true);
 });
 
 test('GroupDigestManager：消息够时生成一条并发送；不够时跳过', async () => {
