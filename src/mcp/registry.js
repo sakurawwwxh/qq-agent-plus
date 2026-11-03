@@ -4,12 +4,10 @@
 import { safeFetch } from '../llm/safe-fetch.js';
 
 const REGISTRY_URL = 'https://registry.modelcontextprotocol.io/v0/servers';
-// Registry 的 runtimeHint 是远端可控字段，不能原样当可执行命令。只允许常见包运行器，
-// 其余一律回落 npx（2026-11-03 复核 P0）。这里只认 basename，避免绝对路径/相对路径执行。
-const RUNTIME_ALLOWLIST = new Set([
-  'npx', 'npx.cmd', 'uvx', 'docker', 'docker.exe', 'node', 'node.exe',
-  'bunx', 'pnpm', 'pnpm.cmd', 'yarn', 'yarn.cmd', 'python', 'python3', 'deno'
-]);
+// npm 分支只会生成 `npx -y pkg@version`；node/python/uvx 等运行器不认这套参数，
+// 放行它们只会生成必然起不来的配置。runtimeHint 是远端可控字段，只认 basename；
+// 未知值一律回落 npx（2026-11-03 复核 P0）。
+const RUNTIME_ALLOWLIST = new Set(['npx', 'npx.cmd']);
 
 function safeRuntimeCommand(hint) {
   const base = String(hint || '').trim().split(/[\\/]/).pop().toLowerCase();
@@ -30,7 +28,7 @@ function versionScore(version) {
   }, 0);
 }
 
-const ENV_DENY = /^(?:PATH|HOME|USER|SHELL|LANG|LC_|LD_|NODE_OPTIONS|NODE_PATH|DOCKER_|NPM_CONFIG_|BASH_ENV|TMP|TEMP|COMSPEC|SYSTEMROOT|UV_|PIP_|PYTHON)/i;
+const ENV_DENY = /^(?:PATH|HOME|USER|SHELL|LANG|LC_|LD_|NODE_OPTIONS|NODE_PATH|NODE_TLS_REJECT_UNAUTHORIZED|NODE_EXTRA_CA_CERTS|SSL_|OPENSSL_|CURL_|REQUESTS_CA_BUNDLE|PIP_CERT|GIT_SSL_|DOCKER_|NPM_CONFIG_|BASH_ENV|TMP|TEMP|COMSPEC|SYSTEMROOT|UV_|PIP_|PYTHON|[A-Z0-9_]+_PROXY)/i;
 
 function safeEnv(entryEnv) {
   const env = {};
@@ -46,11 +44,25 @@ function safeEnv(entryEnv) {
 function packageConfig(entry, pkg) {
   const env = safeEnv(pkg.environmentVariables);
   if (pkg.registryType === 'oci') {
+    const rawIdentifier = String(pkg.identifier || '').trim();
+    // docker run 的最后一个位置参数不能是选项；空值或不合法引用直接拒绝。
+    if (!rawIdentifier || rawIdentifier.startsWith('-')) return null;
+    const version = String(pkg.version || entry.version || '').trim();
+    const lastSlash = rawIdentifier.lastIndexOf('/');
+    const lastColon = rawIdentifier.lastIndexOf(':');
+    const hasDigest = rawIdentifier.includes('@');
+    const hasTag = lastColon > lastSlash;
+    let identifier = rawIdentifier;
+    if (!hasDigest && !hasTag) {
+      // 没有 tag/digest 时 docker 会静默跑 latest；没有可钉版本就不导入。
+      if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(version)) return null;
+      identifier = `${rawIdentifier}:${version}`;
+    }
     const dockerEnv = Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
     return {
       command: 'docker',
       // OCI 的变量必须交给容器，不能污染启动器进程。
-      args: ['run', '-i', '--rm', ...dockerEnv, String(pkg.identifier || '')],
+      args: ['run', '-i', '--rm', ...dockerEnv, identifier],
       env: {}
     };
   }

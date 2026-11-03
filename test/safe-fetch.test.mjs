@@ -4,6 +4,7 @@ import http from 'node:http';
 import http2 from 'node:http2';
 import https from 'node:https';
 import tls from 'node:tls';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -353,6 +354,39 @@ test('HTTP/2 响应头映射：Set-Cookie 只在显式要求时返回', async (t
 
   const withoutCookies = await safeFetchRequest(`https://127.0.0.1:${port}/cookies`, { allowPrivate: true });
   assert.equal('setCookies' in withoutCookies, false, '默认不把 Set-Cookie 暴露给调用方');
+});
+
+test('解压：压缩响应被 maxBytes 截断时仍尽量解出前缀', async (t) => {
+  const html = `<html><head><link rel="canonical" href="https://www.bilibili.com/video/BV1xx411c7mD"></head>${'x'.repeat(50000)}</html>`;
+  for (const encoding of ['gzip', 'br']) {
+    const body = encoding === 'gzip'
+      ? zlib.gzipSync(Buffer.from(html))
+      : zlib.brotliCompressSync(Buffer.from(html));
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': encoding });
+      res.end(body);
+    });
+    const port = await listen(server);
+    t.after(() => closeServer(server));
+
+    // 解压输出上限是 maxBytes * 5；完整流也要给足输出空间。
+    const complete = await safeFetchRequest(`http://127.0.0.1:${port}/page`, {
+      allowPrivate: true,
+      decompress: true,
+      maxBytes: Math.max(body.length, Math.ceil(Buffer.byteLength(html) / 5) + 16)
+    });
+    assert.equal(complete.body, html, `${encoding} 完整流要完整解出`);
+
+    // brotli 的块比 gzip 大，截到一半时可能还解不出任何字节；保留 90% 模拟“尾部缺一点”。
+    const keep = encoding === 'br' ? 0.9 : 0.5;
+    const result = await safeFetchRequest(`http://127.0.0.1:${port}/page`, {
+      allowPrivate: true,
+      decompress: true,
+      maxBytes: Math.max(1, Math.floor(body.length * keep))
+    });
+    assert.equal(result.truncated, true, `${encoding} 应在解压前被体积上限截断`);
+    assert.match(result.body, /rel="canonical"/, `${encoding} 被截断后仍要能解出页面前缀`);
+  }
 });
 
 test('POST 继续走 HTTP/1.1，不因 h2 失败而重复发送', async (t) => {

@@ -67,6 +67,36 @@ test('canonical 解析不依赖属性顺序、引号形式或大小写', () => {
     `https://www.bilibili.com/video/${BVID}`
   );
   assert.equal(extractCanonicalHref('<link rel="alternate" href="https://example.com/">'), '');
+  assert.equal(
+    extractCanonicalHref(`<link data-href="https://evil.example/" href="https://www.bilibili.com/video/${BVID}" rel="canonical">`),
+    `https://www.bilibili.com/video/${BVID}`,
+    'data-href 不能被当成 href'
+  );
+  assert.equal(
+    extractCanonicalHref(`<link data-rel="canonical" href="https://evil.example/"><link rel="canonical" href="https://www.bilibili.com/video/${BVID}">`),
+    `https://www.bilibili.com/video/${BVID}`,
+    'data-rel 不能被当成 rel'
+  );
+  assert.equal(
+    extractCanonicalHref(`<link href="https://www.bilibili.com/video/${BVID}/?rel=canonical" rel="canonical">`),
+    `https://www.bilibili.com/video/${BVID}/?rel=canonical`,
+    'href 值里的 rel=canonical 不能被误当成属性'
+  );
+  assert.equal(
+    extractCanonicalHref(`<link rel="canonical"href="https://www.bilibili.com/video/${BVID}">`),
+    `https://www.bilibili.com/video/${BVID}`,
+    '浏览器能容错属性间缺空格，解析器也不该直接失败'
+  );
+});
+
+test('相对 / 协议相对 canonical 按 B 站站内基准解析', async () => {
+  const request = (href) => async () => ({ status: 200, body: `<link rel="canonical" href="${href}">` });
+  assert.equal(await resolveVideoQuery('https://b23.tv/AbCdEf1', request(`/video/${BVID}`)), `bvid=${BVID}`);
+  assert.equal(await resolveVideoQuery('https://b23.tv/AbCdEf1', request(`//www.bilibili.com/video/${BVID}`)), `bvid=${BVID}`);
+  await assert.rejects(
+    () => resolveVideoQuery('https://b23.tv/AbCdEf1', request(`//evil.example/video/${BVID}`)),
+    /没有解析到有效视频地址/
+  );
 });
 
 test('不透明短链经注入的宿主请求解析 canonical，本地输入不调用网络', async () => {

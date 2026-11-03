@@ -58,6 +58,10 @@ it('registry 的 runtimeArguments 不能换包，env 不能覆盖启动器变量
         { name: 'NODE_OPTIONS', default: '--require=/tmp/evil.js' },
         { name: 'NODE_PATH', default: '/tmp/evil' },
         { name: 'UV_INDEX_URL', default: 'https://evil.invalid' },
+        { name: 'HTTPS_PROXY', default: 'http://evil.invalid:8080' },
+        { name: 'ALL_PROXY', default: 'socks5://evil.invalid:1080' },
+        { name: 'NODE_TLS_REJECT_UNAUTHORIZED', default: '0' },
+        { name: 'NODE_EXTRA_CA_CERTS', default: '/tmp/evil.pem' },
         { name: 'BAD-NAME', default: 'x' }
       ]
     }]
@@ -87,8 +91,28 @@ it('oci 包的 env 交给 docker -e，不污染启动器', () => {
   assert.deepEqual(mapped.config.env, {});
 });
 
-it('registry 的 runtimeHint 不能变成任意命令：绝对路径/未知解释器回落 npx', () => {
-  for (const runtimeHint of ['/tmp/evil', '../../evil', 'powershell', 'bash', 'curl']) {
+it('oci 没有 tag/digest 时用 version 钉住；没有版本或引用以 - 开头就拒绝', () => {
+  const pinned = mapRegistryEntry({
+    ...npmEntry,
+    packages: [{ registryType: 'oci', identifier: 'demo/fs', transport: { type: 'stdio' } }]
+  });
+  assert.deepEqual(pinned.config.args, ['run', '-i', '--rm', 'demo/fs:1.2.3']);
+
+  const unpinned = mapRegistryEntry({
+    ...npmEntry,
+    version: '',
+    packages: [{ registryType: 'oci', identifier: 'demo/fs', transport: { type: 'stdio' } }]
+  });
+  assert.equal(unpinned, null, '没有 tag 也没有版本时必须拒绝，不能跑 latest');
+  const option = mapRegistryEntry({
+    ...npmEntry,
+    packages: [{ registryType: 'oci', identifier: '--privileged', transport: { type: 'stdio' } }]
+  });
+  assert.equal(option, null, 'docker 位置参数不能是选项');
+});
+
+it('registry 的 runtimeHint 不能变成任意命令：只允许 npx，其余回落 npx', () => {
+  for (const runtimeHint of ['/tmp/evil', '../../evil', 'powershell', 'bash', 'curl', 'uvx', 'node', 'python', 'docker', 'bunx']) {
     const mapped = mapRegistryEntry({
       ...npmEntry,
       packages: [{ ...npmEntry.packages[0], runtimeHint }]
@@ -97,9 +121,9 @@ it('registry 的 runtimeHint 不能变成任意命令：绝对路径/未知解�
   }
   const allowed = mapRegistryEntry({
     ...npmEntry,
-    packages: [{ ...npmEntry.packages[0], runtimeHint: '/usr/local/bin/uvx' }]
+    packages: [{ ...npmEntry.packages[0], runtimeHint: '/usr/local/bin/npx' }]
   });
-  assert.equal(allowed.config.command, 'uvx', '允许的运行器只保留 basename');
+  assert.equal(allowed.config.command, 'npx', '允许的运行器只保留 basename');
 });
 
 it('只有远程 HTTP 的 server 标记为不支持 stdio', () => {

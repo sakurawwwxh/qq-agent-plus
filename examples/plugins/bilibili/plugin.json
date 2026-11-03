@@ -205,6 +205,7 @@
     {
       "name": "video",
       "description": "查看一个 B 站视频的详情：标题、UP 主、简介、播放/点赞/投币/收藏、分 P、以及前若干条评论。BV 号、av 号、B 站视频链接或 b23.tv 短链都行。",
+      "timeoutMs": 30000,
       "parameters": {
         "type": "object",
         "properties": {
@@ -481,6 +482,7 @@
     {
       "name": "danmaku",
       "description": "读取一个视频的弹幕，按出现时间排序取前若干条。只读；要发弹幕用 danmaku_send。",
+      "timeoutMs": 30000,
       "parameters": {
         "type": "object",
         "properties": {

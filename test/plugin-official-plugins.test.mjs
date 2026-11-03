@@ -149,6 +149,10 @@ test('B站插件：主人 UID 绑定、whoami 与一键三连已声明，所有�
   const commentTool = manifest.tools.find((tool) => tool.name === 'comment');
   assert.ok(commentTool.parameters.properties.rpid, 'comment 要支持 rpid（内联回复具体评论）');
   assert.equal(manifest.version, '1.1.1');
+  for (const name of ['video', 'danmaku']) {
+    assert.equal(manifest.tools.find((tool) => tool.name === name)?.timeoutMs, 30000,
+      `${name} 走短链时可能先跟随一次重定向，默认 20 秒太紧`);
+  }
 
   const src = fs.readFileSync(path.join(dirOf('bilibili'), 'index.mjs'), 'utf8');
   assert.match(src, /async function requireWriteAuth/, '要有统一的写操作鉴权（登录 + 主人 UID 核对）');

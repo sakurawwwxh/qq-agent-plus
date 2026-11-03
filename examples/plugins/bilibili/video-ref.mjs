@@ -55,20 +55,38 @@ export function parseVideoRef(input) {
   return /^https?:\/\//i.test(raw) ? parseVideoUrl(raw) : null;
 }
 
+/** 解析一个标签里的属性：只按精确属性名取值，避免 `data-href` 被当成 `href`。 */
+function attributesOf(tag) {
+  const attrs = new Map();
+  // 不要求属性前有空白：浏览器会容忍 `rel="canonical"href="..."` 这种缺空格的写法。
+  // 正则按“名字=值”顺序匹配并跳过整个值，所以不会把 href 值里的 rel=... 当成属性。
+  const re = /([A-Za-z_:][-A-Za-z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  for (const match of String(tag || '').matchAll(re)) {
+    const name = match[1].toLowerCase();
+    if (!attrs.has(name)) attrs.set(name, match[2] ?? match[3] ?? match[4] ?? '');
+  }
+  return attrs;
+}
+
 /** 从最终页里只取 canonical link，属性顺序与引号形式都不敏感。 */
 export function extractCanonicalHref(html) {
-  const attr = (tag, name) => {
-    const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))`, 'i'));
-    return match ? (match[1] ?? match[2] ?? match[3] ?? '') : '';
-  };
   for (const match of String(html || '').matchAll(/<link\b[^>]*>/gi)) {
-    const tag = match[0];
-    const rel = attr(tag, 'rel').toLowerCase().split(/\s+/);
+    const attrs = attributesOf(match[0]);
+    const rel = String(attrs.get('rel') || '').toLowerCase().split(/\s+/).filter(Boolean);
     if (!rel.includes('canonical')) continue;
-    const href = attr(tag, 'href').replace(/&amp;/gi, '&');
+    const href = String(attrs.get('href') || '').replace(/&amp;/gi, '&').trim();
     if (href) return href;
   }
   return '';
+}
+
+/** canonical 可能是绝对地址、站内绝对路径或协议相对地址；统一按 B 站站内基准解析。 */
+function absoluteCanonical(href) {
+  try {
+    return new URL(href, 'https://www.bilibili.com/').toString();
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -85,7 +103,7 @@ export async function resolveVideoQuery(input, request) {
   const status = Number(response?.status) || 0;
   if (status !== 200) throw new Error(`B 站短链返回 HTTP ${status || '?'}`);
   const canonical = extractCanonicalHref(response?.body);
-  const target = canonical ? parseVideoRef(canonical) : null;
+  const target = canonical ? parseVideoRef(absoluteCanonical(canonical)) : null;
   if (!target?.query) throw new Error('B 站短链没有解析到有效视频地址');
   return target.query;
 }

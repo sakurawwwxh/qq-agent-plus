@@ -46,19 +46,22 @@ test('?token= 登录比启动请求慢时也不弹登录框（远程/隧道场�
 });
 
 test('config.json 外部修改提示：显示备份横幅，点击可关闭', async ({ page }) => {
-  await page.route('**/api/status', async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    body.configConflict = { at: Date.now(), backupPath: 'C:/data/config.json.conflict-1-2.bak' };
-    await route.fulfill({ response, json: body });
-  });
+  // 先真实取一份 status，再在路由里直接返回改过的 JSON；不要在 route 里 fetch。
+  // 页面会轮询 /api/status，route.fetch 的慢响应会在用例结束后仍处于在途，
+  // 下一个用例就收到 "Response has been disposed"/"Test ended"。
   await login(page);
+  const status = await page.request.get('/api/status');
+  expect(status.ok(), `status failed: HTTP ${status.status()}`).toBeTruthy();
+  const body = await status.json();
+  body.configConflict = { at: Date.now(), backupPath: 'C:/data/config.json.conflict-1-2.bak' };
+  await page.route('**/api/status', (route) => route.fulfill({ json: body }));
   await page.goto('/');
   const banner = page.locator('#config-conflict-banner');
   await expect(banner).toBeVisible();
   await expect(banner).toContainText('配置曾被外部修改');
   await banner.click();
   await expect(banner).toHaveCount(0);
+  await page.unroute('**/api/status');
 });
 
 test('配置冲突保存：弹出三选一，取消后不写盘', async ({ page }) => {
