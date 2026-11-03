@@ -271,8 +271,10 @@ Clash/mihomo 等代理的 fake-ip 模式会把任意域名解析到 `198.18.0.0/
   （`count` 1–50，`needContent:true` 时额外取正文）；老配置里的 `/responses` 会被自动剥掉。
   只有新接口返回 404/405 或没有结果时，才回退到旧 Responses `web_search`（旧接口拿不到 URL，`model` 只给这个兜底用）。
 - `tavily`：tavily.com 的搜索 API（2026-09 时点的公开口径：免费档 1000 次/月，专为 LLM 设计），另有 `searchDepth`（默认 `basic`）。
-- `aggregate`（聚合搜索）：并发跑 `sources` 里的多个源，URL 去重、每条结果带 `source` 标注；
-  `sources` 顺序就是结果优先级，单个源失败不影响整体，全部失败才报错。
+- `aggregate`（聚合搜索）：并发跑 `sources` 里的多个源，规范化 URL 去重、每条结果带
+  `source` 标注；去重键保留可能决定页面身份的 query 参数，只忽略明确 tracking 参数与普通
+  锚点，返回给模型的仍是各来源原始链接。`sources` 顺序就是结果优先级，单个源失败不影响
+  整体，全部失败才报错。
 - 还能在控制台「搜索提供方」里自己加提供商（`type: 'openai'` 走 POST JSON 搜索接口、`type: 'bing'` 抓页面解析），
   在下拉框里以 `custom:<id>` 的形式出现。
 
