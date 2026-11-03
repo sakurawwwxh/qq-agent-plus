@@ -160,8 +160,10 @@ test('同一天同一个群只发一次（账本按归属日去重）', async ()
 test('跨午夜：日报归属开始那天，第二天照常发（不再被标成已发）', async () => {
   const store = new ChatStore(0, { dataDir: fs.mkdtempSync(path.join(root, 'ledger-midnight-')) });
   try {
-    const day1 = new Date();
-    day1.setHours(23, 58, 0, 0);
+    // 固定到上海时区 23:58（= UTC 15:58），不依赖 CI 机器的本地时区。
+    // 旧写法用 new Date().setHours(23,58)，在 UTC runner 上实际是上海次日 07:58，
+    // 跨午夜后仍落在同一个上海自然日，账本按归属日去重就会把第二天当成已发。
+    const day1 = new Date(Date.UTC(2026, 10, 3, 15, 58, 0));
     let now = day1.getTime();
     const ledger = new EffectLedger(store.db, { now: () => now });
     const stats = { sent: 0 };
@@ -181,9 +183,7 @@ test('跨午夜：日报归属开始那天，第二天照常发（不再被标�
     assert.equal(stats.sent, 1);
 
     // 第二天 09:30：如果进度文件按"写盘时刻"记日期，这里会被当成已经发过而静默跳过
-    const day2 = new Date(day1);
-    day2.setDate(day2.getDate() + 1);
-    day2.setHours(9, 30, 0, 0);
+    const day2 = new Date(Date.UTC(2026, 10, 4, 1, 30, 0));   // 上海次日 09:30
     now = day2.getTime();
     await f.manager.runOnce({ skipDone: true });
     assert.equal(stats.sent, 2, '第二天的日报必须照常发');

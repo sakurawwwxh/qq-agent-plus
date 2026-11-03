@@ -160,7 +160,7 @@ test('恢复拒绝符号链接/硬链接归档，不能把链接带进数据目�
   const arch = path.join(root, 'evil.tar.gz');
   fs.writeFileSync(arch, buildTar([
     { name: 'config.json', data: '{"server":{"token":"x"}}' },
-    { name: 'messages.sqlite', type: '2', data: '/etc/passwd' }
+    { name: 'messages.sqlite', type: '2', linkname: '/etc/passwd' }
   ]));
   const target = path.join(root, 'restored');
   const res = runOps(['restore', '--from', arch, '--data', target, '--confirm', '--no-encrypt']);
