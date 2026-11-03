@@ -41,8 +41,14 @@ function manifestOf(id) {
 }
 
 /** 起一个真宿主；用完由调用方 stop（或交给 t.after）。 */
-async function startHost(id, settings = {}) {
-  const host = new PluginHost({ manifest: manifestOf(id), dataDir, log: () => {}, getSettings: () => settings });
+async function startHost(id, settings = {}, options = {}) {
+  const host = new PluginHost({
+    ...options,
+    manifest: manifestOf(id),
+    dataDir,
+    log: () => {},
+    getSettings: () => settings
+  });
   assert.equal(await host.start(), true, `${id} 起不来：${host.lastError}`);
   return host;
 }
@@ -142,7 +148,7 @@ test('B站插件：主人 UID 绑定、whoami 与一键三连已声明，所有�
   assert.ok(accountTool.parameters.properties.what.enum.includes('notifications'), 'account 要支持 notifications（未读回复/@/赞）');
   const commentTool = manifest.tools.find((tool) => tool.name === 'comment');
   assert.ok(commentTool.parameters.properties.rpid, 'comment 要支持 rpid（内联回复具体评论）');
-  assert.equal(manifest.version, '1.1.0');
+  assert.equal(manifest.version, '1.1.1');
 
   const src = fs.readFileSync(path.join(dirOf('bilibili'), 'index.mjs'), 'utf8');
   assert.match(src, /async function requireWriteAuth/, '要有统一的写操作鉴权（登录 + 主人 UID 核对）');
@@ -154,8 +160,78 @@ test('B站插件：主人 UID 绑定、whoami 与一键三连已声明，所有�
   assert.match(src, /mergeLoginTokens/, '登录凭据要合并 URL 与 Set-Cookie');
   assert.match(src, /linkTimestamps/, '评论时间戳链接能力要在源码里');
   assert.match(src, /x\/msgfeed/, '通知收件箱要读 B 站消息中心');
+  assert.match(src, /maxChars:\s*64\s*\*\s*1024,\s*decompress:\s*true/,
+    '短链最终页会无视 identity 返回 gzip，必须让宿主有界解压后再找 canonical');
   const writeEntries = src.match(/await requireWriteAuth\(\)/g) || [];
   assert.ok(writeEntries.length >= 3, `interact/comment/danmaku_send 都要走 requireWriteAuth，实际 ${writeEntries.length} 处`);
   const loginCalls = src.match(/await requireLogin\(\)/g) || [];
   assert.equal(loginCalls.length, 1, '只有 requireWriteAuth 内部还能直接用 requireLogin');
+});
+
+test('B站插件：只读视频工具接受完整链接和 b23.tv 短链，非法 URL 不发请求', async (t) => {
+  const bvid = 'BV1xx411c7mD';
+  const calls = [];
+  const viewBody = JSON.stringify({
+    code: 0,
+    data: {
+      aid: 170001,
+      bvid,
+      cid: 42,
+      title: '合成视频',
+      desc: '仅用于契约测试',
+      owner: { name: '合成 UP', mid: 7 },
+      duration: 90,
+      pubdate: 1,
+      stat: { view: 1, like: 1, coin: 1, favorite: 1, danmaku: 1, reply: 1 },
+      pages: [{ page: 1, cid: 42, part: 'P1', duration: 90 }]
+    }
+  });
+  const host = await startHost('bilibili', {}, {
+    httpMock: async ({ url }) => {
+      calls.push(url);
+      if (url === 'https://b23.tv/AbCdEf1') {
+        return {
+          status: 200,
+          body: `<html><head><link rel="canonical" href="https://www.bilibili.com/video/${bvid}/"></head></html>`
+        };
+      }
+      if (url.startsWith('https://api.bilibili.com/x/web-interface/view?')) {
+        return { status: 200, body: viewBody };
+      }
+      throw new Error(`测试出现了未预期的 HTTP 请求：${url}`);
+    }
+  });
+  t.after(() => host.stop());
+
+  const direct = await host.callTool('video', {
+    bvid: `https://www.bilibili.com/video/${bvid}/?p=2&share_source=qq`,
+    withComments: false,
+    withSubtitles: false
+  });
+  assert.equal(direct.bvid, bvid);
+  assert.deepEqual(calls, [`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`],
+    '完整视频 URL 应直接归一化，不应请求短链页');
+
+  calls.length = 0;
+  const short = await host.callTool('video', {
+    bvid: 'https://b23.tv/AbCdEf1',
+    withComments: false,
+    withSubtitles: false
+  });
+  assert.equal(short.bvid, bvid);
+  assert.deepEqual(calls, [
+    'https://b23.tv/AbCdEf1',
+    `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`
+  ]);
+
+  calls.length = 0;
+  await assert.rejects(
+    () => host.callTool('video', {
+      bvid: 'https://evil.example/video/BV1xx411c7mD',
+      withComments: false,
+      withSubtitles: false
+    }),
+    /需要 BV 号/
+  );
+  assert.deepEqual(calls, [], '非法主机必须在宿主 HTTP 之前被拒绝');
 });
