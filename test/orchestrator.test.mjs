@@ -1895,6 +1895,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = async (chatKey) => {
       woke++;
       store.appendSelf(chatKey, { mid: `self-budget-${woke}`, ts: Date.now(), text: '提醒' });
+      return { sent: [{ text: '提醒' }] };
     };
     // 今天已花超 + 策略「停止」：#wake 的预算闸门会直接丢弃这次唤醒，派发侧必须先接住
     setRuntimeConfig({ ...cfg, api: { ...cfg.api, budget: { enabled: true, dailyYuan: 0.01, onExceed: 'block' } } });
@@ -1974,6 +1975,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.reminders.items.push({ id: 'r-sent', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
     runner.wake = async (chatKey) => {
       store.appendSelf(chatKey, { mid: 'self-ledger-1', ts: Date.now(), text: '该喝水了' });
+      return { sent: [{ text: '该喝水了' }] };
     };
     runner.fireDueReminders();
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1997,7 +1999,12 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.effects = effects;
     const at = Date.now() - 1000;
     runner.reminders.items.push({ id: 'r-nosend', chatKey: 'group:1', at, text: '喝水', status: 'pending', createdBy: '42' });
-    runner.wake = async () => {};
+    runner.wake = async (chatKey) => {
+      // 群里刚好有日报/游戏/插件发出的 self 消息，但不是本轮提醒的回复：
+      // 旧实现 hasSelfSince 会误判成已播报（A3），新实现只认本轮 sent。
+      store.appendSelf(chatKey, { mid: `self-unrelated-${Date.now()}`, ts: Date.now(), text: '日报：今天聊了这些' });
+      return { sent: [] };
+    };
     runner.fireDueReminders();
     await new Promise((resolve) => setTimeout(resolve, 10));
     const occNoSend = runner.reminders.items.find((x) => x.id === 'r-nosend').occurrenceId;
@@ -2092,6 +2099,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = async (chatKey) => {
       woke++;
       store.appendSelf(chatKey, { mid: `self-time-${woke}`, ts: Date.now(), text: '提醒' });
+      return { sent: [{ text: '提醒' }] };
     };
     // 时间控制开着、当前落在静默段（farWindowFor：窗口在"不是今天"的星期几，任何时刻跑都成立）：
     // #wakePreflight 的 canRun 会拒掉这次唤醒 —— 派发侧必须先接住并顺延，不能 markFired。
@@ -2122,6 +2130,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = async (chatKey) => {
       woke++;
       store.appendSelf(chatKey, { mid: `self-observe-${woke}`, ts: Date.now(), text: '提醒' });
+      return { sent: [{ text: '提醒' }] };
     };
     setRuntimeConfig({ ...cfg, runtime: { ...cfg.runtime, mode: 'observe' } });
     runner.fireDueReminders();
@@ -2183,6 +2192,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = async (chatKey) => {
       woke++;
       store.appendSelf(chatKey, { mid: `self-degrade-${woke}`, ts: Date.now(), text: '提醒' });
+      return { sent: [{ text: '提醒' }] };
     };
     setRuntimeConfig({ ...cfg, api: { ...cfg.api, budget: { enabled: true, dailyYuan: 0.01, onExceed: 'degrade' } } });
     runner.sessions.todayUsage = () => ({ estimatedYuan: 5 });   // 已超限，但 degrade 只丢"没 @"的那批
@@ -2208,6 +2218,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = async (chatKey, opts = {}) => {
       notes.push(String(opts.wakeNote || ''));
       store.appendSelf(chatKey, { mid: `self-merge-${Date.now()}-${notes.length}`, ts: Date.now(), text: '提醒' });
+      return { sent: [{ text: '提醒' }] };
     };
 
     runner.fireDueReminders();
@@ -2248,7 +2259,7 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     runner.wake = (chatKey) => {
       woke++;
       store.appendSelf(chatKey, { mid: `self-inflight-${woke}`, ts: Date.now(), text: '提醒' });
-      return new Promise((resolve) => { release = resolve; });
+      return new Promise((resolve) => { release = () => resolve({ sent: [{ text: '提醒' }] }); });
     };
     runner.fireDueReminders();
     runner.fireDueReminders();

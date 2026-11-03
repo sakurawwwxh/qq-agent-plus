@@ -671,7 +671,6 @@ export function buildSystemPrompt({
   identityPilotAvailable = false,
   friendProposalAvailable = false,
   stickerEntries = null,
-  gameContext = '',
   // 平台能力门控：orchestrator 传**本次会话**的平台配置与 chatKey（按群覆盖要和工具表同判），
   // 不传时按全局配置、无会话（旧调用方/测试仍然能用）。
   platform: platformOverride = null,
@@ -785,7 +784,6 @@ export function buildSystemPrompt({
     }
     parts.push('', gameLines.join('\n'));
   }
-  if (gameContext) parts.push('', String(gameContext));
   parts.push('', closingDiscipline(cardFirst));
   return parts.join('\n');
 }
@@ -1229,10 +1227,12 @@ export function buildUserPrompt(ctx) {
   const memText = ctx.memory.formatForPrompt(ctx.chatKey, { userIds: [...relevantUserIds] });
   if (memText) parts.push(`【记忆】\n${memText}`);
 
-  // 动态段：表情候选与进行中的游戏不进 system 前缀，避免收藏/游戏状态变化让缓存失效。
-  // 只给少量候选（默认 3），完整清单由模型按需调用 list_stickers。
-  const stickerCtx = stickerPromptBlock(ctx.stickerEntries);
-  if (stickerCtx) parts.push(stickerCtx);
+  // 表情候选是清单，lifecycle 续接不重复；游戏状态是实时状态，必须每轮更新
+  //（否则 lifecycle 中途开局的局，模型直到翻篇都不知道）。
+  if (!lifecycleContinuation) {
+    const stickerCtx = stickerPromptBlock(ctx.stickerEntries);
+    if (stickerCtx) parts.push(stickerCtx);
+  }
   if (ctx.gameContext) parts.push(String(ctx.gameContext));
 
   // 技能只给"有哪几套方法"，具体流程由 skill_use 返回；不把整份 SKILL.md 常驻提示词。
@@ -1254,7 +1254,7 @@ export function buildUserPrompt(ctx) {
   if (!lifecycleContinuation && ctx.slangContext) {
     parts.push(String(ctx.slangContext));
   }
-  if (ctx.incidentContext) {
+  if (!lifecycleContinuation && ctx.incidentContext) {
     parts.push(String(ctx.incidentContext));
   }
 

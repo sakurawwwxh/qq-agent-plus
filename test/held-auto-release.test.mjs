@@ -173,6 +173,18 @@ test('回收循环的启动和 5 秒 tick 都接入了自动释放', () => {
     '启动和周期 tick 都必须调用 releaseStaleDeferred');
 });
 
+test('启动时把遗留 sending 收口成 unknown（不能永远停在发送中）', (t) => {
+  const store = makeStore('stale-sending');
+  t.after(() => store.close());
+  const lease = appendAndLease(store, 'group:1', 1);
+  const op = store.beginSend('group:1', lease.id, { text: 'reply' });
+  assert.equal(store.db.prepare('SELECT state FROM outbox WHERE id=?').get(op).state, 'sending');
+  assert.equal(store.markStaleSendingUnknown(), 1);
+  const row = store.db.prepare('SELECT state,error FROM outbox WHERE id=?').get(op);
+  assert.equal(row.state, 'unknown');
+  assert.match(String(row.error), /进程重启/);
+});
+
 test('没有 held 时是空操作，不会误删 active 租约的 outbox', (t) => {
   const store = makeStore('active');
   t.after(() => store.close());

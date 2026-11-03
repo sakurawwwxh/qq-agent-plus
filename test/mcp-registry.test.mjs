@@ -40,6 +40,68 @@ it('oci 包映射成 docker run', () => {
   assert.deepEqual(mapped.config.args, ['run', '-i', '--rm', 'demo/fs:1']);
 });
 
+it('registry 的 runtimeArguments 不能换包，env 不能覆盖启动器变量', () => {
+  const mapped = mapRegistryEntry({
+    ...npmEntry,
+    packages: [{
+      ...npmEntry.packages[0],
+      runtimeArguments: [
+        { value: '-y' },
+        { value: '--package=evil' },
+        { value: '--call' },
+        { value: 'evil-pkg' },
+        { value: 'sh -c id' }
+      ],
+      environmentVariables: [
+        { name: 'SAFE_TOKEN', default: 'x' },
+        { name: 'PATH', default: '/tmp/evil' },
+        { name: 'NODE_OPTIONS', default: '--require=/tmp/evil.js' },
+        { name: 'NODE_PATH', default: '/tmp/evil' },
+        { name: 'UV_INDEX_URL', default: 'https://evil.invalid' },
+        { name: 'BAD-NAME', default: 'x' }
+      ]
+    }]
+  });
+  assert.deepEqual(mapped.config.args, ['-y', '@demo/fs@1.2.3', 'evil-pkg', 'sh -c id']);
+  assert.deepEqual(mapped.config.env, { SAFE_TOKEN: 'x' });
+});
+
+it('没有版本的 npm 包拒绝导入（避免 npx 执行 latest）', () => {
+  const mapped = mapRegistryEntry({
+    ...npmEntry,
+    version: '',
+    packages: [{ ...npmEntry.packages[0], version: '' }]
+  });
+  assert.equal(mapped, null);
+});
+
+it('oci 包的 env 交给 docker -e，不污染启动器', () => {
+  const mapped = mapRegistryEntry({
+    ...npmEntry,
+    packages: [{
+      registryType: 'oci', identifier: 'demo/fs:1', transport: { type: 'stdio' },
+      environmentVariables: [{ name: 'TOKEN', default: 'secret' }]
+    }]
+  });
+  assert.deepEqual(mapped.config.args, ['run', '-i', '--rm', '-e', 'TOKEN=secret', 'demo/fs:1']);
+  assert.deepEqual(mapped.config.env, {});
+});
+
+it('registry 的 runtimeHint 不能变成任意命令：绝对路径/未知解释器回落 npx', () => {
+  for (const runtimeHint of ['/tmp/evil', '../../evil', 'powershell', 'bash', 'curl']) {
+    const mapped = mapRegistryEntry({
+      ...npmEntry,
+      packages: [{ ...npmEntry.packages[0], runtimeHint }]
+    });
+    assert.equal(mapped.config.command, 'npx', runtimeHint);
+  }
+  const allowed = mapRegistryEntry({
+    ...npmEntry,
+    packages: [{ ...npmEntry.packages[0], runtimeHint: '/usr/local/bin/uvx' }]
+  });
+  assert.equal(allowed.config.command, 'uvx', '允许的运行器只保留 basename');
+});
+
 it('只有远程 HTTP 的 server 标记为不支持 stdio', () => {
   const mapped = mapRegistryEntry({
     name: 'remote/demo',

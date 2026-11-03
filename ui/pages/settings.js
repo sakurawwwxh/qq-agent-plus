@@ -1074,7 +1074,11 @@ function renderTokenSaverSection(c) {
   const rows = (saver?.rows || []).map((row) => `<tr>
       <td>${esc(row.label)}</td>
       <td class="muted">${esc(row.user)}</td>
-      <td>${row.clamped ? `<strong>${esc(row.effective)}</strong> <span class="muted">（被夹住）</span>` : esc(row.effective)}</td>
+      <td>${row.clamped
+        ? `<strong>${esc(row.effective)}</strong> <span class="muted">（被夹住）</span>`
+        : (row.layerLimited
+          ? `<strong>${esc(row.effective)}</strong> <span class="muted">（分层上下文上限）</span>`
+          : esc(row.effective))}</td>
     </tr>`).join('');
   return `
     <h3 id="settings-token-saver">Token 节省</h3>

@@ -123,7 +123,8 @@ export class ChatStore {
       CREATE INDEX IF NOT EXISTS runs_leased_expiry ON runs(state, expires_at);
       CREATE TABLE IF NOT EXISTS outbox (
         id TEXT PRIMARY KEY, run_id TEXT, chat_key TEXT NOT NULL,
-        state TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT, error TEXT
+        state TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT, error TEXT,
+        created_at INTEGER NOT NULL DEFAULT 0
       );
       -- getChatMeta 每 5 秒扫 outbox(chat_key,state)；没有索引会随历史行线性变慢。
       CREATE INDEX IF NOT EXISTS outbox_chat_state ON outbox(chat_key, state);
@@ -196,6 +197,7 @@ export class ChatStore {
     // deferred_at 用于长跑进程的兜底清扫：富化任务异常/停机竞态留下的行，不能被永久藏起来。
     ensureColumn(this.db, 'messages', 'release_state', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(this.db, 'messages', 'deferred_at', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(this.db, 'outbox', 'created_at', 'INTEGER NOT NULL DEFAULT 0');
     this.db.exec(`CREATE INDEX IF NOT EXISTS messages_deferred
       ON messages(deferred_at) WHERE state='deferred'`);
     // /api/metrics 的 queueStats 按 state 聚合、取 MIN(ts/deferred_at)；默认保留期 0 时
@@ -920,8 +922,8 @@ export class ChatStore {
 
   beginSend(chatKey, runId, payload) {
     const id = crypto.randomUUID();
-    this.db.prepare("INSERT INTO outbox(id,run_id,chat_key,state,payload) VALUES (?,?,?,'sending',?)")
-      .run(id, runId || null, chatKey, JSON.stringify(payload));
+    this.db.prepare("INSERT INTO outbox(id,run_id,chat_key,state,payload,created_at) VALUES (?,?,?,'sending',?,?)")
+      .run(id, runId || null, chatKey, JSON.stringify(payload), Date.now());
     return id;
   }
 
@@ -930,6 +932,17 @@ export class ChatStore {
     this.db.prepare('UPDATE outbox SET state=?,message_id=?,error=? WHERE id=?')
       .run(state, messageId == null ? null : String(messageId),
         error ? String(error).slice(0, 1000) : null, id);
+  }
+
+  /**
+   * 启动时把上一条命留下的 sending 行收口成 unknown：写入方进程已不存在，
+   * "仍在发送"不再成立。否则这些行既没有终态出口，也永远不会进入人工核对清单，
+   * 会让 getChatMeta().held 永久挡住整个会话（2026-11-03 复核 P1）。
+   */
+  markStaleSendingUnknown() {
+    return this.db.prepare(`UPDATE outbox SET state='unknown',
+      error=COALESCE(NULLIF(error,''), '进程重启，发送结果未知')
+      WHERE state='sending'`).run().changes;
   }
 
   expireConversationThreads(now = Date.now(), chatKey = '') {

@@ -88,7 +88,7 @@ export function pluginLaunchSpec({
   // 由看门狗按崩溃处理（而不是让它把宿主的机器吃光）
   if (!unconfined && memoryMb > 0) nodeArgs.unshift(`--max-old-space-size=${Math.floor(memoryMb)}`);
   const prefix = [];
-  if (networkIsolation && !unconfined) {
+  if (networkIsolation) {
     const probe = networkIsolationSupported({ spawn, nodePath, platform });
     if (probe.ok) prefix.push('unshare', '--user', '--map-root-user', '--net');
   }

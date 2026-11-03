@@ -231,6 +231,19 @@ test('手动分享发送成功后也占用每日上限，不能绕过 maxOffersP
   assert.match(String(second.error), /今天已经分享/);
 });
 
+test('一次领取的 count 不能冲破剩余领取额度', async (t) => {
+  const dir = tempDir(t);
+  const cfg = { lifeFeed: { enabled: true, maxPerForage: 10, maxOffersPerDay: 10, maxPicksPerDay: 1, minDurationSec: 60, maxDurationSec: 3600 } };
+  const manager = new LifeFeedManager({
+    dataDir: dir, store: null, config: () => cfg,
+    fetchImpl: fakeFetch([['popular', POPULAR], ['search/type', { code: 0, data: { result: [] } }]]),
+    now: () => NOW, random: () => 0.5
+  });
+  await manager.forageNow();
+  const picked = manager.next({ count: 3 });
+  assert.equal(picked.items.length, 1, '只剩 1 次领取额度时最多给 1 条');
+});
+
 test('管理器：dismiss 进 seen 并从候选移除；重复觅食不重复入队', async (t) => {
   const dir = tempDir(t);
   const cfg = {

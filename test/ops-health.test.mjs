@@ -151,6 +151,32 @@ test('docker-socket：主进程未加固且 sudo -n docker 可用 → 报"走回
   }
 });
 
+test('send-review：同一次运行的 unknown 按 run 计数，历史遗留不永久报红', async () => {
+  const dir = makeDataDir({ inboundAgoMs: null, outboundAgoMs: 0 });
+  const db = openDatabase(path.join(dir, 'messages.sqlite'));
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS outbox (
+      id TEXT PRIMARY KEY, run_id TEXT, chat_key TEXT NOT NULL,
+      state TEXT NOT NULL, payload TEXT NOT NULL, message_id TEXT, error TEXT,
+      created_at INTEGER NOT NULL DEFAULT 0
+    )`);
+    const now = Date.now();
+    for (let i = 0; i < 3; i += 1) {
+      db.prepare('INSERT INTO outbox(id,run_id,chat_key,state,payload,created_at) VALUES (?,?,?,?,?,?)')
+        .run(`op-${i}`, 'run-1', 'group:1', 'unknown', '{}', now);
+    }
+  } finally { db.close(); }
+  const fresh = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });
+  const item = fresh.checks.find((c) => c.name === 'send-review');
+  assert.equal(item.ok, false);
+  assert.match(item.detail, /1 条发送结果未知/, '三条同 run 的 unknown 只算 1 个批次');
+
+  const db2 = openDatabase(path.join(dir, 'messages.sqlite'));
+  try { db2.prepare('UPDATE outbox SET created_at=?').run(Date.now() - 30 * 86400000); } finally { db2.close(); }
+  const old = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });
+  assert.equal(old.checks.find((c) => c.name === 'send-review').ok, true, '30 天前的遗留不报红');
+});
+
 test('全绿：控件/OneBot/水位/磁盘/完整性都过 → healthy，退出码 0', async () => {
   const dir = makeDataDir();
   const r = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });

@@ -194,6 +194,9 @@ function sameSecret(a, b) {
 const LOGIN_MAX_FAILURES = 5;
 const LOGIN_BACKOFF_BASE_MS = 30_000;
 const LOGIN_BACKOFF_MAX_MS = 15 * 60_000;
+// 失败计数要随时间衰减：否则管理员输错几次后，隔几天再错一次仍按旧的 2^n 退避，
+// 反向代理/共享出口下还可能把整个出口长期锁死（2026-11-03 第五轮复审 A1）。
+const LOGIN_FAILURE_DECAY_MS = 30 * 60_000;
 // 全局失败软上限：per-IP 退避挡不住大子网/分布式轮换源（IPv6 下换 IP 近乎零成本），
 // 与 IP 无关地记一个总量，异常量级（>1000 次/小时）打告警日志供运维侧发现（2026-10-06 复审 P3）。
 const LOGIN_GLOBAL_FAIL_ALERT = 1000;
@@ -319,8 +322,13 @@ function loginGate(req) {
         loginGlobalAlerted = true;
         console.error(`[console] 登录失败已达 ${LOGIN_GLOBAL_FAIL_ALERT} 次/小时（与源 IP 无关的全局计数），疑似针对令牌的暴力猜测，请检查访问来源`);
       }
-      const e = loginThrottle.get(key) || { failures: 0, blockedUntil: 0 };
+      const e = loginThrottle.get(key) || { failures: 0, blockedUntil: 0, lastFailureAt: 0 };
+      if (e.lastFailureAt && now - e.lastFailureAt > LOGIN_FAILURE_DECAY_MS) {
+        e.failures = 0;
+        e.blockedUntil = 0;
+      }
       e.failures += 1;
+      e.lastFailureAt = now;
       if (e.failures >= LOGIN_MAX_FAILURES) {
         e.blockedUntil = Date.now() + Math.min(
           LOGIN_BACKOFF_BASE_MS * 2 ** (e.failures - LOGIN_MAX_FAILURES),
@@ -3521,6 +3529,9 @@ function buildApp({
     try {
       effects.markStalePlanned({ olderThanMs: 0, minAgeMs: 0 });
       effects.prune();
+      // 上一条命在发送途中退出：sending 行收口成 unknown，进入人工核对清单。
+      const staleSending = store.markStaleSendingUnknown();
+      if (staleSending) log(`[outbox] ${staleSending} 条上次进程遗留的 sending 已标记为 unknown`);
       // 上一次进程如果在富化途中退出，deferred 消息会留在库里：按占位符放行，
       // 让恢复循环把它们当普通未读处理，别让它们永远不可见（Issue #85）。
       if (ingestAbort.signal.aborted) ingestAbort = new AbortController();

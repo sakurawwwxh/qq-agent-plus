@@ -137,6 +137,24 @@ test('备份前发现数据目录仍被实例占用（锁存活）必须中止�
   assert.equal(fs.existsSync(backups) ? newest(backups, '.enc') : '', '', '不应生成归档');
 });
 
+test('恢复会清掉源主机遗留的运行态锁/中断标记', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const arch = path.join(root, 'state.tar.gz');
+  fs.writeFileSync(arch, buildTar([
+    { name: 'config.json', data: '{"server":{"token":"x"}}' },
+    { name: '.auto-update.lock', data: '{"pid":1}' },
+    { name: '.deploy-in-progress', data: '{}' },
+    { name: '.deploy.lock', type: '5' },
+    { name: '.deploy.lock/pid', data: '1' }
+  ]));
+  const target = path.join(root, 'restored');
+  const res = runOps(['restore', '--from', arch, '--data', target, '--confirm', '--no-encrypt']);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  for (const name of ['.auto-update.lock', '.deploy-in-progress', '.deploy.lock', '.server.lock']) {
+    assert.equal(fs.existsSync(path.join(target, name)), false, `${name} 不应残留`);
+  }
+});
+
 test('恢复拒绝符号链接/硬链接归档，不能把链接带进数据目录', { skip: skipTar }, (t) => {
   const root = tempDir(t);
   const arch = path.join(root, 'evil.tar.gz');
@@ -149,6 +167,24 @@ test('恢复拒绝符号链接/硬链接归档，不能把链接带进数据目�
   assert.notEqual(res.status, 0, res.stdout + res.stderr);
   assert.match(`${res.stdout}${res.stderr}`, /不允许的条目类型|不安全/);
   assert.equal(fs.existsSync(path.join(target, 'config.json')), false, '校验失败不能落盘');
+});
+
+test('恢复拒绝硬链接与 FIFO 条目', {
+  skip: skipTar || (process.platform === 'win32' ? 'Windows tar 对绝对盘符路径的兼容问题，改在 Linux/CI 验证' : false)
+}, (t) => {
+  const root = tempDir(t);
+  for (const [label, type, linkname] of [['hardlink', '1', 'config.json'], ['fifo', '6', '']]) {
+    const arch = path.join(root, `${label}.tar.gz`);
+    fs.writeFileSync(arch, buildTar([
+      { name: 'config.json', data: '{"server":{"token":"x"}}' },
+      { name: 'shadow', type, linkname, data: '' }
+    ]));
+    const target = path.join(root, `out-${label}`);
+    const res = runOps(['restore', '--from', arch, '--data', target, '--confirm', '--no-encrypt']);
+    assert.notEqual(res.status, 0, `${label}: ${res.stdout}${res.stderr}`);
+    assert.match(`${res.stdout}${res.stderr}`, /不允许的条目类型/);
+    assert.equal(fs.existsSync(path.join(target, 'config.json')), false, label);
+  }
 });
 
 test('恢复拒绝 Windows 尾随点/空格与反斜杠路径', { skip: skipTar }, (t) => {

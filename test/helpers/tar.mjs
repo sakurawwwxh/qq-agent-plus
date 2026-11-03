@@ -9,7 +9,7 @@ function octal(value, length) {
   return `${'0'.repeat(Math.max(0, length - 1 - text.length))}${text}\0`;
 }
 
-function header({ name, size = 0, type = '0', mode = 0o644 }) {
+function header({ name, size = 0, type = '0', mode = 0o644, linkname = '' }) {
   const buf = Buffer.alloc(BLOCK);
   buf.write(name.slice(0, 100), 0, 'utf8');
   buf.write(octal(mode, 8), 100, 'ascii');
@@ -19,6 +19,7 @@ function header({ name, size = 0, type = '0', mode = 0o644 }) {
   buf.write(octal(0, 12), 136, 'ascii');
   buf.write('        ', 148, 'ascii');            // 校验和先按空格算
   buf.write(type, 156, 'ascii');
+  buf.write(String(linkname).slice(0, 100), 157, 'utf8');   // hardlink/symlink 的目标
   buf.write('ustar', 257, 'ascii');
   buf.write('00', 263, 'ascii');
   let sum = 0;
@@ -42,7 +43,14 @@ export function buildTar(entries, { compress = true, longNameHeader = false } = 
       chunks.push(header({ name: 'PaxHeaders/x', size: body.length, type: 'x' }));
       chunks.push(body, Buffer.alloc((BLOCK - (body.length % BLOCK)) % BLOCK));
     }
-    chunks.push(header({ name: isDir ? `${entry.name}/` : entry.name, size: data.length, type: entry.type || '0' }));
+    chunks.push(header({
+      name: isDir ? `${entry.name}/` : entry.name,
+      size: data.length,
+      type: entry.type || '0',
+      // 目录必须可进入/可删除：0644 目录在 Linux 上连 rm -r 都会 EACCES。
+      mode: isDir ? 0o755 : 0o644,
+      linkname: entry.linkname || ''
+    }));
     if (!isDir) chunks.push(data, Buffer.alloc((BLOCK - (data.length % BLOCK)) % BLOCK));
   }
   chunks.push(Buffer.alloc(BLOCK * 2));            // 归档结束

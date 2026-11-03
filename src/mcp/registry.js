@@ -4,6 +4,17 @@
 import { safeFetch } from '../llm/safe-fetch.js';
 
 const REGISTRY_URL = 'https://registry.modelcontextprotocol.io/v0/servers';
+// Registry 的 runtimeHint 是远端可控字段，不能原样当可执行命令。只允许常见包运行器，
+// 其余一律回落 npx（2026-11-03 复核 P0）。这里只认 basename，避免绝对路径/相对路径执行。
+const RUNTIME_ALLOWLIST = new Set([
+  'npx', 'npx.cmd', 'uvx', 'docker', 'docker.exe', 'node', 'node.exe',
+  'bunx', 'pnpm', 'pnpm.cmd', 'yarn', 'yarn.cmd', 'python', 'python3', 'deno'
+]);
+
+function safeRuntimeCommand(hint) {
+  const base = String(hint || '').trim().split(/[\\/]/).pop().toLowerCase();
+  return RUNTIME_ALLOWLIST.has(base) ? base : 'npx';
+}
 
 function safeId(name) {
   return String(name || '')
@@ -19,26 +30,42 @@ function versionScore(version) {
   }, 0);
 }
 
-function packageConfig(entry, pkg) {
+const ENV_DENY = /^(?:PATH|HOME|USER|SHELL|LANG|LC_|LD_|NODE_OPTIONS|NODE_PATH|DOCKER_|NPM_CONFIG_|BASH_ENV|TMP|TEMP|COMSPEC|SYSTEMROOT|UV_|PIP_|PYTHON)/i;
+
+function safeEnv(entryEnv) {
   const env = {};
-  for (const item of Array.isArray(pkg.environmentVariables) ? pkg.environmentVariables : []) {
-    if (item?.name) env[String(item.name)] = String(item.default ?? '');
+  for (const item of Array.isArray(entryEnv) ? entryEnv : []) {
+    const name = String(item?.name || '');
+    // registry 的 env 键和默认值都是发布者可控：不允许覆盖启动器自己的 PATH/HOME/NODE_OPTIONS 等。
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || ENV_DENY.test(name)) continue;
+    env[name] = String(item.default ?? '');
   }
+  return env;
+}
+
+function packageConfig(entry, pkg) {
+  const env = safeEnv(pkg.environmentVariables);
   if (pkg.registryType === 'oci') {
+    const dockerEnv = Object.entries(env).flatMap(([key, value]) => ['-e', `${key}=${value}`]);
     return {
       command: 'docker',
-      args: ['run', '-i', '--rm', String(pkg.identifier || '')],
-      env
+      // OCI 的变量必须交给容器，不能污染启动器进程。
+      args: ['run', '-i', '--rm', ...dockerEnv, String(pkg.identifier || '')],
+      env: {}
     };
   }
   const identifier = String(pkg.identifier || '').trim();
   if (!identifier) return null;
-  const pinned = pkg.version ? `${identifier}@${pkg.version}` : identifier;
+  const version = String(pkg.version || entry.version || '').trim();
+  // 没有明确版本就不导入：否则 npx 会执行 latest，卡片上显示的版本与实际执行的包不一致。
+  if (!version) return null;
+  const pinned = `${identifier}@${version}`;
+  // runtimeArguments 也只能接受不带 flag 的位置参数：`--package=evil` / `-c` 能把实际执行的包换掉。
   const runtime = Array.isArray(pkg.runtimeArguments)
-    ? pkg.runtimeArguments.map((arg) => String(arg?.value ?? '')).filter(Boolean)
+    ? pkg.runtimeArguments.map((arg) => String(arg?.value ?? '')).filter((arg) => arg && !arg.startsWith('-'))
     : [];
-  const args = ['-y', ...runtime.filter((arg) => arg !== '-y'), pinned];
-  return { command: String(pkg.runtimeHint || 'npx'), args, env };
+  const args = ['-y', pinned, ...runtime];
+  return { command: safeRuntimeCommand(pkg.runtimeHint), args, env };
 }
 
 export function mapRegistryEntry(entry) {

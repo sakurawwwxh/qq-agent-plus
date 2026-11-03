@@ -596,7 +596,7 @@ rollback_deployment() {
     systemctl --user start "$UPDATE_SERVICE.timer" >/dev/null 2>&1
   fi
   if [[ "$WAS_ACTIVE" == true ]]; then
-    systemctl --user start "$SERVICE.service"
+    systemctl --user start "$SERVICE.service" || ROLLBACK_FAILED=true
   elif [[ "$WAS_ENABLED" == true ]]; then
     # 原来是 enabled 但被手动 stop：回滚只恢复开机自启，不擅自启动。
     systemctl --user enable "$SERVICE.service" >/dev/null 2>&1
@@ -654,7 +654,7 @@ if [[ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != y
   # 而为，失败只警告（2026-10-12 修正文案：原说法只提了"下次开机不会自启"）。
   if grep -q 'NoNewPrivs:[[:space:]]*1' /proc/self/status 2>/dev/null; then
     printf '警告：服务被 NoNewPrivileges 加固，无法代为开启 linger；本次部署不受影响，但当前登录会话一断开，systemd 就会连同用户管理器一起停掉服务（机器人掉线），服务下次开机也不会自启。\n请在服务账号的交互终端执行一次：sudo loginctl enable-linger %s（执行后立即生效，之后退出终端服务不受影响）\n' "$USER" >&2
-  elif ! sudo loginctl enable-linger "$USER" 2>/dev/null; then
+  elif ! sudo -n loginctl enable-linger "$USER" 2>/dev/null; then
     printf '警告：启用 linger 失败（sudo 不可用或被拒绝）；本次部署不受影响，但当前登录会话一断开，systemd 就会连同用户管理器一起停掉服务（机器人掉线），服务下次开机也不会自启。\n请在服务账号的交互终端执行一次：sudo loginctl enable-linger %s（执行后立即生效，之后退出终端服务不受影响）\n' "$USER" >&2
   fi
 fi
@@ -745,14 +745,21 @@ if getent group docker >/dev/null 2>&1; then
   # 收尾段仍在 set -e 之下：每个可能失败的赋值都要自带保护，否则会把退出码弄坏
   DOCKER_GID="$(getent group docker 2>/dev/null | cut -d: -f3 || true)"
   if [[ -n "$DOCKER_GID" ]]; then
-    if ! id -nG "$(id -un)" | tr ' ' '\n' | grep -qx docker; then
+    DOCKER_MEMBER=false
+    if id -nG "$(id -un)" | tr ' ' '\n' | grep -qx docker; then
+      DOCKER_MEMBER=true
+    elif [[ "${QQ_AGENT_ALLOW_DOCKER_GROUP:-}" == "1" ]]; then
+      # 显式 opt-in：docker 组等于 root 等价权限，不能默认替用户加。
       if sudo -n usermod -aG docker "$(id -un)" >/dev/null 2>&1; then
-        printf '已把 %s 加入 docker 组（控制台「更新协议端」需要）\n' "$(id -un)"
+        DOCKER_MEMBER=true
+        printf '已把 %s 加入 docker 组（控制台「更新协议端」需要；可用 QQ_AGENT_ALLOW_DOCKER_GROUP=0 关闭）\n' "$(id -un)"
       else
         printf '警告：把自己加入 docker 组失败；控制台「更新协议端」会报权限不足（可手工执行：sudo usermod -aG docker %s）\n' "$(id -un)" >&2
       fi
+    else
+      printf '跳过 docker 组自动加入（需要显式设置 QQ_AGENT_ALLOW_DOCKER_GROUP=1；控制台「更新协议端」可能报权限不足）\n'
     fi
-    if [[ -z "${QQ_AGENT_SOURCE_REVISION:-}" ]]; then
+    if [[ "$DOCKER_MEMBER" == true && -z "${QQ_AGENT_SOURCE_REVISION:-}" ]]; then
       MANAGER_UNIT="user@$(id -u).service"
       SVC_PID="$(systemctl --user show "$SERVICE.service" -p MainPID --value 2>/dev/null || true)"
       SVC_GROUPS=""

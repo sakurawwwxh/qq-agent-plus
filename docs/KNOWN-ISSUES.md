@@ -5,6 +5,20 @@
 
 ## 待修问题
 
+### 2026-11-03 MCP 隔离遗留
+
+- **MCP stdio server 没有复用插件的 OS 隔离**：MCP 子进程以宿主用户身份运行，能读数据目录、
+  网络与宿主环境（环境变量已只带 allowlist，但不是 `--permission`/netns）。这属于"管理员显式
+  配置并启用的第三方命令"，不是远程触发；但一旦导入的 npm/OCI 包本身有恶意代码，隔离面小于插件。
+  已先收紧 Registry 的 `runtimeHint`/`runtimeArguments`/env（未知运行器/换包 flag/启动器变量
+  一律丢弃）。彻底修法是把 MCP 启动接到插件宿主同一套权限/网络隔离，工作量大，单列一批。
+- **outbox 的 `unknown`/`sending` 仍没有年龄上限**：启动会把遗留 `sending` 转 `unknown` 并纳入
+  健康巡检，但只要还有 unknown，legacy 闸门仍会挡住该会话；没有连续运行的自动 TTL 释放。
+  修法需要给 outbox 记录 created_at 并按年龄降级为“仅审计、不再阻塞新消息”，等产品口径确认。
+- **backup/restore 没有信号处理与跨进程互斥**：SSH 里 Ctrl+C/SIGHUP 会跳过 finally，可能留下
+  “服务停着 + 半套恢复数据”或明文 `.plain`；同秒启动两个备份会撞同名文件，备份/恢复也可能
+  交错。修法：注册 SIGINT/SIGTERM/SIGHUP 收尾、`DATA_DIR/.maintenance.lock`、文件名加随机串。
+
 ### 2026-11-02 全项目审查遗留
 
 - **群游戏的阶段播报（非终局）没有重试/账本**：`#applyEffects` 对 `public/private` 发送失败只记日志，

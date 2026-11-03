@@ -99,7 +99,7 @@ function config(overrides = {}) {
     appDir: overrides.app || envStr('QQ_AGENT_APP_DIR', path.join(rootDir, 'app')),
     dataDir: overrides.data || envStr('QQ_AGENT_DATA_DIR', path.join(rootDir, 'data')),
     backupDir: overrides.backupDir || envStr('QQ_AGENT_BACKUP_DIR', path.join(os.homedir(), 'qq-agent', 'backups')),
-    service: envStr('QQ_AGENT_SERVICE', 'qq-agent-linux.service'),
+    service: overrides.service || envStr('QQ_AGENT_SERVICE', 'qq-agent-linux.service'),
     updateTimer: envStr('QQ_AGENT_UPDATE_TIMER', 'qq-agent-linux-update.timer'),
     guardTimer: envStr('QQ_AGENT_GUARD_TIMER', 'process-guard.timer'),
     consolePort: envStr('QQ_AGENT_CONSOLE_PORT', '3210'),
@@ -1191,8 +1191,9 @@ function runTarCreate(outFile, dataDir, extra = null) {
   // 部署快照 / 更新缓存都是可重建的大目录；与 scripts/manage.mjs backup 的排除清单保持一致，
   // 否则每周定时备份会把它们整套再打包一份（2026-10 审查 P3）。
   const excludes = ['--exclude=deploy-backups', '--exclude=update-work', '--exclude=update-repository.git',
-    // 运行态锁：备份/恢复跨主机时 pid/hostname 都是旧的，会挡住新实例启动
-    '--exclude=.server.lock'];
+    // 运行态锁/标记：备份/恢复跨主机时 pid/hostname 都是旧的，恢复后可能挡住新实例或永久误报
+    '--exclude=.server.lock', '--exclude=.auto-update.lock', '--exclude=.auto-update.lock.takeover',
+    '--exclude=.deploy.lock', '--exclude=.deploy.lock.takeover', '--exclude=.deploy-in-progress'];
   const baseArgs = [...excludes, '-czf', outFile, '-C', parent, base];
   // 可选：把部署凭据放在归档顶层 stack-credentials/ 下（恢复时不会自动写回，需人工取用）
   if (extra?.dir && extra?.name) baseArgs.push('-C', extra.dir, extra.name);
@@ -1216,7 +1217,8 @@ async function cmdBackup(args) {
   if (wantsHelp(args)) { say(HELP.backup); return 0; }
   const cfg = config({
     data: optValue(args, '--data', null),
-    backupDir: optValue(args, '--backup-dir', null)
+    backupDir: optValue(args, '--backup-dir', null),
+    service: optValue(args, '--service', null)
   });
   const keep = Math.max(1, intOpt(args, '--keep', cfg.keep));
   const dryRun = hasFlag(args, '--dry-run');
@@ -1620,7 +1622,10 @@ async function cmdRestore(args) {
   const from = String(optValue(args, '--from', '') || '').trim();
   if (!from) { ngLine('缺少 --from <备份文件>'); return 2; }
   if (!exists(from)) { ngLine(`备份文件不存在: ${from}`); return 2; }
-  const cfg = config({ data: optValue(args, '--data', null) });
+  const cfg = config({
+    data: optValue(args, '--data', null),
+    service: optValue(args, '--service', null)
+  });
   const keyFile = optValue(args, '--key-file', '');
   const noEncrypt = hasFlag(args, '--no-encrypt');
   const dryRun = hasFlag(args, '--dry-run');
@@ -1691,8 +1696,11 @@ async function cmdRestore(args) {
       if (hadPrevious) { fs.renameSync(cfg.dataDir, pre); previousMoved = true; }
       fs.mkdirSync(path.dirname(cfg.dataDir), { recursive: true });
       fs.cpSync(dataRoot, cfg.dataDir, { recursive: true, force: true });
-      // 旧归档可能带着源主机的锁（pid/hostname 都不属于本机）：恢复后必须清掉。
-      try { fs.rmSync(path.join(cfg.dataDir, '.server.lock'), { force: true }); } catch { /* 忽略 */ }
+      // 旧归档可能带着源主机的锁/中断标记（pid/hostname 都不属于本机）：恢复后必须清掉。
+      for (const runtimeFile of ['.server.lock', '.auto-update.lock', '.auto-update.lock.takeover',
+        '.deploy.lock', '.deploy.lock.takeover', '.deploy-in-progress']) {
+        try { fs.rmSync(path.join(cfg.dataDir, runtimeFile), { recursive: true, force: true }); } catch { /* 忽略 */ }
+      }
       try { fs.chmodSync(cfg.dataDir, 0o700); } catch { /* 忽略 */ }
       committed = true;
     } catch (error) {
@@ -3186,7 +3194,7 @@ SSH 配置、防火墙、定时任务、可升级包、TLS 证书到期、备份
 环境变量: QQ_AGENT_DATA_DIR`,
 
   backup: `用法: node src/ops.js backup --confirm [--keep=N] [--data=目录] [--backup-dir=目录]
-       [--include-stack-creds] [--no-encrypt] [--key-file=文件]
+       [--service=服务名] [--include-stack-creds] [--no-encrypt] [--key-file=文件]
        node src/ops.js backup --dry-run
        node src/ops.js backup --drill [--from=备份文件] [--key-file=文件]
 
@@ -3198,6 +3206,7 @@ SSH 配置、防火墙、定时任务、可升级包、TLS 证书到期、备份
 --confirm     实际执行（必需；没有它会打印提醒后退出 1）
 --dry-run     只打印将要做什么
 --keep=N      保留份数（默认 QQ_AGENT_KEEP=4）
+--service     要停/启的 systemd 用户服务名（自定义部署时必须与 deploy.sh --service 一致）
 --include-stack-creds  把 .env / .deployment.json / deployment-access.txt 放进归档顶层
               stack-credentials/（默认不含；恢复时不会自动写回，需人工取用）
 --no-encrypt  不加密（仅在明确知道备份不会离开主机时使用）
@@ -3208,7 +3217,7 @@ SSH 配置、防火墙、定时任务、可升级包、TLS 证书到期、备份
 环境变量: QQ_AGENT_DATA_DIR / QQ_AGENT_BACKUP_DIR / QQ_AGENT_SERVICE /
           QQ_AGENT_KEEP / QQ_AGENT_BACKUP_KEY / QQ_AGENT_BACKUP_KEY_FILE`,
 
-  restore: `用法: node src/ops.js restore --from <备份文件> [--data=目录] [--dry-run]
+  restore: `用法: node src/ops.js restore --from <备份文件> [--data=目录] [--service=服务名] [--dry-run]
        [--confirm] [--key-file=文件] [--no-encrypt]
 
 解密 -> 校验归档路径 -> 停服务 -> 旧数据留档 -> 解包 -> 起服务 -> 检查状态。
@@ -3216,6 +3225,7 @@ SSH 配置、防火墙、定时任务、可升级包、TLS 证书到期、备份
 
 --from        备份文件（.tar.gz.enc 或 .tar.gz）
 --data        目标数据目录（默认沿用配置）
+--service     要停/启的 systemd 用户服务名（自定义部署时必须与 deploy.sh --service 一致）
 --dry-run     只解密/列目录，不写任何数据
 --confirm     实际执行（必需）
 --key-file    指定密钥文件

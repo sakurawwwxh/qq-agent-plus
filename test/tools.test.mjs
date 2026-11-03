@@ -436,6 +436,17 @@ test('过去状态：有历史但这次没带（档位 0 条）时，不说"你�
   assert.match(limited, /这次没有附带历史记录/, '有历史但没带 → 如实说明');
   assert.equal(limited.includes('第一次参与这个会话'), false, '不能说成第一次');
 
+  // Issue #86：lifecycle 续接的旧轮次里已有表情清单，不能每轮再追加（否则 transcript 线性膨胀）。
+  const lifecyclePrompt = buildUserPrompt({
+    ...base,
+    contextLimit: 0,
+    lifecycleContinuation: true,
+    gameContext: '【进行中的游戏】测试局',
+    stickerEntries: [{ id: 's-life', desc: '测试表情', url: '', useCount: 0, createdAt: '2026-01-01T00:00:00Z' }]
+  });
+  assert.equal(lifecyclePrompt.includes('stickerId'), false, 'lifecycle 续接不重复表情清单');
+  assert.equal(lifecyclePrompt.includes('进行中的游戏'), true, 'lifecycle 续接也要带当前游戏状态');
+
   const empty = buildUserPrompt({ ...base, chatKey: 'group:777002' });
   assert.match(empty, /第一次参与这个会话/, '库里真没有历史时才说第一次');
   store.close();

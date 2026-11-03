@@ -202,7 +202,7 @@ export class PluginHost {
       const spec = pluginLaunchSpec({
         pluginDir: this.#pluginDir(),
         unconfined: this.unconfined,
-        networkIsolation: this.networkIsolation && !this.unconfined,
+        networkIsolation: this.networkIsolation,
         memoryMb: this.limits.memoryMb,
         spawn: this.spawnSyncImpl,
         nodePath: this.nodePath

@@ -651,10 +651,13 @@ export class LifeFeedManager {
     const now = this.now();
     const day = dayKey(now);
     this.#load();
+    let take = Math.max(1, Number(count) || 1);
     if (!manual) {
       const quota = this.#quotaLeft(cfg, day);
       if (quota.pickLeft <= 0) return { error: `今天已经领取 ${cfg.maxPicksPerDay} 次了，明天再继续` };
       if (quota.shareLeft <= 0) return { error: `今天已经分享 ${cfg.maxOffersPerDay} 次了，明天再继续` };
+      // 一次 count=3 不能把只剩 1 次的领取额度冲破。
+      take = Math.min(take, quota.pickLeft);
     }
     const offeredToday = new Set(this.state.offers.filter((item) => item.day === day).map((item) => item.id));
     const usedUp = new Set(this.state.offers.filter((item) => item.day === day).map((item) => item.upMid).filter(Boolean));
@@ -678,7 +681,7 @@ export class LifeFeedManager {
       .filter((item) => !offeredToday.has(item.id))
       .sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
     for (const item of sorted) {
-      if (picked.length >= Math.max(1, count)) break;
+      if (picked.length >= take) break;
       if (needle) {
         const haystack = `${item.title} ${item.desc} ${(item.tags || []).join(' ')}`.toLowerCase();
         if (!haystack.includes(needle)) continue;

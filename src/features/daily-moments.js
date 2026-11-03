@@ -1719,6 +1719,14 @@ export class DailyMomentsManager {
         const fresh = String(image?.data?.url || image?.data?.file || '').trim();
         if (fresh) return fresh;
       } catch { /* 使用落库地址兜底 */ }
+      // 草稿发布通常是次日：QQ 图片链接/ getMsg 可能已失效。用本条消息落库时保存的媒体地址兜底，
+      // 不把易过期 URL 写进状态文件（2026-11-03 复核 P2）。
+      try {
+        const row = this.store.findByMid?.(candidate.chatKey, candidate.mid);
+        const media = Array.isArray(row?.media) ? row.media[candidate.mediaIndex] || row.media[0] : null;
+        const stored = String(media?.url || media?.file || '').trim();
+        if (stored) return stored;
+      } catch { /* 继续走 fallbackUrl */ }
     }
     return String(candidate.fallbackUrl || '');
   }

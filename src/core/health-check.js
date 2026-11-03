@@ -22,6 +22,8 @@ const STUCK_INBOUND_MS = 60 * 60 * 1000;        // 入站到期未处理的宽�
                                                 // 按设计可等 maxSilence（默认上限 45 分钟）才统一处理，
                                                 // 60 分钟覆盖它之后仍停在 pending 才是管道死了
 const DISK_MIN_BYTES = 1024 * 1024 * 1024;       // 磁盘余量：< 1GB 报警
+// 待核对发送只看最近 7 天：更早的 held/unknown 属于历史遗留，不能让巡检永久按红。
+const SEND_REVIEW_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOTIFY_AFTER_STREAK = 3;                   // 连续失败到第 3 次才通知
 // 两个本机探测必须带超时（2026-10-01 审查）：原来一次 fetch 用 undici 的默认上限（约 5 分钟），
 // 控制台半死不活（接受连接但不响应）时，一轮巡检会被它拖住整个超时窗口 ——
@@ -353,7 +355,33 @@ export async function runHealthCheck(opts = {}) {
     }
   }
 
-  // ⑤ 磁盘余量
+  // ⑤ 待核对发送：held 消息 / outbox sending|unknown 会挡住整会话（legacy 闸门）。
+  // 不自动释放 unknown（可能已发出），但必须让运维看见，不能只藏在聊天页里。
+  try {
+    const db = openDatabase(path.join(dataDir, 'messages.sqlite'), { readOnly: true });
+    try {
+      const cutoff = Date.now() - SEND_REVIEW_STALE_MS;
+      const held = Number(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE state='held' AND ts>=?").get(cutoff)?.n) || 0;
+      // 与 getChatMeta 同口径：一次 run 发 3 条只算 1 个待核对批次。
+      // 老库 created_at=0 的行没有可靠时间，按历史遗留处理，不纳入巡检红线。
+      const uncertain = Number(db.prepare(`SELECT COUNT(DISTINCT COALESCE(run_id,id)) AS n
+        FROM outbox WHERE state IN ('sending','unknown') AND created_at>=?`).get(cutoff)?.n) || 0;
+      if (held || uncertain) {
+        add('send-review', false, `有 ${held} 条 held 消息、${uncertain} 条发送结果未知（会影响对应会话回复），请在控制台核对`);
+      } else {
+        add('send-review', true, '没有待核对的发送');
+      }
+    } finally { db.close(); }
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    if (/no such (?:table: (?:outbox|messages)|column: created_at)/i.test(message)) {
+      add('send-review', true, '旧库还没有发送核对表/字段（跳过）');
+    } else {
+      add('send-review', false, `发送核对清单读不了: ${message}`);
+    }
+  }
+
+  // ⑥ 磁盘余量
   try {
     const st = typeof statfs === 'function' ? statfs(dataDir) : fs.statfsSync(dataDir);
     const avail = Number(st.bavail) * Number(st.bsize);

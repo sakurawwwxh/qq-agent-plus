@@ -1808,6 +1808,7 @@ export class Orchestrator {
 
     // 记忆自动整理（后台静默，绝不阻塞/影响聊天主流程）
     this.#maybeConsolidateMemory(chatKey);
+    return { sessionId: session.id, status: session.sent.length > 0 ? 'done' : 'noreply', sent: session.sent };
   }
 
   #commitSessionHandoff(session, { chatKey, triggerEntries }) {
@@ -3196,17 +3197,15 @@ export class Orchestrator {
         return 'exhausted';
       };
       const note = buildReminderNote(batch.map((pair) => pair.it), { now });
-      const dispatchedAt = Date.now();
       // 只把**本次唤醒新产生**的 unknown 当成本轮结果不确定：历史遗留的 unknown/sending
       // （上次硬崩溃、别的 run 的残行）不该让每条提醒一上来就放弃重试。
       const unknownBefore = new Set(this.store.listUnknownOperations(chatKey).map((op) => op.id));
       for (const pair of batch) this.#remindersInFlight.add(pair.it.id);
       this.wake(chatKey, { manual: true, paced: true, wakeNote: note })
-        .then(() => {
-          // #wake 不会因为模型请求失败而 reject；用"本轮之后有没有自己的消息落库"
-          // 判断提醒是否真的播报出去。没播报就顺延 5 分钟重试，别直接 markFired
-          //（模型网关故障时提醒会永久丢失，2026-10-20 审查）。
-          const delivered = this.store.hasSelfSince(chatKey, dispatchedAt);
+        .then((result) => {
+          // 只认**本轮唤醒自己发出的消息**。用 hasSelfSince 会把日报/游戏/插件的自发消息
+          // 误当成提醒已播报，提醒正文就永久丢了（2026-11-03 第五轮复审 A3）。
+          const delivered = Array.isArray(result?.sent) && result.sent.length > 0;
           if (delivered) {
             settleAll('sent', { deliveredAt: Date.now() });
             for (const pair of batch) this.reminders.markFired(pair.it.id, now);

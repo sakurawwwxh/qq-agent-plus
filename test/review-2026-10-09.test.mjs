@@ -196,7 +196,8 @@ test('docker 组自愈做进了部署收尾：加组 + stop→sleep→start 重�
   // Issue #30 的根因之一：标准部署从不碰 docker 组成员关系 —— 控制台「更新协议端」
   // 从第一天起就报权限不足。收尾里把"加组 + 让管理器读到"都做掉（2026-10-09）。
   const sh = read('deploy.sh');
-  assert.ok(/sudo usermod -aG docker/.test(sh), '要把部署用户加进 docker 组');
+  assert.ok(/sudo usermod -aG docker/.test(sh), '要把部署用户加进 docker 组（显式 opt-in 后）');
+  assert.ok(/QQ_AGENT_ALLOW_DOCKER_GROUP/.test(sh), '加组必须显式 opt-in，不能默认把控制台抬到宿主 root');
   assert.ok(/sudo -n systemctl stop "\$MANAGER_UNIT"/.test(sh),
     '重建要先 stop —— restart 会撞 status=219/CGROUP（cgroup 回收竞态，实测）');
   assert.ok(/sleep 3/.test(sh) && /sudo -n systemctl start "\$MANAGER_UNIT"/.test(sh),
@@ -205,7 +206,7 @@ test('docker 组自愈做进了部署收尾：加组 + stop→sleep→start 重�
     '不许用 restart 重建管理器：实测（systemd 249）219/CGROUP 失败后不会自动回来（服务停摆到人工 start）');
   // 自动更新场景必须跳过重建：无人值守时不做停服动作（位置序：分流判断在 stop 之前）
   const heal = sh.indexOf('# ── docker 组自愈');
-  const skipBranch = sh.indexOf('if [[ -z "${QQ_AGENT_SOURCE_REVISION:-}" ]]; then', heal);
+  const skipBranch = sh.indexOf('if [[ "$DOCKER_MEMBER" == true && -z "${QQ_AGENT_SOURCE_REVISION:-}" ]]; then', heal);
   const stopPos = sh.indexOf('sudo -n systemctl stop "$MANAGER_UNIT"', heal);
   assert.ok(heal > 0 && skipBranch > heal && stopPos > skipBranch,
     '自动更新（QQ_AGENT_SOURCE_REVISION 有值）要在重建动作之前分流跳过');

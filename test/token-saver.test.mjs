@@ -20,7 +20,7 @@ const { MemoryStore } = await import('../src/memory/memory.js');
 function useConfig(patch = {}) {
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.api = { ...cfg.api, model: 'test', baseUrl: 'https://model.invalid/v1' };
-  cfg.store = { ...cfg.store, atCount: 300, keywordCount: 100, randomCount: 60, allCount: 300, randomPercent: 50 };
+  cfg.store = { ...cfg.store, atCount: 300, keywordCount: 100, randomCount: 60, allCount: 300, randomPercent: 50, contextLayering: { enabled: false, maxHistoryMessages: 24, maxHistoryChars: 8000 } };
   cfg.memory = { ...cfg.memory, handoffEnabled: true, handoffMaxChars: 4000 };
   Object.assign(cfg, patch);
   setRuntimeConfig(cfg);
@@ -152,4 +152,26 @@ test('记忆：交接与印象注入的字符上限跟着模式走', () => {
   assert.ok(cappedBlock.length > 0, '截断后仍要有内容');
   const cappedHandoff = memory.formatHandoffForPrompt('group:1');
   assert.ok(cappedHandoff.length <= 2000, `省模式交接 ≤2000（实际 ${cappedHandoff.length}）`);
+});
+
+test('分层上下文并入每个条数行的实际生效值，且不会被 0 值抬成 1', () => {
+  const cfg = useConfig({
+    tokenSaver: { mode: 'off' },
+    store: {
+      ...DEFAULT_CONFIG.store,
+      atCount: 300, keywordCount: 100, randomCount: 60, allCount: 300,
+      contextLayering: { enabled: true, maxHistoryMessages: 24, maxHistoryChars: 8000 }
+    }
+  });
+  const table = tokenSaverEffective(cfg);
+  const at = table.rows.find((row) => row.key === 'atCount');
+  assert.equal(at.user, 300);
+  assert.equal(at.effective, 24, '实际生效值要并入分层上限');
+  assert.equal(at.layerLimited, true);
+  const zero = tokenSaverEffective({
+    ...cfg,
+    store: { ...cfg.store, atCount: 0, keywordCount: 0, randomCount: 0, allCount: 0 }
+  }).rows.find((row) => row.key === 'atCount');
+  assert.equal(zero.user, 0, '0 是合法值，不能被抬成 1');
+  assert.equal(zero.effective, 0);
 });

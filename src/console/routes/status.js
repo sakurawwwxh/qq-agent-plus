@@ -28,6 +28,18 @@ export function registerStatusRoutes(router, deps = {}) {
     throw new Error('registerStatusRoutes 需要 router/json/getConfig/sessions/onebot/orchestrator/effects/uiDir/version/统计函数');
   }
 
+  // /api/status 可能被多个页面/脚本高频轮询；uiBuildStamp 递归 readdir+stat 全量 ui/ 文件，
+  // 每请求几十次 statSync（2026-11-03 第五轮复审 A9）。3 秒缓存足够让“控制台已更新”提示
+  // 及时出现，又把常态轮询的成本压到最低。
+  let uiStampCache = null;
+  const cachedUiBuildStamp = () => {
+    const now = Date.now();
+    if (uiStampCache && now - uiStampCache.at < 3000) return uiStampCache.stamp;
+    const stamp = uiBuildStamp(uiDir);
+    uiStampCache = { at: now, stamp };
+    return stamp;
+  };
+
   router.add('GET', '/api/status', async (req, res) => {
     const dayKey = todayKey();
     const sessionUsage = sessions.todayUsage(dayKey);
@@ -117,7 +129,7 @@ export function registerStatusRoutes(router, deps = {}) {
       cacheHitRate: usage.promptTokens ? Math.min(1, usage.cachedTokens / usage.promptTokens) : 0,
       webSearchCount: usage.webSearchCount || 0,
       // 前端构建戳：轮询时发现它变了 → 前端提示"控制台已更新，点击刷新"
-      uiBuild: uiBuildStamp(uiDir),
+      uiBuild: cachedUiBuildStamp(),
       // 进程运行期间 config.json 被外部改过：磁盘版本已备份，控制台据此提示
       configConflict: getConfigConflict(),
       // 当前版本号（package.json 的 version）：控制台侧栏与控制页的版本徽标用它。

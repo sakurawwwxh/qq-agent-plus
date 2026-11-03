@@ -470,7 +470,7 @@ test('deploy script treats linger as best-effort and never rolls back over it', 
   );
   assert.match(
     source,
-    /elif ! sudo loginctl enable-linger "\$USER"/,
+    /elif ! sudo -n loginctl enable-linger "\$USER"/,
     'sudo 失败必须走 elif 警告分支，不能裸跑触发 ERR 回滚'
   );
   assert.match(source, /下次开机不会自启/, '警告要说明后果与手动补救命令');

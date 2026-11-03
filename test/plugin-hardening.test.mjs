@@ -97,6 +97,16 @@ test('启动方式：有网络隔离时套 unshare，没有时退回直接起 no
   const off = pluginLaunchSpec({ pluginDir: FIXTURES, networkIsolation: false, spawn: () => ({ status: 0 }), platform: 'linux' });
   assert.equal(off.command, process.execPath);
   assert.equal(off.netIsolated, false);
+
+  // 只关 Node 权限模型（unconfined）不能把网络隔离一起关掉：两件事互相独立。
+  resetIsolationProbe();
+  const unconfinedNet = pluginLaunchSpec({
+    pluginDir: FIXTURES, unconfined: true, networkIsolation: true,
+    spawn: () => ({ status: 0 }), platform: 'linux'
+  });
+  assert.equal(unconfinedNet.command, 'unshare');
+  assert.equal(unconfinedNet.netIsolated, true);
+  assert.equal(unconfinedNet.args.includes('--permission'), false, 'unconfined 仍然不带 Node 权限参数');
 });
 
 test('网络隔离探测只跑一次（每次加载插件都起一个 unshare 子进程是浪费）', () => {

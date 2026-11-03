@@ -671,9 +671,10 @@ sudo systemctl start user@$(id -u).service
 
 ⚠️ **也不要用 `loginctl terminate-user`**：它同样不会把管理器自动带回来（服务会停到你下次登录）。
 
-**重跑一次部署脚本即可自动修好**：`deploy.sh` / `deploy-all.sh` 在收尾时会检查"部署用户在不在
-docker 组、服务进程拿没拿到组"，缺什么补什么 —— 加组（`usermod -aG docker`）+ 用
-`stop → sleep 3 → start` 重建一次 user manager（服务随 linger 自动恢复；只在交互式部署时做，
+**重跑一次部署脚本即可检查并修复**：`deploy.sh` / `deploy-all.sh` 在收尾时会检查"部署用户在不在
+docker 组、服务进程拿没拿到组"。**自动加组默认关闭**：只有显式设置
+`QQ_AGENT_ALLOW_DOCKER_GROUP=1` 才会执行 `usermod -aG docker`；否则只提示、不改权限。
+开启后会用 `stop → sleep 3 → start` 重建一次 user manager（服务随 linger 自动恢复；只在交互式部署时做，
 自动更新场景跳过重建、只加组）。上面的手工命令留给不便重跑部署的场景。整套检测用的是
 `getent` / `usermod` / `systemctl` —— systemd 家族各发行版（Ubuntu / Debian / CentOS /
 Fedora / Arch…）通用；非 systemd 的发行版不在支持范围。
@@ -688,9 +689,9 @@ Fedora / Arch…）通用；非 systemd 的发行版不在支持范围。
 （控制台跑的命令只有 `systemctl --user`）；加进去之后，同一个进程被拿下就等于宿主机 root。
 这是「控制台里更新协议端」这个功能的前提（控制台进程必须能驱动 docker），取舍有三条路：
 
-- **接受它**（当前默认）：省事，功能开箱可用。前提是你信任控制台的访问控制
+- **接受它**：显式设置 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 再部署，省事，功能开箱可用。前提是你信任控制台的访问控制
   （控制台令牌 + `server.host` 的暴露面，见下）。
-- **不接受**：不要在控制台里更新协议端 —— 把 `autoUpdate.snowluma.enabled` 与
+- **不接受（默认）**：不设置该变量，部署不会自动加组；不要在控制台里更新协议端 —— 把 `autoUpdate.snowluma.enabled` 与
   `followBaseline` 都设为 `false`，改用命令行的 `deploy.sh` / `ops snowluma-update`
   （`sudo` 按需输密码，不需要给常驻进程这个组的权限），并执行
   `sudo usermod -rG docker <部署用户>` 把组摘掉、再重启 user manager（见上）。

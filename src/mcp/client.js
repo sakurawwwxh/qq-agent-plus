@@ -53,8 +53,8 @@ export class McpStdioClient {
     const child = spawn(this.command, this.args, {
       cwd: this.cwd,
       // 不继承完整 process.env：第三方 server 不该读到宿主的所有凭据/代理变量。
-      // 只带运行必需的环境，server 自己的变量由配置显式提供。
-      env: { ...safeEnv(), ...this.env },
+      // 配置变量可以扩展，但 PATH/HOME/NODE_OPTIONS 等受控变量必须由宿主最终覆盖。
+      env: { ...this.env, ...safeEnv() },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true
