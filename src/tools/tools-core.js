@@ -444,6 +444,44 @@ function memberHint(ctx) {
   return `请从当前会话成员里选一个 QQ 号填进去：\n${lines}`;
 }
 
+const graphemeSegmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' });
+const graphemeCount = (text) => [...graphemeSegmenter.segment(text)].length;
+
+// send_poke 收到非数字 targetUserId 时按名字反查 QQ（模型常把聊天里看到的名字直接当 QQ 传，
+// 光靠工具说明拦不住）。口径：群名片或备注（displayNameOf）精确命中优先，其次群名片前缀
+// （至少 2 个字，单个 emoji 算 1 个字）；只认唯一命中，重名/歧义一律报错让模型用 QQ 号指定。
+// 返回 { userId } 或 { error }。纯数字（含 0）不进这里，走调用方原来的数字校验。
+function resolvePokeTarget(ctx, raw) {
+  const text = String(raw ?? '').trim().replace(/^@+/, '');
+  const query = text.toLowerCase();
+  const members = (ctx.store?.memberNames?.(ctx.chatKey) || []).filter((m) => m.userId && m.name);
+  const labelOf = (m) => displayNameOf(m.userId, m.name);
+  const pick = (rows) => {
+    const ids = [...new Set(rows.map((m) => m.userId))];
+    if (ids.length === 1) return { userId: ids[0] };
+    if (ids.length > 1) {
+      const list = ids.map((id) => `${labelOf(rows.find((m) => m.userId === id))}(${id})`).join('、');
+      return { error: `有 ${ids.length} 个成员都能对上「${text}」，请用 QQ 号指定：${list}` };
+    }
+    return null;
+  };
+  if (query) {
+    const exact = pick(members.filter((m) => m.name.toLowerCase() === query || labelOf(m).toLowerCase() === query));
+    if (exact) return exact;
+    if (graphemeCount(query) >= 2) {
+      const hit = ctx.store?.memberByName?.(ctx.chatKey, text);
+      if (hit?.userId) return { userId: String(hit.userId) };
+      const prefix = pick(members.filter((m) => m.name.toLowerCase().startsWith(query)));
+      if (prefix) return prefix;
+    }
+  }
+  const similar = query
+    ? members.filter((m) => m.name.toLowerCase().includes(query) || labelOf(m).toLowerCase().includes(query)).slice(0, 3)
+    : [];
+  const guess = similar.length ? `你是不是想找：${similar.map((m) => `${labelOf(m)}(${m.userId})`).join('、')}？` : '';
+  return { error: `targetUserId 必须是 QQ 号，按名字也没有唯一对上的成员（收到：${JSON.stringify(raw)}）。${guess}${memberHint(ctx)}` };
+}
+
 function hasParticipant(ctx, userId) {
   if (typeof ctx.store?.hasParticipant === 'function') {
     return ctx.store.hasParticipant(ctx.chatKey, userId);
@@ -2264,7 +2302,7 @@ export function buildToolDefs() {
     },
     {
       name: 'send_poke',
-      description: '拍一拍（群聊传 targetUserId；私聊默认拍对方）。targetUserId 必须是数字 QQ 号：不知道对方 QQ 号时，先调 get_active_members 或 get_recent_messages 查到再拍，绝对不要传名字、昵称或"未知"。适合用"戳一下"代替一句废话、回应别人的拍一拍，或偶尔逗一下正在聊的人。别频繁。',
+      description: '拍一拍（群聊传 targetUserId；私聊默认拍对方）。targetUserId 应传数字 QQ 号：不知道对方 QQ 号时，先调 get_active_members 或 get_recent_messages 查到再拍；传群名片/备注只在唯一对上一个成员时才会拍，重名或对不上会报错，不要传"未知"或 0 这类占位。适合用"戳一下"代替一句废话、回应别人的拍一拍，或偶尔逗一下正在聊的人。别频繁。',
       parameters: {
         type: 'object',
         properties: { targetUserId: { type: ['integer', 'string'], description: '要拍的群友 QQ 号（数字，群聊必填；不知道就先查 get_active_members）' } }
@@ -2276,9 +2314,11 @@ export function buildToolDefs() {
           }
           let target = args.targetUserId;
           if (target !== undefined && target !== null && String(target).trim() !== '') {
-            const targetText = String(target).trim();
+            let targetText = String(target).trim();
             if (!/^\d{1,15}$/.test(targetText)) {
-              return err(`targetUserId 必须是正整数的 QQ 号（收到：${JSON.stringify(args.targetUserId)}）。${memberHint(ctx)}`);
+              const resolved = resolvePokeTarget(ctx, args.targetUserId);
+              if (resolved.error) return err(resolved.error);
+              targetText = resolved.userId;
             }
             if (ctx.kind === 'group' && !hasParticipant(ctx, targetText)) {
               const looksLikeMessageId = modelVisible(ctx.store?.findByMid?.(ctx.chatKey, targetText));
