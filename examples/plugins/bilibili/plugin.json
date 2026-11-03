@@ -2,7 +2,7 @@
   "id": "bilibili",
   "apiVersion": 2,
   "name": "B 站",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "搜索与查看 B 站视频、UP 主、热门、评论、字幕；把视频下载合流后发到群里；点赞/投币/收藏/关注/评论/发弹幕（写操作需管理员批准并按天限额）",
   "entry": "index.mjs",
   "capabilities": [
@@ -204,13 +204,13 @@
     },
     {
       "name": "video",
-      "description": "查看一个 B 站视频的详情：标题、UP 主、简介、播放/点赞/投币/收藏、分 P、以及前若干条评论。bvid 或 av 号都行。",
+      "description": "查看一个 B 站视频的详情：标题、UP 主、简介、播放/点赞/投币/收藏、分 P、以及前若干条评论。BV 号、av 号、B 站视频链接或 b23.tv 短链都行。",
       "parameters": {
         "type": "object",
         "properties": {
           "bvid": {
             "type": "string",
-            "description": "BV 号（BV1xx…）或 av 号"
+            "description": "BV 号（BV1xx…）、av 号、B 站视频链接或 b23.tv 短链"
           },
           "withComments": {
             "type": "boolean",
@@ -348,7 +348,7 @@
         "properties": {
           "bvid": {
             "type": "string",
-            "description": "视频 BV 号"
+            "description": "BV 号、av 号、B 站视频链接或 b23.tv 短链"
           },
           "frames": {
             "type": "array",
@@ -372,7 +372,7 @@
         "properties": {
           "bvid": {
             "type": "string",
-            "description": "BV 号或 av 号"
+            "description": "BV 号、av 号、B 站视频链接或 b23.tv 短链"
           },
           "page": {
             "type": "number",
@@ -486,7 +486,7 @@
         "properties": {
           "bvid": {
             "type": "string",
-            "description": "视频 BV 号"
+            "description": "BV 号、av 号、B 站视频链接或 b23.tv 短链"
           },
           "text": {
             "type": "string",

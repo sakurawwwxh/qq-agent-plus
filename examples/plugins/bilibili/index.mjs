@@ -9,6 +9,7 @@
 // 视频下载走宿主的 media 能力（宿主校验 SSRF、限体积、ffmpeg 合流），插件进程不执行命令、也拿不到别的目录。
 import crypto from 'node:crypto';
 import { mergeLoginTokens } from './login-tokens.mjs';
+import { resolveVideoQuery } from './video-ref.mjs';
 
 const send = (message) => { process.stdout.write(`${JSON.stringify(message)}\n`); };
 
@@ -302,9 +303,17 @@ function videoRow(item) {
 }
 
 async function viewOf(id) {
-  const key = String(id || '').trim();
-  if (!key) throw new Error('需要 bvid 或 av 号');
-  const query = /^av\d+$/i.test(key) ? `aid=${key.slice(2)}` : `bvid=${encodeURIComponent(key)}`;
+  const query = await resolveVideoQuery(id, ({ url }) => callHost('cap.http.request', {
+    url,
+    method: 'GET',
+    headers: {
+      'user-agent': UA,
+      referer: REFERER,
+      'accept-encoding': 'gzip, br, deflate'
+    },
+    maxChars: 64 * 1024,
+    decompress: true
+  }));
   const data = await httpJson(`${API}/x/web-interface/view?${query}`);
   const v = data.data || {};
   return {
