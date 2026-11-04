@@ -29,7 +29,8 @@ test('deploy script verifies and rolls back the update service and timer', () =>
   assert.match(source, /UPDATE_SERVICE="\$\{SERVICE\}-update"/);
   // 行锚（^…$）而不是裸子串：注掉/缩进改坏这行都要红（裸匹配连注释都算命中，2026-10-07 复核）
   assert.match(source, /^\s*systemd-analyze --user verify "\$UPDATE_UNIT_FILE"\s*$/m);
-  assert.match(source, /systemctl --user enable --now "\$UPDATE_SERVICE\.timer"/);
+  assert.match(source, /systemctl --user enable "\$UPDATE_SERVICE\.timer"/);
+  assert.match(source, /WAS_UPDATE_TIMER_ACTIVE.*systemctl --user start "\$UPDATE_SERVICE\.timer"/s);
   assert.match(source, /cp -p "\$LOCK_DIR\/state\/update\.service" "\$UPDATE_UNIT_FILE"/);
   // 回滚失败时 EXIT trap 会删 .deploy.lock；state/ 里的部署前配置必须先复制到恢复目录。
   assert.match(source, /deploy-recovery-/);

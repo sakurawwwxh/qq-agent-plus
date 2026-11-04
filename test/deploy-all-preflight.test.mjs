@@ -316,6 +316,12 @@ test('ordinary managed update does not attempt password rotation and preserves A
 test('managed loopback stack (new default) passes its own preflight', shellOptions, (t) => {
   const f = fixture(t);
   managed(f, { publishHost: '127.0.0.1' });
+  // 新装默认不仅 compose 绑回环，Agent 的 config.server.host 也是 127.0.0.1；
+  // 两个条件都覆盖，才能证明 allowlist 放宽确实服务于默认安装。
+  const configFile = path.join(f.root, 'data/config.json');
+  const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  cfg.server.host = '127.0.0.1';
+  fs.writeFileSync(configFile, JSON.stringify(cfg));
   const result = f.run();
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /Ownership and port checks passed/);

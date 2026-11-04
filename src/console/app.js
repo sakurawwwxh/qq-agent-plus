@@ -1331,6 +1331,8 @@ function buildApp({
       if (kind === 'group') {
         if (msg?.group_id == null || String(msg.group_id) !== String(chatId)) return null;
       } else if (kind === 'private') {
+        // 私聊里不能接受群消息（适配器可能不带 message_type，但带 group_id）。
+        if (msg?.group_id != null || msg?.message_type === 'group') return null;
         if (msg?.message_type && String(msg.message_type) !== 'private') return null;
         if (msg?.user_id != null && String(msg.user_id) !== String(chatId)) return null;
       }

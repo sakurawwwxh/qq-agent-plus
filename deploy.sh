@@ -591,8 +591,10 @@ rollback_deployment() {
   fi
   systemctl --user daemon-reload
   if [[ "$WAS_UPDATE_TIMER_ENABLED" == true ]]; then
-    systemctl --user enable --now "$UPDATE_SERVICE.timer" >/dev/null 2>&1
-  elif [[ "$WAS_UPDATE_TIMER_ACTIVE" == true ]]; then
+    # 只恢复开机自启；原来 enabled 但被手动 stop 的，不要用 --now 擅自启动。
+    systemctl --user enable "$UPDATE_SERVICE.timer" >/dev/null 2>&1
+  fi
+  if [[ "$WAS_UPDATE_TIMER_ACTIVE" == true ]]; then
     systemctl --user start "$UPDATE_SERVICE.timer" >/dev/null 2>&1
   fi
   if [[ "$WAS_ACTIVE" == true ]]; then

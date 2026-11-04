@@ -1376,9 +1376,9 @@ async function cmdBackup(args) {
     ngLine('tar 失败，本次备份作废（服务已恢复）');
     return 1;
   }
-  // 备份一侧也要过恢复侧的类型闸门：数据目录里若有符号链接/硬链接，tar 只存链接本身，
-  // 生成的归档会在 restore/drill 时被拒绝。宁可现在报“备份作废”，也不要留下一个看似成功、
-  // 真出事时却恢复不了的 .enc。
+  // 备份一侧也要过恢复侧的两道闸门（条目类型 + 路径）：数据目录里若有符号链接/硬链接，
+  // tar 只存链接本身；若条目名带 Windows 非法字符/尾随点空格，restore/drill 也会拒绝。
+  // 宁可现在报“备份作废”，也不要留下一个看似成功、真出事时却恢复不了的 .enc。
   const archiveCheck = runTarVerboseList(plainFile);
   if (!archiveCheck.ok) {
     try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
@@ -1387,9 +1387,12 @@ async function cmdBackup(args) {
   }
   try {
     validateTarTypes(archiveCheck.stdout);
+    const archiveNames = runTarList(plainFile);
+    if (!archiveNames.ok) throw new Error(`归档路径读取失败（返回码 ${archiveNames.code}）`);
+    validateTarEntries(archiveNames.stdout);
   } catch (error) {
     try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
-    ngLine(`${error?.message || error}；本次备份作废（请移除数据目录内的链接/设备文件后重试）`);
+    ngLine(`${error?.message || error}；本次备份作废（请移除数据目录内的链接/设备文件或非法文件名后重试）`);
     return 1;
   }
   // 服务已经恢复，加密放在这里做：不占停机时间。
