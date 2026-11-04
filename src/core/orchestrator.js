@@ -1444,8 +1444,8 @@ export class Orchestrator {
       if (budget.notify) this.#maybeNotifyBudgetExceeded(budget);
       if (budget.onExceed === 'block' && !budgetExempt) {
         const activeMode = String(getConfig().runtime?.mode || 'active') !== 'observe';
-        // 只在"有新消息"这一路回话：主动唤醒没有人在等，插一句只会变成刷屏
-        if (activeMode && !proactive) await this.#maybeSayBudgetExhausted(chatKey);
+        // 只在"有新消息"这一路回话：主动/自主节奏唤醒没有人在等，插一句只会变成刷屏。
+        if (activeMode && !proactive && !paced) await this.#maybeSayBudgetExhausted(chatKey);
         if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted', '本轮额度已用完');
         return;
       }

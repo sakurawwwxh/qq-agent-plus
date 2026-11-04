@@ -3547,6 +3547,8 @@ function buildApp({
       // 上一条命在发送途中退出：sending 行收口成 unknown，进入人工核对清单。
       const staleSending = store.markStaleSendingUnknown();
       if (staleSending) log(`[outbox] ${staleSending} 条上次进程遗留的 sending 已标记为 unknown`);
+      const staleLeases = store.failLeasedRunsAtStartup();
+      if (staleLeases) log(`[runs] ${staleLeases} 条上次进程遗留的 leased run 已收口`);
       // 上一次进程如果在富化途中退出，deferred 消息会留在库里：按占位符放行，
       // 让恢复循环把它们当普通未读处理，别让它们永远不可见（Issue #85）。
       if (ingestAbort.signal.aborted) ingestAbort = new AbortController();

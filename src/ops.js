@@ -1290,10 +1290,14 @@ async function cmdBackup(args) {
     const stackDir = path.join(credsTemp, 'stack-credentials');
     fs.mkdirSync(stackDir, { recursive: true, mode: 0o700 });
     const candidates = [
-      { src: path.join(REPO_DIR, '.env'), name: 'app.env' },
-      { src: path.join(path.dirname(REPO_DIR), '.env'), name: 'deployment.env' },
-      { src: path.join(REPO_DIR, '.deployment.json'), name: 'deployment.json' },
-      { src: path.join(path.dirname(REPO_DIR), 'deployment-access.txt'), name: 'deployment-access.txt' }
+      // 按部署记录里的真实路径取，不能按源码 checkout 的父目录猜：标准全栈的 .env
+      // 在 <root>/snowluma/.env，旧实现只看 <app>/.env 与 <root>/.env，实际什么都取不到；
+      // 从源码目录跑时还可能把无关父项目的 .env 打进来。
+      { src: path.join(cfg.appDir, '.env'), name: 'app.env' },
+      { src: path.join(cfg.rootDir, '.env'), name: 'deployment.env' },
+      { src: path.join(cfg.snowlumaDir, '.env'), name: 'snowluma.env' },
+      { src: path.join(cfg.appDir, '.deployment.json'), name: 'deployment.json' },
+      { src: path.join(cfg.rootDir, 'deployment-access.txt'), name: 'deployment-access.txt' }
     ];
     let copied = 0;
     for (const item of candidates) {
@@ -2789,14 +2793,14 @@ Description=QQ Agent data weekly backup
 [Service]
 Type=oneshot
 # 显式带路径：ops.js 的默认值可能与本机部署不一致（本单元要在无人值守下自足）。
-# 2026-10-01 审查：这五行原先是注释，于是自定义部署下备份会打包错误的目录、
-# 停错服务（QQ_AGENT_SERVICE 默认 qq-agent-linux.service）；备份会停服务再拉起，
-# 打错目录 / 停错服务都是数据安全事故，不是"参数没给全"。
+# 2026-10-01 审查：这几行原先是注释，于是自定义部署下备份会打包错误的目录、
+# 停错服务（QQ_AGENT_SERVICE 默认 qq-agent-linux.service）；停错服务/打包错目录都是数据安全事故。
 Environment="QQ_AGENT_DIR=${cfg.rootDir}"
 Environment="QQ_AGENT_DATA_DIR=${cfg.dataDir}"
 Environment="QQ_AGENT_BACKUP_DIR=${cfg.backupDir}"
 Environment="QQ_AGENT_SERVICE=${serviceName}"
 Environment="QQ_AGENT_KEEP=${cfg.keep}"
+Environment="QQ_AGENT_BACKUP_KEY_FILE=${envStr('QQ_AGENT_BACKUP_KEY_FILE', path.join(os.homedir(), '.config', 'qq-agent', 'backup.key'))}"
 ExecStart=${nodeBin} ${opsPath} backup --confirm
 `;
   const backupTimer = `[Unit]

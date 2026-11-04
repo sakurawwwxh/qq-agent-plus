@@ -66,6 +66,7 @@ test('install-timers --print：备份单元把路径/服务名/保留份数显�
       QQ_AGENT_BACKUP_DIR: `${rootDir}/mybackups`,
       QQ_AGENT_SERVICE: 'qq-agent-custom.service',
       QQ_AGENT_KEEP: '9',
+      QQ_AGENT_BACKUP_KEY_FILE: `${rootDir}/keys/backup.key`,
     },
   });
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
@@ -86,12 +87,17 @@ test('install-timers --print：备份单元把路径/服务名/保留份数显�
     `Environment="QQ_AGENT_BACKUP_DIR=${rootDir}/mybackups"`,
     'Environment="QQ_AGENT_SERVICE=qq-agent-custom.service"',
     'Environment="QQ_AGENT_KEEP=9"',
+    `Environment="QQ_AGENT_BACKUP_KEY_FILE=${rootDir}/keys/backup.key"`,
   ]) {
     assert.ok(
       new RegExp(`^${escape(line)}$`, 'm').test(backup),
       `备份单元缺少生效行（注释不算）：${line}`
     );
   }
+  // 备份和演练必须用同一把钥匙；否则备份用本地新生成的 key，演练用 off-host key，月月失败。
+  const drill = sections.get('qq-agent-backup-drill.service') || '';
+  assert.ok(drill.includes(`Environment="QQ_AGENT_BACKUP_KEY_FILE=${rootDir}/keys/backup.key"`),
+    '演练单元必须与备份单元使用同一个 QQ_AGENT_BACKUP_KEY_FILE');
   // 值必须整体加引号：systemd 的 Environment= 未加引号时按空白切词，路径里有空格就会被拆开
   // （变成"目录只读到空格前"），而这里三个路径恰好都可以来自用户环境变量（另一条审查意见）。
   // 口径与 scripts/install-service.mjs 生成的单元一致。

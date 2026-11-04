@@ -144,7 +144,8 @@ print_plan() {
 源码副本：$SRC_DIR
 将执行：
   1. 创建/复用用户 $SERVICE_USER，并确保有可登录 shell 与 home
-  2. 安装/检查 Docker、按 QQ_AGENT_ALLOW_DOCKER_GROUP=1 可选把 $SERVICE_USER 加入 docker 组
+  2. 安装/检查 Docker；默认只在本次安装子进程临时授予 docker 组（不永久加组），
+     QQ_AGENT_ALLOW_DOCKER_GROUP=1 才把 $SERVICE_USER 永久加入 docker 组
   3. loginctl enable-linger $SERVICE_USER，保证退出 SSH 后服务仍在
   4. 复制源码到 $SRC_DIR，属主交给 $SERVICE_USER
   5. 以 $SERVICE_USER 执行 install.sh（真正的部署）
@@ -304,14 +305,18 @@ docker compose version >/dev/null 2>&1 \
 
 getent group docker >/dev/null 2>&1 \
   || die '系统里没有 docker 组；rootless Docker 不在这个安装器的支持范围内'
+DOCKER_GID="$(getent group docker | cut -d: -f3)"
+[[ -n "$DOCKER_GID" ]] || die '无法读取 docker 组的 gid'
 # docker 组等价于宿主 root（组内进程可挂载宿主文件系统）。和 deploy.sh 同一口径：
-# 默认不加组，只有显式 QQ_AGENT_ALLOW_DOCKER_GROUP=1 才执行 usermod。
+# 默认不永久加组，只有显式 QQ_AGENT_ALLOW_DOCKER_GROUP=1 才执行 usermod。
+# 但安装本身（拉镜像/起 SnowLuma）必须能访问 Docker：默认用 setpriv 只给安装子进程
+# 临时补充组，安装完不保留，避免为了装一次就把服务账号永久提升到 root 等价权限。
 if [[ "${QQ_AGENT_ALLOW_DOCKER_GROUP:-}" == "1" ]]; then
   usermod -aG docker "$SERVICE_USER" || die "无法把 $SERVICE_USER 加入 docker 组"
   id -nG "$SERVICE_USER" | tr ' ' '\n' | grep -qx docker \
     || die "docker 组没有生效：$SERVICE_USER"
 else
-  printf '跳过 docker 组自动加入（需要显式设置 QQ_AGENT_ALLOW_DOCKER_GROUP=1；控制台「更新协议端」可能权限不足）\n'
+  printf '默认不永久加入 docker 组；安装期间用临时补充组访问 Docker（控制台「更新协议端」仍需 QQ_AGENT_ALLOW_DOCKER_GROUP=1）\n'
 fi
 
 # ── linger + 用户管理器 ─────────────────────────────────────────────────────
@@ -348,6 +353,15 @@ else
 fi
 
 if [[ "$SOURCE_DIR" != "$SRC_DIR" ]]; then
+  # root 会用 rsync --delete 覆盖 $SRC_DIR。若它是符号链接（例如不可信用户把
+  # $ROOT_DIR/src 指向 /etc），mkdir/rsync/chown 会跟随链接，以 root 删除目标目录内容。
+  # 必须在任何写入前拒绝；允许的部署根布局只认 $ROOT_DIR/src 这个真实路径。
+  if [[ -L "$SRC_DIR" ]]; then
+    die "源码目录不能是符号链接：$SRC_DIR"
+  fi
+  if [[ -e "$SRC_DIR" && "$(realpath -m -- "$SRC_DIR")" != "$(realpath -m -- "$ROOT_DIR/src")" ]]; then
+    die "源码目录解析后不在部署根内：$SRC_DIR"
+  fi
   info "复制源码到 $SRC_DIR"
   mkdir -p "$SRC_DIR"
   rsync -a --delete \
@@ -368,13 +382,18 @@ if [[ "$SOURCE_DIR" != "$SRC_DIR" ]]; then
 fi
 
 # ── 以服务用户重跑 install.sh ───────────────────────────────────────────────
-# setpriv --init-groups 比 runuser 更可靠地带上 docker 补充组；runuser 作为回退。
+# setpriv 可以只给安装子进程临时 docker 组，不必永久 usermod；runuser 无法附加组，
+# 因此默认路径要求 setpriv（util-linux 常规组件），或显式选择永久加组。
 if command -v setpriv >/dev/null 2>&1; then
-  RUN_AS=(setpriv --reuid="$SERVICE_UID" --regid="$SERVICE_GID" --init-groups --)
-elif command -v runuser >/dev/null 2>&1; then
+  if [[ "${QQ_AGENT_ALLOW_DOCKER_GROUP:-}" == "1" ]]; then
+    RUN_AS=(setpriv --reuid="$SERVICE_UID" --regid="$SERVICE_GID" --init-groups --)
+  else
+    RUN_AS=(setpriv --reuid="$SERVICE_UID" --regid="$SERVICE_GID" --groups "$DOCKER_GID" --)
+  fi
+elif command -v runuser >/dev/null 2>&1 && [[ "${QQ_AGENT_ALLOW_DOCKER_GROUP:-}" == "1" ]]; then
   RUN_AS=(runuser -u "$SERVICE_USER" --)
 else
-  die '缺少 setpriv/runuser，无法以服务用户执行安装'
+  die '缺少 setpriv（util-linux），无法在不永久加入 docker 组的情况下完成安装；请安装 setpriv，或显式设置 QQ_AGENT_ALLOW_DOCKER_GROUP=1 后重试'
 fi
 
 RUN_ENV=(

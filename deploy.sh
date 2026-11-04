@@ -598,7 +598,15 @@ rollback_deployment() {
     systemctl --user start "$UPDATE_SERVICE.timer" >/dev/null 2>&1
   fi
   if [[ "$WAS_ACTIVE" == true ]]; then
-    systemctl --user start "$SERVICE.service" || ROLLBACK_FAILED=true
+    if [[ "$ROLLBACK_FAILED" != true ]]; then
+      if ! systemctl --user start "$SERVICE.service"; then
+        ROLLBACK_FAILED=true
+      else
+        # Type=simple 的 start 只代表 fork/exec 成功；等两秒再确认进程没立刻退出。
+        sleep 2
+        systemctl --user is-active --quiet "$SERVICE.service" || ROLLBACK_FAILED=true
+      fi
+    fi
   elif [[ "$WAS_ENABLED" == true ]]; then
     # 原来是 enabled 但被手动 stop：回滚只恢复开机自启，不擅自启动。
     systemctl --user enable "$SERVICE.service" >/dev/null 2>&1

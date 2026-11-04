@@ -698,6 +698,20 @@ export class ChatStore {
   }
 
   /**
+   * 启动时收口上一条命留下的所有 leased run。
+   * 实例锁保证此刻没有另一个进程持有这些租约；它们的 expires_at 可能还没到
+   * （默认 4 分钟），不能等 recoverExpired 的过期条件，否则该会话在重启后
+   * 会短暂卡在"有租约但没人跑"：新消息 claim 不到、提醒也被推迟。
+   */
+  failLeasedRunsAtStartup() {
+    const runs = this.db.prepare("SELECT id FROM runs WHERE state='leased'").all();
+    for (const run of runs) {
+      this.failLease(run.id, 'Process restarted while run was leased', { delayMs: 0 });
+    }
+    return runs.length;
+  }
+
+  /**
    * 清掉终态且早已过期的运行行（expires_at 当创建时间的近似；leased 行不归保留期管）。
    * 启动时清一次，之后由每日保留期调度复用（console/app.js 的 retentionPruneTargets）——
    * 只清一次等于永不清理（2026-10-09 审查，与三个台账同一教训）。

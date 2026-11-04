@@ -31,10 +31,10 @@ function seedDataDir(dir) {
   }
 }
 
-function runOps(args, { key = KEY } = {}) {
+function runOps(args, { key = KEY, env = {} } = {}) {
   return spawnSync(process.execPath, [OPS, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, QQ_AGENT_BACKUP_KEY: key, QQ_AGENT_SERVICE: 'qq-agent-missing-test' },
+    env: { ...process.env, QQ_AGENT_BACKUP_KEY: key, QQ_AGENT_SERVICE: 'qq-agent-missing-test', ...env },
     timeout: 120000
   });
 }
@@ -96,6 +96,32 @@ test('--no-encrypt 仍可备份/恢复；恢复没有 --confirm 直接拒绝', {
   const restore = runOps(['restore', '--from', path.join(backups, name), '--data', restored, '--confirm', '--no-encrypt']);
   assert.equal(restore.status, 0, restore.stderr || restore.stdout);
   assert.equal(fs.existsSync(path.join(restored, 'config.json')), true);
+});
+
+test('--include-stack-creds 从部署路径取 snowluma/.env（不是源码父目录）', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const data = path.join(root, 'data');
+  const backups = path.join(root, 'backups');
+  seedDataDir(data);
+  fs.mkdirSync(path.join(root, 'snowluma'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'snowluma/.env'), 'SNOWLUMA_SECRET=1\n');
+  fs.writeFileSync(path.join(root, 'deployment-access.txt'), 'token\n');
+  const backup = runOps(['backup', '--confirm', '--no-encrypt', '--include-stack-creds',
+    '--data', data, '--backup-dir', backups], {
+    env: {
+      QQ_AGENT_DIR: root,
+      QQ_AGENT_DATA_DIR: data,
+      QQ_AGENT_SNOWLUMA_DIR: path.join(root, 'snowluma')
+    }
+  });
+  assert.equal(backup.status, 0, backup.stderr || backup.stdout);
+  const archive = path.join(backups, newest(backups, '.tar.gz'));
+  const listed = spawnSync('tar', [
+    ...(process.platform === 'win32' ? ['--force-local'] : []), '-tzf', archive
+  ], { encoding: 'utf8' });
+  assert.equal(listed.status, 0, listed.stderr);
+  assert.match(listed.stdout, /stack-credentials\/snowluma\.env/, '必须打包 snowluma/.env');
+  assert.match(listed.stdout, /stack-credentials\/deployment-access\.txt/);
 });
 
 test('恢复前发现数据目录仍被实例占用（锁存活）必须拒绝，未停服不覆盖', { skip: skipTar }, (t) => {

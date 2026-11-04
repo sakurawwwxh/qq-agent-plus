@@ -25,6 +25,14 @@ test('root-install.sh：创建服务用户、装 Docker、开 linger、以普通
   assert.match(rootInstaller, /loginctl enable-linger "\$SERVICE_USER"/);
   assert.match(rootInstaller, /setpriv --reuid="\$SERVICE_UID" --regid="\$SERVICE_GID" --init-groups/,
     '必须以服务用户重新执行 install.sh（补充组按当前账号实际组继承）');
+  assert.match(rootInstaller, /DOCKER_GID="\$\(getent group docker/,
+    '默认安装需要读取 docker gid 做临时补充组');
+  assert.match(rootInstaller, /--groups "\$DOCKER_GID"/,
+    '未 opt-in 永久加组时，安装子进程仍要能临时访问 Docker');
+  assert.match(rootInstaller, /源码目录不能是符号链接/,
+    'root rsync --delete 前必须拒绝 symlink 的 src');
+  assert.match(rootInstaller, /realpath -m -- "\$SRC_DIR"/,
+    '还要确认解析后的 src 仍在部署根内');
   assert.match(rootInstaller, /bash "\$SRC_DIR\/install\.sh" "\$\{PASSTHRU\[@\]\}"/,
     '最终必须以服务用户重新执行 install.sh');
   assert.match(rootInstaller, /qq-agent-manage/, 'root 用户需要一个降权后的管理入口');

@@ -189,8 +189,9 @@ SnowLuma 已包含 OneBot，无需另行安装 NapCat 或 Lagrange。
 装 Docker、开启 linger 和准备目录。装完后 root 用 `sudo qq-agent-manage logs` 看日志，
 普通用户仍可直接用 `manage.sh`。
 
-注意：默认**不会**把服务用户加入 `docker` 组。控制台“更新协议端”需要该权限时，请显式
-设置 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 重跑部署；`docker` 组在 Linux 上等价于宿主 root
+注意：默认**不会**把服务用户加入 `docker` 组。安装器只在本次安装子进程里临时使用
+`docker` 补充组（拉镜像、起 SnowLuma），安装完成后不保留；控制台“更新协议端”需要该权限时，
+请显式设置 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 重跑部署；`docker` 组在 Linux 上等价于宿主 root
 （可挂载宿主文件系统）。这里降的是应用进程身份，不是完整沙箱。不需要控制台更新协议端时，
 保持默认不加组、手工管理 SnowLuma 即可。
 

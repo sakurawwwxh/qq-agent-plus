@@ -92,6 +92,17 @@ describe('ChatStore', () => {
     assert.equal(store.resolveHeld('group:1'), 1);
   });
 
+  it('启动时收口未过期的 leased run：硬崩重启不让会话卡 4 分钟', (t) => {
+    const { store } = fixture(t);
+    append(store, 1);
+    store.claimUnread('group:1');
+    assert.equal(store.hasLeasedRun('group:1'), true);
+    // 租约 expires_at 在未来；只有启动清扫能把它收口。
+    assert.equal(store.failLeasedRunsAtStartup(), 1);
+    assert.equal(store.hasLeasedRun('group:1'), false);
+    assert.equal(store.findByMid('group:1', 1).state, 'pending');
+  });
+
   it('recoverExpired 跳过 live 集合里仍在跑的租约：不把在跑批次放回队列（2026-10-09 审查）', (t) => {
     const { store } = fixture(t);
     append(store, 1);

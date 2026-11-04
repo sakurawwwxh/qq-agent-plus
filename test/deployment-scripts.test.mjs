@@ -35,6 +35,9 @@ test('deploy script verifies and rolls back the update service and timer', () =>
   // 回滚失败时 EXIT trap 会删 .deploy.lock；state/ 里的部署前配置必须先复制到恢复目录。
   assert.match(source, /deploy-recovery-/);
   assert.match(source, /cp -a "\$LOCK_DIR\/state\/\." "\$RECOVERY_STATE_DIR\/"/);
+  // 回滚已经失败时不能再启动混合代码；启动后还要确认真的 active（Type=simple start 不等于进程活着）。
+  assert.match(source, /ROLLBACK_FAILED" != true[\s\S]*?systemctl --user start "\$SERVICE\.service"/);
+  assert.match(source, /is-active --quiet "\$SERVICE\.service" \|\| ROLLBACK_FAILED=true/);
   assert.match(source, /QQ_AGENT_SOURCE_REVISION/);
 });
 
@@ -512,8 +515,8 @@ test('deploy-all 默认只绑回环，--publish 才对外开放', () => {
   assert.match(source, /"\$\{PUBLISH_HOST\}:\$\{NOVNC_PORT\}:6081"/, 'noVNC 用 PUBLISH_HOST');
   assert.match(source, /"\$\{PUBLISH_HOST\}:\$\{SNOWLUMA_WEBUI_HOST_PORT\}:5099"/, 'WebUI 用 PUBLISH_HOST');
   assert.match(source, /DEPLOY_ARGS\+=\(--host "\$PUBLISH_HOST"\)/, '控制台 host 跟随 PUBLISH_HOST');
-  // 存量安装不能因为一次更新被改回回环
-  assert.match(source, /EXISTING_STACK.*PUBLISH_EXPLICIT|PUBLISH_EXPLICIT.*EXISTING_STACK/s);
+  // 存量安装不能因为一次更新被改回回环；显式 --publish/--loopback 才允许改。
+  assert.match(source, /if \[\[ "\$EXISTING_STACK" != true \|\| "\$PUBLISH_EXPLICIT" == true \]\]; then[\s\S]*?--host "\$PUBLISH_HOST"/s);
 });
 
 test('deploy-all.sh：栈级互斥锁覆盖 .env 到 deploy.sh 的全程，且失败方不删赢家的锁', () => {

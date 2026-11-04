@@ -2405,8 +2405,10 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     };
     await runner.wake('group:1', { proactive: true });
     assert.equal(modelCalls, 0, 'block 策略下主动唤醒同样不许调模型（"今天别再花钱"就该真的停）');
+    await runner.wake('group:1', { manual: true, paced: true });
+    assert.equal(modelCalls, 0, 'paced 唤醒在 block 下同样不许调模型');
     assert.equal(sentTo.filter((s) => s.messages.join('').includes('今天的额度用完了')).length, 0,
-      'proactive 不该往群里发"额度用完"（那是新消息场景的回话）');
+      'proactive/paced 不该往群里发"额度用完"（那是新消息场景的回话）');
   });
 
   it('主动机会落在私聊时用私聊措辞，不说"群里"', async (t) => {

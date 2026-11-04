@@ -991,9 +991,9 @@ fi
 # config.json 的旧端口，部署会"成功"但随后按新端口做健康检查必然超时，.env 与 config.json
 # 从此不一致，后续所有预检都会拒绝（2026-10 审查 P1）。
 DEPLOY_ARGS=(--install-dir "$APP_DIR" --data-dir "$AGENT_DATA_DIR" --service "$SERVICE" --port "$AGENT_PORT")
-if [[ "$EXISTING_STACK" != true ]]; then
-  # 新装按 --publish/--loopback 落 host；已有安装让 deploy.sh 沿用 config.json 里的 host，
-  # 否则用户按文档改成 127.0.0.1 后会被安装器改回去。
+if [[ "$EXISTING_STACK" != true || "$PUBLISH_EXPLICIT" == true ]]; then
+  # 新装按 --publish/--loopback 落 host；已有安装只有显式传了 --publish/--loopback 才改，
+  # 否则沿用 config.json 里的 host（避免一次普通重跑把用户收紧过的绑定改回去）。
   DEPLOY_ARGS+=(--host "$PUBLISH_HOST")
 fi
 bash "$SOURCE_DIR/deploy.sh" "${DEPLOY_ARGS[@]}"

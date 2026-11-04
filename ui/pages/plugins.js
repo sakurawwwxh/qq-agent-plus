@@ -911,6 +911,8 @@ function indexFootHtml(index) {
 function openPluginDetail(id) {
   const next = String(id || '');
   if (!next) return;
+  // 从详情里点“相关插件”会重建整个详情 DOM（扫码面板也一起消失）；先停掉旧轮询。
+  stopQrPoll();
   pluginDetailId = next;
   // 详情只存在于目录面：从「已装」点进来时先切过去，否则点完看不到任何变化（用户反馈的第二个问题）
   if (pluginPane !== 'catalog') { pluginPane = 'catalog'; renderPane(); }

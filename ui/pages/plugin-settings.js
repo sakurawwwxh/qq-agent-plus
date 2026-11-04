@@ -287,12 +287,16 @@ const QR_DONE_HTML = (account) => `<div class="plugin-warn good">登录成功：
 
 async function startQrLogin(id) {
   stopQrPoll();
+  // 必须在 await 之前拿代号：start 请求可能几秒才回来；期间用户切页/返回目录会再次
+  // stopQrPoll()。若 await 后才读 qrPollGen，迟到的响应会拿到新代号并重新起轮询。
+  const gen = qrPollGen;
   setQrPanel(id, '<div class="plugin-note">正在向 B 站请求登录二维码…</div>');
   try {
     const result = await api('/api/plugins/call', {
       method: 'POST',
       body: JSON.stringify({ id, tool: 'login', args: { action: 'start', channel: 'console' } })
     });
+    if (gen !== qrPollGen) return;
     if (!result?.ok || result?.channel !== 'console') {
       setQrPanel(id, `<div class="plugin-warn bad">二维码请求失败：${esc(String(result?.error || '插件没返回控制台渠道'))}</div>`);
       return;
@@ -305,7 +309,6 @@ async function startQrLogin(id) {
         <button type="button" class="btn btn-small" data-pd-qr-poll="${esc(id)}">查扫码结果</button>
         <button type="button" class="btn btn-small" data-pd-qr-stop>取消</button>
       </div>`);
-    const gen = qrPollGen;
     const poll = async () => {
       if (gen !== qrPollGen) return;
       try {
