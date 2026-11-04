@@ -116,9 +116,12 @@ test('--include-stack-creds 从部署路径取 snowluma/.env（不是源码父�
   });
   assert.equal(backup.status, 0, backup.stderr || backup.stdout);
   const archive = path.join(backups, newest(backups, '.tar.gz'));
-  const listed = spawnSync('tar', [
-    ...(process.platform === 'win32' ? ['--force-local'] : []), '-tzf', archive
-  ], { encoding: 'utf8' });
+  // GNU tar 在 Windows 上会把盘符当远程主机，需要 --force-local；bsdtar（Windows CI）
+  // 本身支持盘符且不认识这个选项。按 --version 判断，不能只看 platform。
+  const tarVersion = spawnSync('tar', ['--version'], { encoding: 'utf8' });
+  const forceLocal = /GNU tar/i.test(`${tarVersion.stdout || ''}${tarVersion.stderr || ''}`)
+    ? ['--force-local'] : [];
+  const listed = spawnSync('tar', [...forceLocal, '-tzf', archive], { encoding: 'utf8' });
   assert.equal(listed.status, 0, listed.stderr);
   assert.match(listed.stdout, /stack-credentials\/snowluma\.env/, '必须打包 snowluma/.env');
   assert.match(listed.stdout, /stack-credentials\/deployment-access\.txt/);
