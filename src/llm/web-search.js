@@ -427,7 +427,7 @@ async function bingSearchWithSupplement(query, { forceSupplement = false } = {})
   // 只是“短中文词”触发的兜底（如“段头测试”）没有补充结果时，保留 Bing 原结果，避免误伤普通搜索。
   if (!extra) return (memeQuery || douyinOnly || forceSupplement) ? primaryFiltered : primary;
 
-  const maxResults = Math.max(6, Math.min(10, Number(getConfig().webSearch?.maxResults) || 6));
+  const maxResults = Math.max(1, Math.min(10, Number(getConfig().webSearch?.maxResults) || 6));
   const sources = [...(extra.names || [])];
   if (primaryFiltered.results.length) sources.push('bing');
   return {

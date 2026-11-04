@@ -191,6 +191,7 @@ async function cancelLivingMemoryGraduation() {
 function renderDailyMomentsSection(c) {
   const moments = c.dailyMoments || {};
   const visibility = Number(moments.visibility) || 4;
+  const targetUins = Array.isArray(moments.targetUins) ? moments.targetUins : [];
   const randomMode = Array.isArray(moments.scheduleWindows);
   const hour = Number(moments.hour ?? 23);
   const minute = String(moments.minute ?? 30).padStart(2, '0');
@@ -257,13 +258,19 @@ function renderDailyMomentsSection(c) {
         <select id="cfg-moments-visibility">
           <option value="1" ${visibility === 1 ? 'selected' : ''}>所有人可见</option>
           <option value="4" ${visibility === 4 ? 'selected' : ''}>好友可见</option>
+          <option value="16" ${visibility === 16 ? 'selected' : ''}>指定好友可见</option>
           <option value="64" ${visibility === 64 ? 'selected' : ''}>仅自己可见</option>
+          <option value="128" ${visibility === 128 ? 'selected' : ''}>指定好友不可见</option>
         </select></div>
+      <div class="field"><label>指定好友 QQ（逗号分隔，仅在 16 / 128 时使用）</label>
+        <input type="text" id="cfg-moments-target-uins" value="${esc(targetUins.join(','))}" placeholder="123456789,987654321" />
+        <div class="hint">16 = 仅名单内好友可见；128 = 名单内好友不可见。留空时按 QQ 空间默认范围处理。</div></div>
     </div>
     <div class="field-row">
       <div class="field"><label>每群最低消息数</label><input type="number" id="cfg-moments-min-messages" min="0" max="100" value="${esc(moments.minMessagesPerGroup ?? 3)}" /></div>
       <div class="field"><label>最多汇总群数</label><input type="number" id="cfg-moments-max-groups" min="1" max="50" value="${esc(moments.maxGroups ?? 12)}" /></div>
       <div class="field"><label>每群最多读取消息</label><input type="number" id="cfg-moments-max-messages" min="5" max="300" value="${esc(moments.maxMessagesPerGroup ?? 80)}" /></div>
+      <div class="field"><label>素材提示词上限（字符）</label><input type="number" id="cfg-moments-max-prompt" min="20000" max="500000" step="10000" value="${esc(Number(moments.maxPromptChars) > 0 ? Number(moments.maxPromptChars) : 120000)}" /></div>
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-moments-images" ${moments.allowImages !== false ? 'checked' : ''} />
       <label for="cfg-moments-images">允许模型查看并选择近期群图或收藏图</label></div>
@@ -504,6 +511,9 @@ function renderQzoneInteractionSection(c) {
           <input type="number" id="cfg-qzi-delay-min" min="0" max="10000" step="100" value="${esc(q.actionDelayMinMs ?? 700)}" />
           <input type="number" id="cfg-qzi-delay-max" min="0" max="15000" step="100" value="${esc(q.actionDelayMaxMs ?? 1800)}" />
         </div></div>
+      <div class="field"><label>单批最多决策轮数</label>
+        <input type="number" id="cfg-qzi-decision-rounds" min="1" max="5" value="${esc(Number(q.maxDecisionRounds) > 0 ? Number(q.maxDecisionRounds) : 3)}" />
+        <div class="hint">模型每次最多想几轮再决定点赞/评论；默认 3，越大越慢也越费 token。</div></div>
     </div>
     <div class="settings-actions">
       <button class="btn btn-primary btn-small" id="qzi-run-feed-btn">立即阅览好友动态</button>

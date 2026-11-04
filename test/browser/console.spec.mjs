@@ -801,9 +801,7 @@ test('窄屏 390×844：15 个页签都没有横向溢出', async ({ page }) => 
   const tabs = await tabNames(page);
   expect(tabs).toHaveLength(15);
 
-  for (const tab of tabs) {
-    await switchTo(page, tab);
-    await page.waitForTimeout(150);
+  const assertNoOverflow = async (label) => {
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
@@ -815,7 +813,23 @@ test('窄屏 390×844：15 个页签都没有横向溢出', async ({ page }) => 
         .slice(0, 5)
         .map((el) => `${el.tagName.toLowerCase()}${el.id ? `#${el.id}` : ''}.${String(el.className || '').replace(/\s+/g, '.')}`)
     }));
-    expect(metrics.scrollWidth, `tab=${tab} 越界元素：${metrics.offenders.join(' | ')}`)
+    expect(metrics.scrollWidth, `${label} 越界元素：${metrics.offenders.join(' | ')}`)
       .toBeLessThanOrEqual(metrics.clientWidth + 1);
+  };
+
+  for (const tab of tabs) {
+    await switchTo(page, tab);
+    await page.waitForTimeout(150);
+    await assertNoOverflow(`tab=${tab}`);
+  }
+
+  // 设置页默认只量到 api 分区；逐个点开所有设置分区，覆盖本轮新增的聊天/空间/生活层/长期记忆入口。
+  await switchTo(page, 'settings');
+  const sections = await page.locator('.settings-menu-item[data-section]')
+    .evaluateAll((items) => items.map((item) => item.dataset.section));
+  for (const section of sections) {
+    await page.locator(`.settings-menu-item[data-section="${section}"]`).click();
+    await page.waitForTimeout(150);
+    await assertNoOverflow(`settings/${section}`);
   }
 });

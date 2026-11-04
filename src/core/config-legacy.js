@@ -274,6 +274,8 @@ export const DEFAULT_CONFIG = {
     director: '',
     speed: 1,                 // 语速（0.25~4；实测硅基流动真实生效，聊天语速 1.05~1.15 更活）
     gain: 0,                  // 音量增益 dB（-10~10；觉得发闷可以 +2~+4）
+    maxPerHour: 30,           // 全局每小时最多合成几次（按次/按字符计费，发送限频之前就消耗）
+    maxPerHourPerChat: 6,     // 每会话每小时上限（防单个群刷爆全局额度）
     timeoutMs: 30000
   },
   // 图片生成（与 tts/asr 对称：OpenAI 兼容的 /images/generations）：默认关。

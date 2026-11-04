@@ -448,6 +448,14 @@ function renderApiSection(c) {
       <div class="field"><label>单次运行累计 Token 上限</label><input type="number" id="cfg-max-run-tokens" min="20000" max="1000000" step="10000" value="${esc(c.api.maxRunTokens ?? 160000)}" /></div>
       <div class="field"><label>模型上下文窗口（Token）</label><input type="number" id="cfg-context-window-tokens" min="16000" max="2000000" step="10000" value="${esc(c.api.contextWindowTokens ?? 1000000)}" /></div>
     </div>
+    <div class="field-row">
+      <div class="field"><label>单次模型请求超时（秒）</label>
+        <input type="number" id="cfg-api-timeout" min="5" max="300" step="5" value="${esc(Math.round((Number(c.api.timeoutMs) > 0 ? Number(c.api.timeoutMs) : 60000) / 1000))}" />
+        <div class="hint">单次 HTTP 请求的等待上限，默认 60 秒；慢网关可调到 120–180 秒。</div></div>
+      <div class="field"><label>单次运行总超时（秒）</label>
+        <input type="number" id="cfg-run-timeout" min="30" max="240" step="10" value="${esc(Math.round((Number(c.api.runTimeoutMs) > 0 ? Number(c.api.runTimeoutMs) : 180000) / 1000))}" />
+        <div class="hint">一整轮对话（含工具调用）的上限，默认 180 秒、最多 240 秒；生图/长工具链可调大。</div></div>
+    </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-vision" ${c.api.vision !== false ? 'checked' : ''} />
       <label for="cfg-vision">图片输入（关闭则移除看图工具，模型只会看到 [图片] 占位符）</label>
       <span id="vision-switch-hint" class="muted" style="font-size: var(--fs-sm);align-self:center"></span></div>
@@ -640,6 +648,9 @@ function renderSearchSection(c) {
         <option value="aggregate" ${prov === 'aggregate' ? 'selected' : ''}>聚合搜索（多源并发）</option>
         ${customProvs.map((p) => `<option value="custom:${esc(p.id)}" ${prov === `custom:${p.id}` ? 'selected' : ''}>${esc(p.name || p.baseUrl)}（自定义 · ${p.type === 'bing' ? '网页解析' : 'JSON 接口'}）</option>`).join('')}
       </select></div>
+    <div class="field"><label>最终最多展示几条结果</label>
+      <input type="number" id="cfg-search-maxresults" min="1" max="10" value="${esc(Number(c.webSearch?.maxResults) > 0 ? Number(c.webSearch.maxResults) : 6)}" />
+      <div class="hint">各源可以多取，最终交给模型的条数按这里收口（默认 6，运行期最多 10）。</div></div>
     <div class="field" id="search-chain-summary">
       <label>实际搜索方式</label>
       <div class="hint">
@@ -676,6 +687,8 @@ function renderSearchSection(c) {
         </div></div>
       <div class="field"><label>模型（旧 Responses 兜底用）</label><input type="text" id="cfg-ds-searchmodel" value="${esc(c.webSearch?.deepseek?.model || 'deepseek-v4-flash')}" /></div>
       <div class="field"><label>每次返回条数（1-50）</label><input type="number" id="cfg-ds-searchcount" min="1" max="50" value="${esc(c.webSearch?.deepseek?.count ?? 10)}" /></div>
+      <div class="field"><label class="checkbox-row"><input type="checkbox" id="cfg-ds-needcontent" ${c.webSearch?.deepseek?.needContent === true ? 'checked' : ''} />
+        <span>额外返回正文 content（更费 token）</span></label></div>
     </div>
     <div class="field-row" id="zhipu-search-fields" style="${prov === 'zhipu' ? '' : 'display:none'}">
       <div class="field"><label>智谱 API Key（留空用环境变量 ZHIPU_API_KEY）</label>
@@ -720,7 +733,12 @@ function renderSearchSection(c) {
       <div style="display:flex;gap:8px">
         <input type="password" id="cfg-tavily-key" value="${esc(c.webSearch?.tavily?.hasApiKey ? '******' : '')}" placeholder="输入新 Key 可替换；留空保持不变" autocomplete="new-password" style="flex:1" />
         <button class="btn btn-small" id="cfg-tavily-key-toggle" type="button">显示</button>
-      </div></div>
+      </div>
+      <div class="field" style="margin-top:8px"><label>搜索深度</label>
+        <select id="cfg-tavily-depth">
+          <option value="basic" ${(c.webSearch?.tavily?.searchDepth || 'basic') === 'basic' ? 'selected' : ''}>basic（快、便宜）</option>
+          <option value="advanced" ${c.webSearch?.tavily?.searchDepth === 'advanced' ? 'selected' : ''}>advanced（更深、更贵）</option>
+        </select></div></div>
     <div class="field" id="aggregate-search-fields" style="${prov === 'aggregate' ? '' : 'display:none'}">
       <label>聚合源列表（逗号分隔，按优先级排序；可选 tavily / doubao / bing / so360 / sogou / bilibili / baidu / zhipu / bocha / metaso，选中的源需已配好 Key，so360/sogou/bilibili/bing 不需要）</label>
       <input type="text" id="cfg-aggregate-sources" value="${esc((c.webSearch?.aggregate?.sources || ['tavily', 'doubao', 'bing']).join(','))}" placeholder="tavily,doubao,bing" style="flex:1" />
@@ -890,7 +908,13 @@ function renderAllowSection(c) {
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-allowallwhenempty" ${c.allowAllWhenEmpty === true ? 'checked' : ''} />
       <label for="cfg-allowallwhenempty">白名单留空时允许所有会话</label></div>
-    <div class="hint">说明：勾选后，若上方两个列表都为空，机器人会在<b>所有</b>群聊和私聊中运行；只要填了任意一项，就只按名单过滤。</div>`;
+    <div class="settings-divider"></div>
+    <h3>屏蔽名单（deny，优先于白名单）</h3>
+    <div class="field-row">
+      <div class="field"><label>屏蔽的群号（逗号分隔）</label><input type="text" id="cfg-denygroups" value="${esc((c.deny?.groups || []).join(','))}" placeholder="留空 = 不屏蔽整个群" /></div>
+      <div class="field"><label>屏蔽的 QQ（逗号分隔）</label><input type="text" id="cfg-denyprivate" value="${esc((c.deny?.private || []).join(','))}" placeholder="留空 = 不屏蔽私聊用户" /></div>
+    </div>
+    <div class="hint">命中这里的群/QQ 即使在白名单里也不会运行、不会收发消息。<b>deny 优先于 allow</b>；只想屏蔽群内个别人，请用「聊天设置 → 屏蔽名单」。</div>`;
 }
 
 function modelServiceOptionsHtml(currentUrl) {
@@ -1057,7 +1081,10 @@ function renderMessageTypesSection(c) {
     <div class="checkbox-row" style="margin-top:8px"><input type="checkbox" id="cfg-video-frames" ${mt.videoFrames !== false ? 'checked' : ''} />
       <label for="cfg-video-frames">查看视频画面（抽 4 帧拼 2×2）</label></div>
     <div class="hint" style="margin-left:26px">关掉后视频只剩声音（get_message_audio 转写），
-      省一次抽帧和一次视觉调用；提示词会同步改成"你只能拿到声音"。</div>`;
+      省一次抽帧和一次视觉调用；提示词会同步改成"你只能拿到声音"。</div>
+    <div class="field" style="margin-top:8px"><label for="cfg-mt-enrich-timeout">入站富化等待上限（毫秒）</label>
+      <input type="number" id="cfg-mt-enrich-timeout" min="200" max="15000" step="100" value="${esc(Number(mt.enrichTimeoutMs) > 0 ? Number(mt.enrichTimeoutMs) : 5000)}" />
+      <div class="hint">解析引用、@昵称、合并转发等后台处理的总预算，默认 5000。弱网/慢下载时调大，但会延后该会话后续消息的放行。</div></div>`;
 }
 
 function renderTokenSaverSection(c) {
@@ -1169,6 +1196,9 @@ function renderOnebotSection(c) {
         <input type="number" id="cfg-catchup-window" min="0" step="5" value="${windowMin}" />
         <div class="hint">断线/重启后补回的消息，超过这个时长的只入库不回复（避免回来就刷屏回一小时前的话）；
         填 0 = 一律只补记录。默认 30 分钟。</div></div>
+      <div class="field"><label>每次补课拉取条数</label>
+        <input type="number" id="cfg-catchup-count" min="1" max="500" step="10" value="${esc(Number(c.onebot?.catchupHistoryCount) > 0 ? Number(c.onebot.catchupHistoryCount) : 100)}" />
+        <div class="hint">长停机时可调大；只补窗口内可回复的，更早的只入库。默认 100，最多 500。</div></div>
     </div>
     <div id="onebot-status-line">${onebotStatusLineHtml()}</div>
     <div class="hint">改完 OneBot 地址、令牌或心跳策略后，执行 <code>${containerMode ? 'docker compose restart agent' : 'manage.sh restart'}</code> 生效（连接只在启动时建立一次，改完不重启还是旧配置）。</div>

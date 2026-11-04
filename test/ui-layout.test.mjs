@@ -379,7 +379,7 @@ test('资产页卡片复用同一套卡片样式', () => {
 
 test('控制页功能块分卡，服务入口排满一行', () => {
   const sections = appJs.match(/<section class="settings-card"/g) || [];
-  assert.equal(sections.length, 8, '控制页 8 个功能块（新增运行指标/审计、数据备份与群策略）都要成卡');
+  assert.equal(sections.length, 9, '控制页 9 个功能块（运行指标/审计、数据备份、存储维护与群策略）都要成卡');
   assert.doesNotMatch(appJs, /<section class="control-section"/);
   const block = /\.control-pane \{([\s\S]*?)\n\}/.exec(css);
   assert.ok(block, '控制页要有独立布局规则');

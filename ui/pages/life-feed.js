@@ -340,6 +340,10 @@ function renderLifeFeedSection(c) {
           <div class="field span-full"><label>RSS / Atom 地址（逗号或换行分隔，最多 10 个）</label>
             <input type="text" id="cfg-lifefeed-rss-urls" value="${esc((cfg.rssUrls || []).join(', '))}" placeholder="https://example.com/feed.xml" />
           </div>
+          <div class="field"><label>每次从 RSS 取几条</label>
+            <input type="number" id="cfg-lifefeed-rss-per-forage" min="1" max="50" value="${esc(Number(cfg.rssPerForage) > 0 ? Number(cfg.rssPerForage) : 10)}" />
+            <div class="hint">只影响启用了 RSS 来源时的单次抓取量，默认 10。</div>
+          </div>
         </div>
       </div>
 

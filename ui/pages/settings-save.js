@@ -50,6 +50,17 @@ function numKeep(raw, current, min, max, fallback) {
   return Math.min(max, Math.max(min, n));
 }
 
+/** 整数版 numKeep：清空/非法保持原值，避免 clampInt('') 把空串夹成最小值。 */
+function intKeep(raw, current, min, max, fallback) {
+  return Math.round(numKeep(raw, current, min, max, fallback));
+}
+
+/** 只接受正数的整数项：存量 0/负数按运行期的“回默认”口径处理，而不是把 0 当有效值。 */
+function intKeepPositive(raw, current, min, max, fallback) {
+  const base = Number(current);
+  return intKeep(raw, Number.isFinite(base) && base > 0 ? base : fallback, min, max, fallback);
+}
+
 /** 主动发言时段：HH:MM；结束允许 24:00（表示到当天结束）。 */
 function isClock(value, { end = false } = {}) {
   const text = String(value ?? '').trim();
@@ -129,7 +140,11 @@ async function saveConfig({ quiet = false } = {}) {
       expandForward: chk('#cfg-expand-forward', c.messageTypes?.expandForward !== false),
       videoFrames: chk('#cfg-video-frames', c.messageTypes?.videoFrames !== false),
       images: chk('#cfg-mt-images', c.messageTypes?.images !== false),
-      stickers: chk('#cfg-mt-stickers', c.messageTypes?.stickers !== false)
+      stickers: chk('#cfg-mt-stickers', c.messageTypes?.stickers !== false),
+      enrichTimeoutMs: intKeepPositive(
+        val('#cfg-mt-enrich-timeout', c.messageTypes?.enrichTimeoutMs ?? 5000),
+        c.messageTypes?.enrichTimeoutMs, 200, 15000, 5000
+      )
     };
   }
 
@@ -265,7 +280,9 @@ async function saveConfig({ quiet = false } = {}) {
         chk(`#cfg-lifefeed-src-${id}`, (c.lifeFeed?.sources || ['bilibili', 'plugin']).includes(id))),
       shareMode: String(val('#cfg-lifefeed-sharemode', c.lifeFeed?.shareMode || 'auto')) === 'manual' ? 'manual' : 'auto',
       ...(shareGroups ? { shareGroups } : {}),
-      rssUrls: splitKeywords('#cfg-lifefeed-rss-urls'),
+      // 控件缺失（旧页面/部分渲染）时不能把 RSS 地址写成空数组。
+      ...($('#cfg-lifefeed-rss-urls') ? { rssUrls: splitKeywords('#cfg-lifefeed-rss-urls') } : {}),
+      rssPerForage: intKeepPositive(val('#cfg-lifefeed-rss-per-forage', c.lifeFeed?.rssPerForage ?? 10), c.lifeFeed?.rssPerForage, 1, 50, 10),
       forageIntervalMinutes: lifeNum('#cfg-lifefeed-interval', c.lifeFeed?.forageIntervalMinutes ?? 360),
       maxCandidates: lifeNum('#cfg-lifefeed-max-candidates', c.lifeFeed?.maxCandidates ?? 200),
       maxPerForage: lifeNum('#cfg-lifefeed-max-per-forage', c.lifeFeed?.maxPerForage ?? 30),
@@ -337,9 +354,19 @@ async function saveConfig({ quiet = false } = {}) {
         val('#cfg-moments-max-messages', c.dailyMoments?.maxMessagesPerGroup),
         5, 300, 80
       ),
+      maxPromptChars: intKeepPositive(
+        val('#cfg-moments-max-prompt', c.dailyMoments?.maxPromptChars ?? 120000),
+        c.dailyMoments?.maxPromptChars, 20000, 500000, 120000
+      ),
       allowImages: chk('#cfg-moments-images', c.dailyMoments?.allowImages !== false),
       maxImages: clampInt(val('#cfg-moments-max-images', c.dailyMoments?.maxImages), 0, 4, 1),
-      visibility: clampInt(val('#cfg-moments-visibility', c.dailyMoments?.visibility), 1, 64, 4),
+      visibility: (() => {
+        const picked = Number(val('#cfg-moments-visibility', c.dailyMoments?.visibility ?? 4));
+        return [1, 4, 16, 64, 128].includes(picked) ? picked : 4;
+      })(),
+      targetUins: parseList(val('#cfg-moments-target-uins',
+        (Array.isArray(c.dailyMoments?.targetUins) ? c.dailyMoments.targetUins : []).join(',')))
+        .map(Number).filter((id) => Number.isInteger(id) && id >= 10000 && id <= 999999999999999).slice(0, 200),
       maxResearchCalls: clampInt(
         val('#cfg-moments-research', c.dailyMoments?.maxResearchCalls),
         0, 10, 4
@@ -407,6 +434,10 @@ async function saveConfig({ quiet = false } = {}) {
       actionDelayMaxMs: clampInt(
         val('#cfg-qzi-delay-max', c.qzoneInteractions?.actionDelayMaxMs),
         0, 15000, 1800
+      ),
+      maxDecisionRounds: intKeepPositive(
+        val('#cfg-qzi-decision-rounds', c.qzoneInteractions?.maxDecisionRounds ?? 3),
+        c.qzoneInteractions?.maxDecisionRounds, 1, 5, 3
       )
     };
   }
@@ -507,6 +538,15 @@ async function saveConfig({ quiet = false } = {}) {
         val('#cfg-context-window-tokens', c.api.contextWindowTokens),
         16000, 2000000, 1000000
       ),
+      // 超时按秒输入、按毫秒落盘；留空/非法保持原值，避免把 60 秒静默改成 5 秒。
+      timeoutMs: Math.round(numKeep(
+        val('#cfg-api-timeout', (c.api.timeoutMs > 0 ? c.api.timeoutMs : 60000) / 1000),
+        (c.api.timeoutMs > 0 ? c.api.timeoutMs : 60000) / 1000, 5, 300, 60
+      ) * 1000),
+      runTimeoutMs: Math.round(numKeep(
+        val('#cfg-run-timeout', (c.api.runTimeoutMs > 0 ? c.api.runTimeoutMs : 180000) / 1000),
+        (c.api.runTimeoutMs > 0 ? c.api.runTimeoutMs : 180000) / 1000, 30, 240, 180
+      ) * 1000),
       // 成本核算：官方价开关（走中转站时通常要关掉开关自己填）
       useOfficialPrice: chk('#cfg-useofficialprice', c.api.useOfficialPrice !== false),
       // 账户级口径三选一：官方价估算 / 渠道倍率 / 按月付
@@ -620,6 +660,10 @@ async function saveConfig({ quiet = false } = {}) {
       maxPerHour: normalizeAsrMax(
         val('#cfg-asr-max', '').trim() || c.asr?.maxPerHour
       ),
+      maxPerHourPerChat: intKeepPositive(
+        val('#cfg-asr-max-perchat', c.asr?.maxPerHourPerChat ?? 4),
+        c.asr?.maxPerHourPerChat, 1, 200, 4
+      ),
       baseUrl: val('#cfg-asr-baseurl', c.asr?.baseUrl || '').trim(),
       model: val('#cfg-asr-model', c.asr?.model || '').trim(),
       language: val('#cfg-asr-lang', c.asr?.language || '').trim(),
@@ -669,6 +713,8 @@ async function saveConfig({ quiet = false } = {}) {
           director: String(val('#cfg-tts-director', t.director || '') || '').trim(),
           speed: Math.min(4, Math.max(0.25, Number(val('#cfg-tts-speed', t.speed ?? 1)) || 1)),
           gain: Math.min(10, Math.max(-10, Number(val('#cfg-tts-gain', t.gain ?? 0)) || 0)),
+          maxPerHour: intKeepPositive(val('#cfg-tts-max', t.maxPerHour ?? 30), t.maxPerHour, 1, 200, 30),
+          maxPerHourPerChat: intKeepPositive(val('#cfg-tts-max-perchat', t.maxPerHourPerChat ?? 6), t.maxPerHourPerChat, 1, 200, 6),
           // 只送"这一家新填的"；掩码/空 = 保持（服务端合并进 keys[这家]）
           apiKeyInput: rawKey === '******' ? '' : rawKey
         };
@@ -707,6 +753,14 @@ async function saveConfig({ quiet = false } = {}) {
             }
           })(),
           maxPerHour: normalizeImageGenMax(val('#cfg-img-max', g.maxPerHour), 6),   // 与运行期 imageGenMaxPerHour 同口径
+          responseFormat: (() => {
+            const picked = String(val('#cfg-img-response-format', g.responseFormat || '')).trim();
+            return ['', 'b64_json', 'url'].includes(picked) ? picked : '';
+          })(),
+          timeoutMs: Math.round(numKeep(
+            val('#cfg-img-timeout', (g.timeoutMs > 0 ? g.timeoutMs : 120000) / 1000),
+            (g.timeoutMs > 0 ? g.timeoutMs : 120000) / 1000, 10, 240, 120
+          ) * 1000),
           // 服务端据此合并：掩码/空 = 保持原 Key；新输入才替换
           ...(rawKey && rawKey !== '******' ? { apiKey: rawKey } : {})
         };
@@ -727,11 +781,13 @@ async function saveConfig({ quiet = false } = {}) {
       enabled: chk('#cfg-websearch', c.webSearch?.enabled !== false),
       provider: val('#cfg-searchprovider', c.webSearch?.provider || 'bing'),
       searchUrl: val('#cfg-searchurl', c.webSearch?.searchUrl || 'https://cn.bing.com/search').trim() || 'https://cn.bing.com/search',
+      maxResults: intKeepPositive(val('#cfg-search-maxresults', c.webSearch?.maxResults ?? 6), c.webSearch?.maxResults, 1, 10, 6),
       deepseek: {
         ...(c.webSearch?.deepseek || {}),
         ...(enteredDsKey && enteredDsKey !== '******' ? { apiKey: enteredDsKey } : {}),
         model: val('#cfg-ds-searchmodel', c.webSearch?.deepseek?.model || 'deepseek-v4-flash').trim() || 'deepseek-v4-flash',
-        count: Math.min(50, Math.max(1, Number(val('#cfg-ds-searchcount', c.webSearch?.deepseek?.count ?? 10)) || 10))
+        count: Math.min(50, Math.max(1, Number(val('#cfg-ds-searchcount', c.webSearch?.deepseek?.count ?? 10)) || 10)),
+        needContent: chk('#cfg-ds-needcontent', c.webSearch?.deepseek?.needContent === true)
       },
       zhipu: {
         ...(c.webSearch?.zhipu || {}),
@@ -756,7 +812,9 @@ async function saveConfig({ quiet = false } = {}) {
       },
       tavily: {
         ...(c.webSearch?.tavily || {}),
-        ...(enteredTavilyKey && enteredTavilyKey !== '******' ? { apiKey: enteredTavilyKey } : {})
+        ...(enteredTavilyKey && enteredTavilyKey !== '******' ? { apiKey: enteredTavilyKey } : {}),
+        searchDepth: String(val('#cfg-tavily-depth', c.webSearch?.tavily?.searchDepth || 'basic')).trim() === 'advanced'
+          ? 'advanced' : 'basic'
       },
       aggregate: {
         // 控件缺失时回退已存列表（原来回退空串 → 存出空数组，把用户配好的聚合源静默清空；
@@ -810,10 +868,20 @@ async function saveConfig({ quiet = false } = {}) {
       groups: parseList(val('#cfg-allowgroups', (c.allow?.groups || []).join(','))),
       private: parseList(val('#cfg-allowprivate', (c.allow?.private || []).join(',')))
     };
-    // 这里以前无条件发 deny = { groups: [], private: [] }：界面里没有 deny 的编辑控件，
-    // 于是"保存白名单"会把 --import-bridge / 手改 config.json 配的屏蔽名单静默清空
-    // （access.js 仍按 deny 拦人，但名单已经没了 = 被屏蔽的群/人重新可用）。
-    // 不传这个字段，服务端会原样保留现有 deny。
+    // deny 现在有独立控件。控件缺失（旧页面/渲染失败）时**不能**写空数组：
+    // updateConfig 对数组是整体替换，会把 --import-bridge / 手改 config.json 配的屏蔽名单清空。
+    const denyGroupsBox = $('#cfg-denygroups');
+    const denyPrivateBox = $('#cfg-denyprivate');
+    if (denyGroupsBox || denyPrivateBox) {
+      patch.deny = {
+        groups: denyGroupsBox
+          ? parseList(val('#cfg-denygroups', (c.deny?.groups || []).join(',')))
+          : (c.deny?.groups || []),
+        private: denyPrivateBox
+          ? parseList(val('#cfg-denyprivate', (c.deny?.private || []).join(',')))
+          : (c.deny?.private || [])
+      };
+    }
     // 原先这里硬编码 false：只要点过保存就把该开关永久重置，
     // 而 UI 里根本没有输入控件 —— 只能手改 JSON，改完一保存就丢。改为读取复选框。
     const allowAllBox = $('#cfg-allowallwhenempty');
@@ -836,6 +904,8 @@ async function saveConfig({ quiet = false } = {}) {
     patch.wakeDelayMaxMs = wakeDelayMaxMs;
     patch.wakeDelayMs = Math.round((wakeDelayMinMs + wakeDelayMaxMs) / 2);
     patch.drainDelayMs = numKeep(val('#cfg-draindelay', c.drainDelayMs), c.drainDelayMs, 0, 600000, 1200);
+    patch.directWakeDelayMs = intKeep(val('#cfg-direct-wake-delay', c.directWakeDelayMs ?? 300), c.directWakeDelayMs ?? 300, 0, 2000, 300);
+    patch.maxBatchWaitMs = intKeepPositive(val('#cfg-max-batch-wait', c.maxBatchWaitMs ?? 20000), c.maxBatchWaitMs, 100, 20000, 20000);
     patch.maxConcurrentRuns = Number(val('#cfg-maxruns', c.maxConcurrentRuns)) || 2;
     patch.conversation = {
       ...(c.conversation || {}),
@@ -928,6 +998,14 @@ async function saveConfig({ quiet = false } = {}) {
       ) * 60000),
       // 默认 true（与升级前行为一致）：没这个控件时才退回已保存配置
       followUpEnabled: chk('#cfg-pro-followup', c.proactive?.followUpEnabled !== false),
+      followUpDelayMinutes: intKeepPositive(
+        val('#cfg-pro-followup-delay', c.proactive?.followUpDelayMinutes ?? 10),
+        c.proactive?.followUpDelayMinutes, 1, 120, 10
+      ),
+      followUpCooldownMinutes: intKeepPositive(
+        val('#cfg-pro-followup-cooldown', c.proactive?.followUpCooldownMinutes ?? 20),
+        c.proactive?.followUpCooldownMinutes, 1, 240, 20
+      ),
       selfWakeEnabled: chk('#cfg-pro-selfwake', c.proactive?.selfWakeEnabled !== false),
       // 范围：群聊默认 true（升级前行为），私聊默认 false（主动私聊需显式打开）；
       // 控件缺失时都按已保存值回退。
@@ -982,7 +1060,11 @@ async function saveConfig({ quiet = false } = {}) {
         perCharMs: Math.round(numKeep(
           val('#cfg-humanize-delay-perchar', c.humanize?.replyDelay?.perCharMs ?? 12),
           c.humanize?.replyDelay?.perCharMs, 0, 200, 12
-        ))
+        )),
+        capMs: Math.round(numKeep(
+          val('#cfg-humanize-cap', (c.humanize?.replyDelay?.capMs > 0 ? c.humanize.replyDelay.capMs : 8000) / 1000),
+          (c.humanize?.replyDelay?.capMs > 0 ? c.humanize.replyDelay.capMs : 8000) / 1000, 1, 60, 8
+        ) * 1000)
       },
       antiAi: {
         ...(c.humanize?.antiAi || {}),
@@ -991,7 +1073,39 @@ async function saveConfig({ quiet = false } = {}) {
       },
       personaState: {
         ...(c.humanize?.personaState || {}),
-        enabled: chk('#cfg-humanize-state-enabled', c.humanize?.personaState?.enabled !== false)
+        enabled: chk('#cfg-humanize-state-enabled', c.humanize?.personaState?.enabled !== false),
+        sleepStart: (() => {
+          const raw = String(val('#cfg-humanize-sleep-start', c.humanize?.personaState?.sleepStart || '00:00')).trim();
+          return isClock(raw) ? raw : (c.humanize?.personaState?.sleepStart || '00:00');
+        })(),
+        sleepEnd: (() => {
+          const raw = String(val('#cfg-humanize-sleep-end', c.humanize?.personaState?.sleepEnd || '07:00')).trim();
+          return isClock(raw) ? raw : (c.humanize?.personaState?.sleepEnd || '07:00');
+        })()
+      },
+      shape: {
+        ...(c.humanize?.shape || {}),
+        maxBubbles: intKeepPositive(val('#cfg-humanize-max-bubbles', c.humanize?.shape?.maxBubbles ?? 3), c.humanize?.shape?.maxBubbles, 1, 8, 3)
+      },
+      actions: {
+        ...(c.humanize?.actions || {}),
+        maxPerRun: intKeepPositive(val('#cfg-humanize-actions-max', c.humanize?.actions?.maxPerRun ?? 4), c.humanize?.actions?.maxPerRun, 1, 20, 4),
+        stickerCooldownMs: Math.round(numKeep(
+          val('#cfg-humanize-cooldown-sticker', (c.humanize?.actions?.stickerCooldownMs ?? 60000) / 1000),
+          (c.humanize?.actions?.stickerCooldownMs ?? 60000) / 1000, 0, 3600, 60
+        ) * 1000),
+        pokeCooldownMs: Math.round(numKeep(
+          val('#cfg-humanize-cooldown-poke', (c.humanize?.actions?.pokeCooldownMs ?? 300000) / 1000),
+          (c.humanize?.actions?.pokeCooldownMs ?? 300000) / 1000, 0, 3600, 300
+        ) * 1000),
+        voiceCooldownMs: Math.round(numKeep(
+          val('#cfg-humanize-cooldown-voice', (c.humanize?.actions?.voiceCooldownMs ?? 600000) / 1000),
+          (c.humanize?.actions?.voiceCooldownMs ?? 600000) / 1000, 0, 3600, 600
+        ) * 1000),
+        reactCooldownMs: Math.round(numKeep(
+          val('#cfg-humanize-cooldown-react', (c.humanize?.actions?.reactCooldownMs ?? 30000) / 1000),
+          (c.humanize?.actions?.reactCooldownMs ?? 30000) / 1000, 0, 3600, 30
+        ) * 1000)
       },
       relationship: {
         ...(c.humanize?.relationship || {}),
@@ -1019,6 +1133,10 @@ async function saveConfig({ quiet = false } = {}) {
       // 输入框口径与"每小时最多转写"一致：清空保持原值、0/负数回默认、超出按 1~60 收口
       maxCollectPerHour: normalizeStickerCollectMax(
         val('#cfg-sticker-collect-max', '').trim() || c.sticker?.maxCollectPerHour
+      ),
+      maxCollectPerHourPerChat: intKeepPositive(
+        val('#cfg-sticker-collect-max-perchat', c.sticker?.maxCollectPerHourPerChat ?? 3),
+        c.sticker?.maxCollectPerHourPerChat, 1, 60, 3
       ),
       // 判定标准（v0.8.4 的配置面补上界面）：空白存成空串 = 内置默认。空串是合法值，
       // 不能套上面"清空保持原值"的口径；控件缺失的旧页面按已保存值回退。
@@ -1071,6 +1189,18 @@ async function saveConfig({ quiet = false } = {}) {
       randomCount: clampInt(val('#cfg-randcount', c.store?.randomCount), 0, 500, 8),
       allCount: clampInt(val('#cfg-allcount', c.store?.allCount), 0, 500, 80),
       pastStateMaxChars: clampInt(val('#cfg-pastchars', c.store?.pastStateMaxChars), 100, 100000, 24000),
+      contextLayering: {
+        ...(c.store?.contextLayering || {}),
+        enabled: chk('#cfg-context-layering', c.store?.contextLayering?.enabled !== false),
+        maxHistoryMessages: intKeepPositive(
+          val('#cfg-context-layer-messages', c.store?.contextLayering?.maxHistoryMessages ?? 24),
+          c.store?.contextLayering?.maxHistoryMessages, 1, 500, 24
+        ),
+        maxHistoryChars: intKeepPositive(
+          val('#cfg-context-layer-chars', c.store?.contextLayering?.maxHistoryChars ?? 8000),
+          c.store?.contextLayering?.maxHistoryChars, 500, 100000, 8000
+        )
+      },
       // 统一开关 + 分群滑条表（__replace__：删掉的群设置要真删，深合并做不到）
       unifiedTier: chk('#cfg-unifiedtier', c.store?.unifiedTier !== false),
       // 明确声明语义：滑条上的数字就是概率（后端据此跳过老配置迁移）
@@ -1100,6 +1230,14 @@ async function saveConfig({ quiet = false } = {}) {
     // 状态"上限）—— 别误删。这里不再做 delete：patch 只是发给服务端的合并片段，
     // updateConfig 是深合并，删 patch 里的字段清不掉已存值（2026-10-12 审查：原来的两行
     // delete 就是这种无效代码）
+    patch.failureNotice = {
+      ...(c.failureNotice || {}),
+      enabled: chk('#cfg-failure-notice', c.failureNotice?.enabled !== false),
+      cooldownMinutes: intKeepPositive(
+        val('#cfg-failure-notice-cooldown', c.failureNotice?.cooldownMinutes ?? 8),
+        c.failureNotice?.cooldownMinutes, 1, 240, 8
+      )
+    };
   }
 
   // 「平台能力」页的保存块（2026-10-07 复审 P1）：这些控件只由这个分区渲染，
@@ -1210,6 +1348,8 @@ async function saveConfig({ quiet = false } = {}) {
     // 补课窗口：留空/非法 = 不改（清空输入框就变成"一律不回复"太吓人），0 才是显式的"只补记录"。
     const rawWindow = val('#cfg-catchup-window', '').trim();
     const windowMin = rawWindow === '' ? null : Number(rawWindow);
+    const rawCount = val('#cfg-catchup-count', '').trim();
+    const catchupCount = rawCount === '' ? null : clampInt(rawCount, 1, 500, c.onebot?.catchupHistoryCount ?? 100);
     patch.onebot = {
       wsUrl: val('#cfg-wsurl', c.onebot?.wsUrl || '').trim(),
       httpUrl: val('#cfg-httpurl', c.onebot?.httpUrl || '').trim(),
@@ -1217,6 +1357,7 @@ async function saveConfig({ quiet = false } = {}) {
       ...(windowMin !== null && Number.isFinite(windowMin) && windowMin >= 0
         ? { catchupReplyWindowMs: Math.round(windowMin * 60000) }
         : {}),
+      ...(catchupCount !== null ? { catchupHistoryCount: catchupCount } : {}),
       ...(wsToken ? { accessToken: wsToken } : {}),
       ...(httpToken ? { httpAccessToken: httpToken } : {})
     };

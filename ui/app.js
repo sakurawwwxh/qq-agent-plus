@@ -435,6 +435,13 @@ function renderControlHub(data = {}) {
     </section>
     <section class="settings-card">
       <div class="control-section-title">
+        <div><h3>存储维护</h3><span class="muted">按保留天数把已结束的会话留档压成 .gz（幂等，不删除）</span></div>
+        <button type="button" class="btn btn-small" id="control-storage-compress">立即压缩留档</button>
+      </div>
+      <div id="control-storage-output" class="control-result muted" role="status" aria-live="polite">压缩天数与总量上限在「设置 → 聊天设置 → 数据保留」里调整。</div>
+    </section>
+    <section class="settings-card">
+      <div class="control-section-title">
         <div><h3>群策略总览</h3><span class="muted">只读；修改仍走各自设置页</span></div>
         <button type="button" class="btn btn-small" id="control-group-policy-refresh">刷新</button>
       </div>
@@ -741,6 +748,26 @@ async function runBackupNow() {
   }
 }
 
+async function runStorageCompress() {
+  const btn = $('#control-storage-compress');
+  const out = $('#control-storage-output');
+  if (!btn) return;
+  btn.disabled = true;
+  if (out) { out.className = 'control-result muted'; out.textContent = '正在压缩…'; }
+  try {
+    const result = await api('/api/storage/compress', { method: 'POST', body: '{}' });
+    const saved = Math.max(0, Number(result.bytesBefore) - Number(result.bytesAfter));
+    if (out) {
+      out.className = 'control-result success';
+      out.textContent = `本次压缩 ${Number(result.compressed) || 0} 个留档，省 ${(saved / 1024 / 1024).toFixed(1)} MB；当前共 ${Number(result.storage?.files) || 0} 个文件。`;
+    }
+  } catch (error) {
+    if (out) { out.className = 'control-result error'; out.textContent = `压缩失败：${error.message}`; }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadGroupPolicy() {
   const box = $('#control-group-policy');
   if (!box) return;
@@ -775,6 +802,7 @@ function bindControlHubHandlers() {
   $('#control-observability-refresh')?.addEventListener('click', loadControlObservability);
   $('#control-backup-refresh')?.addEventListener('click', loadBackupStatus);
   $('#control-backup-run')?.addEventListener('click', runBackupNow);
+  $('#control-storage-compress')?.addEventListener('click', runStorageCompress);
   $('#control-group-policy-refresh')?.addEventListener('click', loadGroupPolicy);
   void loadBackupStatus();
   void loadGroupPolicy();

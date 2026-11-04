@@ -180,6 +180,9 @@ function renderAsrSection(c) {
         <input type="number" id="cfg-asr-max" min="1" max="200" value="${normalizeAsrMax(c.asr?.maxPerHour)}"
           placeholder="1-200，默认 12" />
         <div class="hint">自己填 1-200（超出会按这个范围收口）。按"转写一条消息"计：长音频会拆成多段请求，服务商的额度按段扣。</div></div>
+      <div class="field"><label for="cfg-asr-max-perchat">每会话每小时最多转写（次）</label>
+        <input type="number" id="cfg-asr-max-perchat" min="1" max="200" value="${esc(Number(c.asr?.maxPerHourPerChat) > 0 ? Number(c.asr.maxPerHourPerChat) : 4)}" />
+        <div class="hint">防止单个群刷爆全局额度，默认 4；全局上限仍以上面那项为准。</div></div>
       <div class="field"><label for="cfg-asr-lang">识别语言（可选）</label>
         <input type="text" id="cfg-asr-lang" value="${esc(c.asr?.language || '')}" placeholder="zh / en；留空由服务自己判" /></div>
     </div>
@@ -246,6 +249,14 @@ function renderAsrSection(c) {
       <div class="field"><label for="cfg-tts-gain">音量增益 dB（-10~10）</label>
         <input type="number" id="cfg-tts-gain" min="-10" max="10" step="1" value="${esc(c.tts?.gain ?? 0)}" /></div>
     </div>
+    <div class="field-row">
+      <div class="field"><label for="cfg-tts-max">每小时最多合成（次）</label>
+        <input type="number" id="cfg-tts-max" min="1" max="200" value="${esc(Number(c.tts?.maxPerHour) > 0 ? Number(c.tts.maxPerHour) : 30)}" />
+        <div class="hint">按次/按字符计费的服务在发送限频之前就会消耗额度，默认 30。</div></div>
+      <div class="field"><label for="cfg-tts-max-perchat">每会话每小时最多合成（次）</label>
+        <input type="number" id="cfg-tts-max-perchat" min="1" max="200" value="${esc(Number(c.tts?.maxPerHourPerChat) > 0 ? Number(c.tts.maxPerHourPerChat) : 6)}" />
+        <div class="hint">防止单个群刷爆全局额度，默认 6。</div></div>
+    </div>
     <div class="hint">短句 1~3 句最自然；改完先「保存设置」再试听：
       <button class="btn btn-small" id="tts-test-btn" type="button" style="margin-left:8px">试听</button>
       <span id="tts-test-result" class="muted"></span></div>
@@ -281,6 +292,16 @@ function renderAsrSection(c) {
     <div class="field-row">      <div class="field"><label for="cfg-img-max">每小时最多生成（张）</label>
         <input type="number" id="cfg-img-max" min="1" max="100" value="${esc(c.imageGen?.maxPerHour ?? 6)}" />
         <div class="hint">按张计费服务的硬闸门（全局共享）。默认 6；不确定就填小一点。</div></div>
+      <div class="field"><label for="cfg-img-response-format">返回格式</label>
+        <select id="cfg-img-response-format">
+          <option value="" ${!c.imageGen?.responseFormat ? 'selected' : ''}>服务商默认（最兼容）</option>
+          <option value="b64_json" ${c.imageGen?.responseFormat === 'b64_json' ? 'selected' : ''}>b64_json</option>
+          <option value="url" ${c.imageGen?.responseFormat === 'url' ? 'selected' : ''}>url</option>
+        </select>
+        <div class="hint">新版 OpenAI 可能因未知参数 400，留空最稳；网关明确要求时再选。</div></div>
+      <div class="field"><label for="cfg-img-timeout">单张超时（秒）</label>
+        <input type="number" id="cfg-img-timeout" min="10" max="240" step="5" value="${esc(Math.round((Number(c.imageGen?.timeoutMs) > 0 ? Number(c.imageGen.timeoutMs) : 120000) / 1000))}" />
+        <div class="hint">生图比对话慢，默认 120 秒；整轮还受「模型 API → 单次运行总超时」限制。</div></div>
       <div class="field"><label for="cfg-img-key" id="cfg-img-key-label">API Key（留空/掩码 = 保持不变）</label>
         <div style="display:flex;gap:8px">
           <input type="password" id="cfg-img-key" value="" placeholder="留空 = 与模型同域时复用模型 Key" autocomplete="new-password" style="flex:1" />

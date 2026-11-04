@@ -835,7 +835,8 @@ export class Orchestrator {
         return;
       }
     }
-    const directDelay = Math.max(0, Math.min(2000, Number(getConfig().directWakeDelayMs) || 300));
+    const directCfgMs = Number(getConfig().directWakeDelayMs);
+    const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
     this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
   }
 
@@ -2978,7 +2979,8 @@ export class Orchestrator {
         const pending = this.store.peekUnread(chatKey, this.#unreadScanLimit()) || [];
         const direct = chatKey.startsWith('private:')
           || pending.some((m) => mentionsOrPokesBot(m, this.onebot.selfId));
-        const directDelay = Math.max(0, Math.min(2000, Number(cfgNow.directWakeDelayMs) || 300));
+        const directCfgMs = Number(cfgNow.directWakeDelayMs);
+        const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
         log.info(`[wake] ${chatKey} 已有未读，主动唤醒改为普通回复`);
         this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
         continue;
