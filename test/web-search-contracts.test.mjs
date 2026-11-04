@@ -399,6 +399,44 @@ test('Bing 对梗查询结果太差时自动补搜狗，并把抖音结果排在
   assert.deepEqual(result.sources, ['sogou'], 'Bing 只返回抖音首页壳子时不应算进来源');
   assert.ok(!result.results.some((x) => x.url === 'https://www.douyin.com/'), '字面/壳子结果要被过滤');
 });
+test('梗补充合并：保留身份 query 与 SPA route，只合并 tracking 和普通锚点差异', async () => {
+  setWebSearch({ provider: 'bing', searchUrl: 'https://cn.bing.com/search', maxResults: 6 });
+  const rss = '<?xml version="1.0"?><rss><channel>'
+    + '<item><title>测试 ID two Bing</title><link>https://x.example/article?id=two&amp;utm_source=bing</link><description>测试 Bing two</description></item>'
+    + '<item><title>测试 ID three Bing</title><link>https://x.example/article?id=three</link><description>测试 Bing three</description></item>'
+    + '<item><title>测试 SPA four Bing</title><link>https://x.example/spa#/four</link><description>测试 Bing SPA four</description></item>'
+    + '<item><title>测试 普通锚点 Bing</title><link>https://x.example/plain#first</link><description>测试 Bing plain</description></item>'
+    + '</channel></rss>';
+  const sogou = '<html><body>'
+    + '<div class="vrwrap"><h3 class="vr-title"><a href="/link?x=1">测试 ID one</a></h3>'
+    + '<div class="fz-mid">这是测试结果一的摘要内容</div>'
+    + '<div class="r-sech" data-url="https://x.example/article?id=one"></div></div>'
+    + '<div class="vrwrap"><h3 class="vr-title"><a href="/link?x=2">测试 ID two Sogou</a></h3>'
+    + '<div class="fz-mid">这是测试结果二的摘要内容</div>'
+    + '<div class="r-sech" data-url="https://x.example/article?id=two&amp;fbclid=tracking"></div></div>'
+    + '<div class="vrwrap"><h3 class="vr-title"><a href="/link?x=3">测试 SPA three Sogou</a></h3>'
+    + '<div class="fz-mid">这是测试结果三的摘要内容</div>'
+    + '<div class="r-sech" data-url="https://x.example/spa#/three"></div></div>'
+    + '<div class="vrwrap"><h3 class="vr-title"><a href="/link?x=4">测试 普通锚点 Sogou</a></h3>'
+    + '<div class="fz-mid">这是测试结果四的摘要内容</div>'
+    + '<div class="r-sech" data-url="https://x.example/plain#second"></div></div>'
+    + '</body></html>';
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    return { ok: true, text: async () => (u.includes('sogou.com') ? sogou : rss) };
+  };
+  const { webSearch } = await import('../src/llm/web-search.js');
+  const result = await webSearch('测试 梗');
+  assert.deepEqual(result.results.map((x) => x.url), [
+    'https://x.example/article?id=one',
+    'https://x.example/article?id=two&fbclid=tracking',
+    'https://x.example/spa#/three',
+    'https://x.example/plain#second',
+    'https://x.example/article?id=three',
+    'https://x.example/spa#/four'
+  ], '补充源优先；身份 query 与 SPA route 不合并，tracking 与普通锚点不影响去重');
+  assert.ok(result.sources.includes('sogou') && result.sources.includes('bing'));
+});
 
 test('搜狗/360 都被风控时，用 Bing 站内限定核心词兜底', async () => {
   setWebSearch({ provider: 'bing', searchUrl: 'https://cn.bing.com/search', maxResults: 6 });

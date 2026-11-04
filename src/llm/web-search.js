@@ -87,6 +87,39 @@ function decodeHtml(s) {
     .trim();
 }
 
+const TRACKING_QUERY_KEYS = new Set([
+  'gclid', 'fbclid', 'msclkid', 'yclid', 'mc_cid', 'mc_eid', 'spm_id_from', 'vd_source'
+]);
+
+/**
+ * 仅用于结果去重的 URL 规范化：保留可能决定页面身份的 query，只移除明确的跟踪参数。
+ * 普通锚点忽略；`#/route` / `#!/route` 这类 SPA 路由仍参与身份判断。
+ */
+function searchResultDedupeKey(rawUrl) {
+  const raw = String(rawUrl ?? '').trim();
+  if (!raw) return '';
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return raw;
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) return raw;
+
+  const parameters = [...url.searchParams].filter(([key]) => {
+    const normalized = key.toLowerCase();
+    return !normalized.startsWith('utm_') && !TRACKING_QUERY_KEYS.has(normalized);
+  });
+  // 只排序参数名；同名参数的相对顺序可能表示有序列表，不能擅自交换。
+  parameters.sort(([leftKey], [rightKey]) => {
+    if (leftKey === rightKey) return 0;
+    return leftKey < rightKey ? -1 : 1;
+  });
+  url.search = new URLSearchParams(parameters).toString();
+  if (!url.hash.startsWith('#/') && !url.hash.startsWith('#!/')) url.hash = '';
+  return url.toString();
+}
+
 /**
  * 聚合搜索：并发跑多个 provider，结果按来源标注合并去重。
  * config.webSearch.aggregate.sources = ['doubao','bing','baidu',...]（按优先级排序），
@@ -114,9 +147,9 @@ export async function aggregateSearch(query) {
   const results = [];
   for (const { source, results: items } of ok) {
     for (const item of items) {
-      const url = String(item?.url || '').replace(/[#?].*$/, '');
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
+      const key = searchResultDedupeKey(item?.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
       results.push({ ...item, source });
     }
   }
@@ -235,7 +268,7 @@ function mergeSearchResults(primary, extra, limit) {
   const results = [];
   // 梗查询把 360 放前面：Bing 的抖音首页/字面词会挤掉真正有用的视频和解释文章。
   for (const item of [...(extra?.results || []), ...(primary?.results || [])]) {
-    const key = String(item?.url || '').replace(/[#?].*$/, '');
+    const key = searchResultDedupeKey(item?.url);
     if (!key || seen.has(key)) continue;
     seen.add(key);
     results.push(item);
