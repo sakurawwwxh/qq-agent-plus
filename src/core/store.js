@@ -1488,6 +1488,27 @@ export class ChatStore {
   }
 
   /**
+   * 本会话出现过的全部 (QQ, 群名片) 组合，包括改名前的历史名字。
+   * 只给低频的按名字反查用；limit 截断时调用方必须 fail closed（宁可报错也不猜人）。
+   */
+  memberNameHistory(chatKey, { limit = 20000 } = {}) {
+    const cap = Math.max(1, Math.min(50000, Number(limit) || 20000));
+    return this.db.prepare(`SELECT sender_id AS userId, sender_name AS name,
+      MAX(ts) AS lastTs, COUNT(*) AS count
+      FROM messages
+      WHERE chat_key=? AND self=0 AND sender_id<>'' AND sender_name<>''
+      GROUP BY sender_id, sender_name
+      ORDER BY lastTs DESC LIMIT ?`)
+      .all(chatKey, cap)
+      .map((row) => ({
+        userId: String(row.userId || ''),
+        name: String(row.name || ''),
+        lastTs: Number(row.lastTs) || 0,
+        count: Number(row.count) || 0
+      }));
+  }
+
+  /**
    * 按昵称找 QQ：精确命中优先，其次成员名以该昵称开头；多个不同 QQ 命中就返回 null。
    * 宁可不 @，也不能因为重名猜错人。
    */

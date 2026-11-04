@@ -184,6 +184,7 @@ import { expandForwardNodes, extractMediaFromSegments } from '../onebot/onebot.j
 import { readForwardMessages, readForwardNodesById } from '../onebot/forward-reader.js';
 import { convertGifToStillStrip, convertVideoToFrameStrip, convertStillImageToJpeg, fetchOversizedImageAsJpeg } from './image-downsample.js';
 import { transcribeMessageAudio } from './audio-transcribe.js';
+import { normalizePokeName, resolvePokeTarget } from './poke-target.js';
 import { memoryVisibilityOf } from '../core/memory-visibility.js';
 
 
@@ -493,44 +494,6 @@ function memberHint(ctx) {
   // displayNameOf（备注优先 + 段头弱化）
   const lines = members.map((m) => `- ${displayNameOf(m.userId, m.name)}：${m.userId}`).join('\n');
   return `请从当前会话成员里选一个 QQ 号填进去：\n${lines}`;
-}
-
-const graphemeSegmenter = new Intl.Segmenter('zh', { granularity: 'grapheme' });
-const graphemeCount = (text) => [...graphemeSegmenter.segment(text)].length;
-
-// send_poke 收到非数字 targetUserId 时按名字反查 QQ（模型常把聊天里看到的名字直接当 QQ 传，
-// 光靠工具说明拦不住）。口径：群名片或备注（displayNameOf）精确命中优先，其次群名片前缀
-// （至少 2 个字，单个 emoji 算 1 个字）；只认唯一命中，重名/歧义一律报错让模型用 QQ 号指定。
-// 返回 { userId } 或 { error }。纯数字（含 0）不进这里，走调用方原来的数字校验。
-function resolvePokeTarget(ctx, raw) {
-  const text = String(raw ?? '').trim().replace(/^@+/, '');
-  const query = text.toLowerCase();
-  const members = (ctx.store?.memberNames?.(ctx.chatKey) || []).filter((m) => m.userId && m.name);
-  const labelOf = (m) => displayNameOf(m.userId, m.name);
-  const pick = (rows) => {
-    const ids = [...new Set(rows.map((m) => m.userId))];
-    if (ids.length === 1) return { userId: ids[0] };
-    if (ids.length > 1) {
-      const list = ids.map((id) => `${labelOf(rows.find((m) => m.userId === id))}(${id})`).join('、');
-      return { error: `有 ${ids.length} 个成员都能对上「${text}」，请用 QQ 号指定：${list}` };
-    }
-    return null;
-  };
-  if (query) {
-    const exact = pick(members.filter((m) => m.name.toLowerCase() === query || labelOf(m).toLowerCase() === query));
-    if (exact) return exact;
-    if (graphemeCount(query) >= 2) {
-      const hit = ctx.store?.memberByName?.(ctx.chatKey, text);
-      if (hit?.userId) return { userId: String(hit.userId) };
-      const prefix = pick(members.filter((m) => m.name.toLowerCase().startsWith(query)));
-      if (prefix) return prefix;
-    }
-  }
-  const similar = query
-    ? members.filter((m) => m.name.toLowerCase().includes(query) || labelOf(m).toLowerCase().includes(query)).slice(0, 3)
-    : [];
-  const guess = similar.length ? `你是不是想找：${similar.map((m) => `${labelOf(m)}(${m.userId})`).join('、')}？` : '';
-  return { error: `targetUserId 必须是 QQ 号，按名字也没有唯一对上的成员（收到：${JSON.stringify(raw)}）。${guess}${memberHint(ctx)}` };
 }
 
 function hasParticipant(ctx, userId) {
@@ -2343,38 +2306,53 @@ export function buildToolDefs() {
       },
       async execute(ctx, args) {
         try {
-          if (ctx.kind === 'group' && (args.targetUserId === undefined || args.targetUserId === null || String(args.targetUserId).trim() === '')) {
+          const rawText = args.targetUserId === undefined || args.targetUserId === null
+            ? ''
+            : String(args.targetUserId).trim();
+          if (ctx.kind === 'group' && rawText === '') {
             return err(`群聊拍一拍必须传 targetUserId（数字 QQ 号）。${memberHint(ctx)}`);
           }
-          let target = args.targetUserId;
-          if (target !== undefined && target !== null && String(target).trim() !== '') {
-            let targetText = String(target).trim();
-            if (!/^\d{1,15}$/.test(targetText)) {
-              const resolved = resolvePokeTarget(ctx, args.targetUserId);
-              if (resolved.error) return err(resolved.error);
-              targetText = resolved.userId;
-            }
-            if (ctx.kind === 'group' && !hasParticipant(ctx, targetText)) {
-              const looksLikeMessageId = modelVisible(ctx.store?.findByMid?.(ctx.chatKey, targetText));
-              return err(`${targetText} 不是当前群中已出现的成员 QQ 号`
-                + `${looksLikeMessageId ? '，它是消息 id' : ''}。${memberHint(ctx)}`);
-            }
-            if (ctx.kind === 'private' && String(ctx.chatId) !== targetText) {
-              return err('私聊只能拍当前聊天对象，省略 targetUserId 即可');
+
+          let target = null;
+          if (rawText !== '') {
+            // @ 前缀先统一剥掉，再做数字判断：模型常写 "@101"（意图是 QQ），
+            // 不能让它掉进名字前缀，误拍到 "1011号" 这类成员。
+            const nameText = normalizePokeName(rawText);
+            let targetText = normalizeTarget(nameText);
+            if (ctx.kind === 'private') {
+              if (!targetText || String(ctx.chatId) !== targetText) {
+                return err('私聊只能拍当前聊天对象，省略 targetUserId 即可');
+              }
+            } else {
+              if (!targetText) {
+                // 纯数字但位数不合法（如 16 位占位）也直接拒绝，不要再拿去做名字匹配。
+                if (/^\d+$/.test(nameText)) {
+                  return err(`targetUserId 必须是 1-15 位数字 QQ 号（收到：${JSON.stringify(args.targetUserId)}）。${memberHint(ctx)}`);
+                }
+                const resolved = resolvePokeTarget(ctx, nameText);
+                if (resolved.error) {
+                  return err(`${resolved.error}${resolved.hint ? memberHint(ctx) : ''}`);
+                }
+                targetText = normalizeTarget(resolved.userId);
+                if (!targetText) {
+                  return err(`按名字反查到的 QQ 号不合法（收到：${JSON.stringify(args.targetUserId)}）。${memberHint(ctx)}`);
+                }
+              }
+              if (!hasParticipant(ctx, targetText)) {
+                const looksLikeMessageId = modelVisible(ctx.store?.findByMid?.(ctx.chatKey, targetText));
+                return err(`${targetText} 不是当前群中已出现的成员 QQ 号`
+                  + `${looksLikeMessageId ? '，它是消息 id' : ''}。${memberHint(ctx)}`);
+              }
             }
             target = Number(targetText);
-            const humanGate = actionGate(ctx, 'poke');
-            if (!humanGate.ok) return err(humanGate.reason, { reportIncident: false });
-            await ctx.sender.poke(ctx.chatKey, target, { runId: ctx.session.leaseId, signal: ctx.signal });
-            actionDone(ctx, 'poke');
-          } else {
-            const humanGate = actionGate(ctx, 'poke');
-            if (!humanGate.ok) return err(humanGate.reason, { reportIncident: false });
-            await ctx.sender.poke(ctx.chatKey, null, { runId: ctx.session.leaseId, signal: ctx.signal });
-            actionDone(ctx, 'poke');
           }
+
+          const humanGate = actionGate(ctx, 'poke');
+          if (!humanGate.ok) return err(humanGate.reason, { reportIncident: false });
+          await ctx.sender.poke(ctx.chatKey, target, { runId: ctx.session.leaseId, signal: ctx.signal });
+          actionDone(ctx, 'poke');
           if (ctx.session) ctx.session.visibleReply = true;   // 拍一拍同样是可见回复
-          return ok({ poked: true });
+          return ok({ poked: true, ...(target === null ? {} : { targetUserId: target }) });
         } catch (error) {
           return sendErr(error);
         }
