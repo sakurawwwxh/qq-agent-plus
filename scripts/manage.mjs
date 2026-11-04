@@ -28,22 +28,33 @@ function isSqliteFile(file) {
 }
 const deploy = readJson(path.join(root, '.deployment.json'),
   'Cannot read the deployment record — run manage.sh from the installation directory (the one holding .deployment.json)');
-const cfg = readJson(path.join(deploy.data, 'config.json'),
-  'Cannot read the deployed configuration');
+// config.json 只在真正需要控制台 API/token 时才读：配置文件损坏时 stop/start/restart/logs
+// 仍必须可用，否则恰好在最需要恢复的时候被卡死。
+let cfgCache = null;
+function getCfg() {
+  if (!cfgCache) {
+    cfgCache = readJson(path.join(deploy.data, 'config.json'), 'Cannot read the deployed configuration');
+  }
+  return cfgCache;
+}
+let baseCache = null;
+function getBase() {
+  if (baseCache) return baseCache;
+  const rawHost = String(getCfg().server.host || '127.0.0.1');
+  let host = rawHost === '0.0.0.0' ? '127.0.0.1' : (rawHost === '::' ? '::1' : rawHost);
+  if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
+  baseCache = `http://${host}:${getCfg().server.port}`;
+  return baseCache;
+}
 const command = process.argv[2] || 'status';
 const systemctl = (action) => {
   const r = spawnSync('systemctl', ['--user', action, `${deploy.service}.service`, '--no-pager'], { stdio: 'inherit' });
   process.exitCode = r.status || 0;
 };
-// URL 里的 IPv6 必须加方括号：`http://::1:3210` / `http://:::3210` 都是非法 URL。
-const rawHost = String(cfg.server.host || '127.0.0.1');
-let host = rawHost === '0.0.0.0' ? '127.0.0.1' : (rawHost === '::' ? '::1' : rawHost);
-if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`;
-const base = `http://${host}:${cfg.server.port}`;
 async function api(route, body) {
-  const res = await fetch(base + route, {
+  const res = await fetch(getBase() + route, {
     method: body ? 'POST' : 'GET',
-    headers: { 'content-type': 'application/json', 'x-console-token': cfg.server.token },
+    headers: { 'content-type': 'application/json', 'x-console-token': getCfg().server.token },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(10000)
   });
@@ -56,7 +67,7 @@ if (['start', 'stop', 'restart', 'status'].includes(command)) {
 } else if (command === 'logs') {
   spawnSync('journalctl', ['--user', '-u', `${deploy.service}.service`, '-n', '100', '--no-pager'], { stdio: 'inherit' });
 } else if (command === 'token') {
-  console.log(cfg.server.token);
+  console.log(getCfg().server.token);
 } else if (command === 'observe' || command === 'activate') {
   const active = command === 'activate';
   const confirm = process.argv.includes('--confirm-exclusive');
@@ -78,8 +89,8 @@ if (['start', 'stop', 'restart', 'status'].includes(command)) {
   }
   console.log(JSON.stringify(await api('/api/auto-update/resume', {
     confirm: true,
-    ownerUin: cfg.autoUpdate?.ownerUin || '',
-    intervalHours: cfg.autoUpdate?.intervalHours || 6
+    ownerUin: getCfg().autoUpdate?.ownerUin || '',
+    intervalHours: getCfg().autoUpdate?.intervalHours || 6
   }), null, 2));
 } else if (command === 'update-pause') {
   if (!process.argv.includes('--confirm')) throw new Error('Use update-pause --confirm');

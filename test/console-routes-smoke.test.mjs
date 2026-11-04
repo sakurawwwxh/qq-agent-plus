@@ -153,6 +153,7 @@ async function m2m3Smoke(t, request) {
     ['GET', '/api/chats', (b) => Array.isArray(b.chats)],
     ['GET', '/api/status', (b) => b.usage && b.effects && typeof b.version === 'string'
       && typeof b.cost?.ledgerCost === 'number'],
+    ['GET', '/api/storage', (b) => b.ok === true && Number.isInteger(b.files) && typeof b.keepFiles === 'number'],
     ['GET', '/api/usage/stats?range=7', (b) => b.ok === true && b.totals],
     ['GET', '/api/usage/breakdown?range=7', (b) => b.ok === true],
     ['GET', '/api/persona-templates', (b) => Array.isArray(b.templates) && b.templates.length > 0],
@@ -178,6 +179,11 @@ async function m2m3Smoke(t, request) {
     assert.equal(res.status, 200, `${route} → ${res.status} ${JSON.stringify(res.body).slice(0, 200)}`);
     assert.ok(check(res.body), `${route} 响应形状不符：${JSON.stringify(res.body).slice(0, 300)}`);
   }
+
+  // 压缩接口也走一次真实 HTTP：没有会话时应当是幂等成功，不是 500。
+  const compress = await request('POST', '/api/storage/compress');
+  assert.equal(compress.status, 200, JSON.stringify(compress.body).slice(0, 300));
+  assert.equal(compress.body.ok, true);
 
   // 明文密钥不得出现在配置响应里（本次拆分后 config 路由最容易把脱敏链搬丢）
   const config = await request('GET', '/api/config');

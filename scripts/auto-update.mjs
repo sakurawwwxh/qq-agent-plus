@@ -1015,11 +1015,15 @@ async function run() {
     QQ_AGENT_DATA_DIR: testDataDir,
     TMPDIR: testTmpDir,
     TMP: testTmpDir,
-    TEMP: testTmpDir
+    TEMP: testTmpDir,
+    // 与 scripts/test-suite.mjs（CI/Release 走它）同口径：关掉启动期真实索引/网络探测，
+    // 并限制并发，避免更新器在离线/小机器上因端口和探测超时被误判为候选版本坏了。
+    QQ_AGENT_SKIP_INDEX_WARM: '1',
+    QQ_AGENT_SKIP_NETWORK_PROBES: '1'
   };
   // 强制 TAP：默认 reporter 在管道里可能是 spec（✔/✖），failureDetail 解析不到失败项，
   // 只能回退成输出尾部——#50 的日志就是这样把「install-oneclick 假红」显示成狼人杀用例。
-  command(process.execPath, ['--test', '--test-reporter=tap', ...tests], {
+  command(process.execPath, ['--test-concurrency=4', '--test', '--test-reporter=tap', ...tests], {
     cwd: workDir,
     timeout: 20 * 60 * 1000,
     env: testEnv

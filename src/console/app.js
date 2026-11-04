@@ -1509,7 +1509,7 @@ function buildApp({
     }
     if (finalize) {
       const released = await options.finalize('wake');
-      if (!released) return;   // 富化期间被删除/已被别的路径收尾
+      if (released !== 'pending') return;   // 'acked' = 只存档，不触发 wake
     }
     if (!isSelf) orchestrator.onIncoming(chatKey, stored);
   }

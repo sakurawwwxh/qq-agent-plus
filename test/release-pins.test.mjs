@@ -26,8 +26,10 @@ test('Docker 手动发布也会校验版本号', () => {
 test('容器相关 PR 只构建冒烟，不登录也不推送', () => {
   const docker = fs.readFileSync(path.join(repo, '.github/workflows/docker.yml'), 'utf8');
   assert.match(docker, /pull_request:\n    paths:/, 'PR 也应触发镜像构建检查');
-  assert.match(docker, /build:\n    needs: \[verify, smoke\]\n    if: github\.event_name != 'pull_request'/,
+  assert.match(docker, /build:\n    needs: \[verify, smoke, windows\]\n    if: github\.event_name != 'pull_request'/,
     'PR 上必须跳过推送 job');
+  assert.match(docker, /windows:\n    # tag 发布同样要过 Windows 门禁；PR 只做容器 smoke[\s\S]*?if: github\.event_name != 'pull_request'/,
+    'PR 上不跑 Windows job（推送 build 也跳过）');
 });
 
 test('所有文档里的 Agent 镜像 tag 都与 package.json 版本一致', () => {

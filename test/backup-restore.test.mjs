@@ -98,6 +98,28 @@ test('--no-encrypt 仍可备份/恢复；恢复没有 --confirm 直接拒绝', {
   assert.equal(fs.existsSync(path.join(restored, 'config.json')), true);
 });
 
+test('备份演练：没有 SQLite 或 SQLite 损坏必须失败，不能假绿', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const data = path.join(root, 'data');
+  fs.mkdirSync(data, { recursive: true });
+  const noDb = path.join(root, 'no-db.tar.gz');
+  fs.writeFileSync(noDb, buildTar([
+    { name: 'config.json', data: '{"server":{"token":"x"}}' }
+  ]));
+  const noDbDrill = runOps(['backup', '--drill', '--from', noDb, '--no-encrypt', '--data', data]);
+  assert.notEqual(noDbDrill.status, 0, noDbDrill.stdout + noDbDrill.stderr);
+  assert.match(`${noDbDrill.stdout}${noDbDrill.stderr}`, /没有任何 SQLite|缺少 messages\.sqlite/);
+
+  const corrupt = path.join(root, 'corrupt.tar.gz');
+  fs.writeFileSync(corrupt, buildTar([
+    { name: 'config.json', data: '{"server":{"token":"x"}}' },
+    { name: 'messages.sqlite', data: 'this is not a sqlite database' }
+  ]));
+  const corruptDrill = runOps(['backup', '--drill', '--from', corrupt, '--no-encrypt', '--data', data]);
+  assert.notEqual(corruptDrill.status, 0, corruptDrill.stdout + corruptDrill.stderr);
+  assert.match(`${corruptDrill.stdout}${corruptDrill.stderr}`, /integrity_check 失败/);
+});
+
 test('--include-stack-creds 从部署路径取 snowluma/.env（不是源码父目录）', { skip: skipTar }, (t) => {
   const root = tempDir(t);
   const data = path.join(root, 'data');

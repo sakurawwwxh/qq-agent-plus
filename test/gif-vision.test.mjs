@@ -73,8 +73,7 @@ before(async () => {
 });
 after(() => new Promise((resolve) => server.close(resolve)));
 
-test('convertGifToStillStrip：动图 → JPEG 帧条（装了 ffmpeg 才断言）', async () => {
-  if (!hasFfmpeg) return; // 无 ffmpeg 环境：回退路径由下一条覆盖
+test('convertGifToStillStrip：动图 → JPEG 帧条（装了 ffmpeg 才断言）', { skip: hasFfmpeg ? false : '本环境没有 ffmpeg' }, async () => {
   const gif = await makeAnimatedGif();
   assert.ok(gif?.length, 'ffmpeg 应能生成测试 GIF');
   assert.equal(gif.toString('ascii', 0, 3), 'GIF', '源头确实是 GIF');
@@ -84,8 +83,7 @@ test('convertGifToStillStrip：动图 → JPEG 帧条（装了 ffmpeg 才断言�
   assert.equal(jpeg[1], 0xd8, '产物应为 JPEG（FFD8 魔数）');
 });
 
-test('downloadImageAsDataUrl：网络 GIF → data:image/jpeg（不再产出 image/gif）', async () => {
-  if (!hasFfmpeg) return;
+test('downloadImageAsDataUrl：网络 GIF → data:image/jpeg（不再产出 image/gif）', { skip: hasFfmpeg ? false : '本环境没有 ffmpeg' }, async () => {
   const dataUrl = await downloadImageAsDataUrl(`http://127.0.0.1:${port}/img`);
   assert.match(dataUrl, /^data:image\/jpeg;base64,/, 'GIF 应被转成 JPEG 帧条');
   assert.doesNotMatch(dataUrl, /^data:image\/gif/, '不应再把 image/gif 直接塞给视觉模型');
@@ -93,8 +91,7 @@ test('downloadImageAsDataUrl：网络 GIF → data:image/jpeg（不再产出 ima
   assert.ok(Buffer.from(base64, 'base64').length > 1000, '帧条不应是空图');
 });
 
-test('base64:// 路径的 GIF 同样转 JPEG', async () => {
-  if (!hasFfmpeg) return;
+test('base64:// 路径的 GIF 同样转 JPEG', { skip: hasFfmpeg ? false : '本环境没有 ffmpeg' }, async () => {
   const gif = await makeAnimatedGif();
   const dataUrl = await downloadImageAsDataUrl(`base64://${gif.toString('base64')}`);
   assert.match(dataUrl, /^data:image\/jpeg;base64,/);

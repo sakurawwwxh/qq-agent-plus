@@ -102,6 +102,11 @@ jobs:
       - run: node src/ops.js scan --strict
       - run: npm run test:local
       - run: npm run test:regression
+      # 与 release.yml 同口径：镜像发布前必须跑真实 Chromium 冒烟，不能等 Release 侧才发现 UI 回归。
+      - name: 安装 Chromium（浏览器冒烟）
+        run: npx playwright install --with-deps chromium
+      - name: 浏览器冒烟（真 Chromium）
+        run: npm run test:browser
       - name: 发布元数据一致性（CHANGES / compose / README / DOCKER / tag 提交）
         run: |
           if [ "${{ github.ref_type }}" = "tag" ]; then
@@ -109,6 +114,20 @@ jobs:
           else
             node scripts/release-check.mjs --allow-unreleased
           fi
+
+  windows:
+    # tag 发布同样要过 Windows 门禁；PR 只做容器 smoke，不额外占 Windows runner。
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm run test:unit:win
 
   smoke:
     needs: verify
@@ -130,7 +149,7 @@ jobs:
       - run: sh scripts/docker-smoke.sh qq-agent-plus:test
 
   build:
-    needs: [verify, smoke]
+    needs: [verify, smoke, windows]
     if: github.event_name != 'pull_request' && inputs.cn_only != true
     runs-on: ubuntu-latest
     permissions:

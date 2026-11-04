@@ -208,9 +208,9 @@ For container-only deployments:
 
 ```bash
 # GHCR
-docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.13
+docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.14
 # China (Aliyun ACR, public, amd64/arm64)
-docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.13
+docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.14
 
 git clone https://github.com/sakurawwwxh/qq-agent-plus.git
 cd qq-agent-plus
@@ -655,8 +655,10 @@ Data is stored in the `data` directory passed to the deploy scripts:
 
 - `config.json` — configuration and credentials, mode `0600`;
 - `messages.sqlite` — messages, leases and outbound state;
-- `sessions/` — one record per Agent run (default keep-2000 cap, plus a daily sweep that prunes
-  archives older than 90 days);
+- `sessions/` — one record per Agent run; finished archives are gzip-compressed after 30 days,
+  total size is capped at 1024MB by default (oldest finished archives are pruned earlier if the
+  budget is hit, possibly before the keep-2000/90-day limits), and the index lives at
+  `sessions/.sessions-index.jsonl`;
 - `memory/` — long-term impressions and cross-session handoff state;
 - `identity-pilot.sqlite` — unified QQ identity index and friend-request approval ledger;
 - `slang-pilot.sqlite` — the slang pilot is retired and will never be created;
@@ -679,9 +681,7 @@ bash -n deploy.sh && bash -n deploy-all.sh && bash -n manage.sh
 ```
 
 CI (GitHub Actions) runs the syntax check, the strict undefined-call scan, unit tests, the local
-regression, and the prompt / render / scroll / usage end-to-end suites on pushes to main and all pull requests. Two small confirmed issues are open on this baseline,
-neither on the main path; see [KNOWN-ISSUES](docs/KNOWN-ISSUES.md) for the current list and the
-history. The [Chinese README](README.md) carries the complete option lists and the per-page
+regression, and the prompt / render / scroll / usage end-to-end suites on pushes to main and all pull requests. The number and status of known issues are governed by [KNOWN-ISSUES](docs/KNOWN-ISSUES.md); do not hardcode a count here. The [Chinese README](README.md) carries the complete option lists and the per-page
 description of the console; the [documentation index](docs/README.md) lists all documents.
 
 ## License

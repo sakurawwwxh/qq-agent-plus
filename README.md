@@ -157,9 +157,9 @@ HTTP/1.1；SSRF/DNS 固定、逐跳重定向、凭据剥离、响应体与超时
 
 ```bash
 # 海外 / GitHub 可达
-docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.13
+docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.14
 # 国内（阿里云 ACR，公开，amd64/arm64）
-docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.13
+docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.14
 
 git clone https://github.com/sakurawwwxh/qq-agent-plus.git
 cd qq-agent-plus
@@ -503,7 +503,9 @@ Token 可在「设置 -> 系统 -> 控制台安全」中轮换。控制台一旦
 
 - `config.json`：配置与凭据，权限 `0600`；
 - `messages.sqlite`：消息、租约与出站状态；
-- `sessions/`：每次 Agent 运行记录（默认保留最近 2000 份，且 90 天前的留档由每日保留期清理删除）；
+- `sessions/`：每次 Agent 运行记录；已结束的留档 30 天后压成 `.json.gz`，总量默认上限
+  1024MB（超出按最旧优先删除已结束留档，可能早于 2000 份/90 天限制），索引在
+  `sessions/.sessions-index.jsonl`；
 - `memory/`：群友长期印象与跨 Session 会话交接状态；
 - `identity-pilot.sqlite`：统一 QQ 身份索引与好友请求审批台账；
 - `slang-pilot.sqlite`：黑话试点已退役，不会再创建；

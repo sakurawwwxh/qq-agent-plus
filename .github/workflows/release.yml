@@ -126,8 +126,21 @@ jobs:
       - name: 浏览器冒烟（真 Chromium）
         run: npm run test:browser
 
+  windows:
+    # release tag 不触发 ci.yml；这里补跑 Windows 门禁，避免 tag 绕过 test:unit:win。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm run test:unit:win
+
   release:
-    needs: verify
+    needs: [verify, windows]
     runs-on: ubuntu-latest
     # 写权限只给这个 job：它只做"生成说明 + 建草稿 Release"，不跑 npm ci、不跑测试。
     permissions:

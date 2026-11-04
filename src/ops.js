@@ -24,6 +24,7 @@ import { pipeline } from 'node:stream/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDatabase } from './core/sqlite.js';
+import { verifyBackupDatabases } from './core/backup-verify.js';
 import { runHealthCheck } from './core/health-check.js';
 import { readTextBounded } from './core/http-body.js';
 import { SNOWLUMA_BASELINE_IMAGE, createSnowlumaUpdater } from './core/snowluma-update.js';
@@ -1553,26 +1554,6 @@ function locateDataRoot(dir) {
   return null;
 }
 
-/** 数据目录里的 SQLite 不只在顶层：人物记忆索引、长期语义记忆都在子目录。 */
-function listSqliteFiles(root, maxDepth = 3) {
-  const found = [];
-  const walk = (dir, depth) => {
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const entry of entries) {
-      if (entry.name.startsWith('.') || entry.name.endsWith('-wal') || entry.name.endsWith('-shm')) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (depth < maxDepth) walk(full, depth + 1);
-      } else if (entry.isFile() && entry.name.endsWith('.sqlite')) {
-        found.push(full);
-      }
-    }
-  };
-  walk(root, 0);
-  return found;
-}
-
 /** 恢复演练：解密 -> 校验路径 -> 解到临时目录 -> SQLite integrity_check。不碰生产数据。 */
 async function runBackupDrill({ cfg, from = null, keyFile = '', noEncrypt = false } = {}) {
   const source = from
@@ -1602,22 +1583,12 @@ async function runBackupDrill({ cfg, from = null, keyFile = '', noEncrypt = fals
     if (!extracted.ok) { ngLine(`解包失败：${(extracted.stderr || '').trim().split('\n')[0] || extracted.code}`); return 1; }
     const dataRoot = locateDataRoot(extractDir);
     if (!dataRoot) { ngLine('归档里没有 config.json，不像 QQ Agent 数据目录'); return 1; }
-    const databases = listSqliteFiles(dataRoot);
-    for (const file of databases) {
-      const name = path.relative(dataRoot, file);
-      let db = null;
-      try {
-        db = openDatabase(file, { readOnly: true });
-        const row = db.prepare('PRAGMA integrity_check').get();
-        const verdict = row ? Object.values(row)[0] : '';
-        if (verdict !== 'ok') { ngLine(`${name}: integrity_check=${verdict || '未知'}`); return 1; }
-      } catch (error) {
-        noteLine(`${name}: 跳过 integrity_check（${error?.message || error}）`);
-      } finally {
-        try { db?.close(); } catch { /* 忽略 */ }
-      }
+    const verification = verifyBackupDatabases(dataRoot);
+    if (!verification.ok) {
+      ngLine(verification.message);
+      return 1;
     }
-    okLine(`演练通过: ${source.name}（${entries.length} 个条目，${databases.length} 个 SQLite）`);
+    okLine(`演练通过: ${source.name}（${entries.length} 个条目，${verification.count} 个 SQLite）`);
     return 0;
   } catch (error) {
     ngLine(`演练失败：${error?.message || error}`);
