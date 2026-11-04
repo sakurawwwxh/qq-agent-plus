@@ -851,3 +851,27 @@ test('台账清理的边界：保留期可传参，恰好卡在保留期内的�
   store.pruneLedgers(7);
   assert.deepEqual(ids(), []);
 });
+
+test('friend_add 自动白名单只补 allow，不清管理员手写的 deny.private', async (t) => {
+  const dir = fs.mkdtempSync(path.join(root, 'friend-add-deny-'));
+  t.after(() => rmDirBestEffort(dir));
+  const calls = [];
+  const manager = new IdentityPilotManager({
+    store: null,
+    dataDir: dir,
+    config: () => ({
+      identityPilot: { incomingFriendRequest: { autoWhitelist: true } }
+    }),
+    onebot: { selfId: '888888', call: async () => [] },
+    allowPrivateUser: async (userId, options) => { calls.push({ userId, options }); },
+    log: () => {}
+  });
+  manager.identityStore = {
+    listIncomingFriendRequests: () => [{ id: 7, userId: '123456', status: 'pending', whitelistApplied: false }],
+    listFriendProposals: () => [],
+    markFriendAdded: () => ({ proposals: 0, incoming: 1, opportunities: 0 }),
+    markIncomingFriendWhitelist: () => {}
+  };
+  assert.equal(await manager.markFriendAdded('123456'), 1);
+  assert.deepEqual(calls, [{ userId: '123456', options: { clearDeny: false } }]);
+});

@@ -114,7 +114,7 @@ function write(file, data) {
   fs.writeFileSync(file, typeof data === 'string' ? data : JSON.stringify(data), { mode: 0o600 });
 }
 
-function managed(f) {
+function managed(f, { publishHost = null } = {}) {
   const { root, host } = f;
   const env = {
     SNOWLUMA_IMAGE: 'motricseven7/snowluma:v1.14.15',
@@ -130,6 +130,7 @@ function managed(f) {
     SNOWLUMA_WEBUI_BOOTSTRAP_PASSWORD: 'Secret!Password123',
     VNC_PASSWD: 'abcdef12'
   };
+  if (publishHost) env.PUBLISH_HOST = publishHost;
   write(path.join(root, 'snowluma/.env'), Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n');
   write(path.join(root, 'app/.deployment.json'), {
     root: path.join(root, 'app'), data: path.join(root, 'data'), node: process.execPath, service: 'qq-agent-linux'
@@ -146,8 +147,9 @@ function managed(f) {
   const volumes = [
     ['data', '/app/data'], ['client-config', '/app/.config'], ['client-data', '/app/.local/share']
   ].map(([source, target]) => ({ type: 'bind', source: path.join(root, 'snowluma', source), target }));
+  const publicHost = publishHost || '0.0.0.0';
   const ports = [
-    [3000, '127.0.0.1'], [3001, '127.0.0.1'], [5099, '0.0.0.0'], [6081, '0.0.0.0']
+    [3000, '127.0.0.1'], [3001, '127.0.0.1'], [5099, publicHost], [6081, publicHost]
   ].map(([target, host_ip]) => ({ target, host_ip, published: String(target), protocol: 'tcp' }));
   host.compose = { services: { snowluma: {
     image: env.SNOWLUMA_IMAGE, container_name: env.SNOWLUMA_CONTAINER,
@@ -309,6 +311,14 @@ test('ordinary managed update does not attempt password rotation and preserves A
   assert.match(result.stdout, /Deployment complete. Agent mode: active/);
   assert.equal(fs.readFileSync(configFile, 'utf8'), before);
   assert.doesNotMatch(result.stderr, /credential rotation/);
+});
+
+test('managed loopback stack (new default) passes its own preflight', shellOptions, (t) => {
+  const f = fixture(t);
+  managed(f, { publishHost: '127.0.0.1' });
+  const result = f.run();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /Ownership and port checks passed/);
 });
 
 test('a managed stack with a stopped container and Agent can be updated', shellOptions, (t) => {

@@ -604,6 +604,16 @@ rollback_deployment() {
     systemctl --user disable --now "$SERVICE.service" >/dev/null 2>&1
   fi
   if [[ "$ROLLBACK_FAILED" == true ]]; then
+    # EXIT trap 会删掉整个 .deploy.lock（含 state/ 里的部署前 config/unit 备份）。
+    # 回滚失败时先把它们复制到数据目录外的恢复目录，否则提示里的“手动恢复”没有材料。
+    if [[ -d "$LOCK_DIR/state" ]]; then
+      RECOVERY_STATE_DIR="$DATA_DIR/deploy-recovery-$(date +%Y%m%dT%H%M%S)"
+      if mkdir -p "$RECOVERY_STATE_DIR" && cp -a "$LOCK_DIR/state/." "$RECOVERY_STATE_DIR/"; then
+        printf 'Pre-deploy config/unit backups kept at %s\n' "$RECOVERY_STATE_DIR" >&2
+      else
+        printf 'Could not copy pre-deploy state to %s; check disk/permissions.\n' "$RECOVERY_STATE_DIR" >&2
+      fi
+    fi
     printf 'Rollback incomplete: keeping %s for manual recovery. Do not start the old service blindly.\n' "$IN_PROGRESS_MARKER" >&2
     exit "$status"
   fi

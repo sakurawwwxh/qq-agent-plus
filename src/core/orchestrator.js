@@ -2534,6 +2534,8 @@ export class Orchestrator {
       stickers: this.stickers,
       sender: this.sender,
       session,
+      // 自主节奏（paced）也会带 manual:true 派发；工具侧必须能区分“管理员手动”与“到点自动”。
+      paced,
       // 动作冷却跨轮：session 每次运行都新建，冷却时间不能只存在 session 上。
       actionMemory: this.actionMemory,
       signal,

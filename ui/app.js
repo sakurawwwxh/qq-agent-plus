@@ -46,6 +46,7 @@ import {
 import { loadMemoryView, renderMemoryList } from './pages/memory.js';
 import { loadLivingMemoryPage } from './pages/living-memory.js';
 import { loadPluginsPage } from './pages/plugins.js';
+import { stopQrPoll } from './pages/plugin-settings.js';
 import { refreshPendingBadge } from './pages/plugin-pending.js';
 import { loadSkillsPage } from './pages/skills.js';
 import { renderExperimentalSettingsSectionImpl } from './pages/moments.js';
@@ -284,6 +285,9 @@ function switchTab(name) {
     });
     return;
   }
+  // 离开插件页时停掉扫码轮询：设置块会随着页面切换消失，但定时器原本会继续
+  // 每 3 秒打一次 /api/plugins/call，最长打到二维码过期。
+  if (state.tab === 'plugins' && name !== 'plugins') stopQrPoll();
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   state.tab = name;

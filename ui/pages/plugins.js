@@ -940,6 +940,7 @@ function closePluginDetail() {
     return;
   }
   pluginDetailId = '';
+  stopQrPoll();
   safeRenderIndex();
 }
 
@@ -1455,6 +1456,7 @@ function bindPluginsSection() {
       const next = String(event.state?.pluginDetail || '');
       closingDetail = false;
       pluginDetailId = next;
+      stopQrPoll();
       // 回到目录时也要把面切回目录：用户可能是在详情里点了「已装/发布」页签再按后退的，
       // 不切的话 renderIndex 会渲染进那个 hidden 的容器里 —— 界面毫无变化，再按一次就退出控制台了
       if (pluginPane !== 'catalog') { pluginPane = 'catalog'; renderPane(); }
@@ -1590,6 +1592,7 @@ function bindPluginsSection() {
         // 看不出什么时候设上的）。点标签的语义是"看这个标签下有什么"，那就得像参照那样回到列表。
         pluginDetailId = '';
         forgetDetailHistory();
+        stopQrPoll();
         closeFiltersIfNarrow();
         safeRenderIndex();
         return;
@@ -1791,6 +1794,9 @@ async function loadPluginsPage({ force = false } = {}) {
   // 哨兵用真实存在的骨架锚点：原来写的是 #plugins-stats（那个元素第五版已经删了），
   // 条件恒真 = 每次进页都整页重建 —— 行为上没错，但那是个假守卫（改了 id 没改引用）。
   if (force || !page.querySelector('#plugins-head')) {
+    // 页面整页重建会连同扫码面板一起销毁：旧的轮询定时器必须停，否则会在后台
+    // 对着已经不存在的 DOM 每 3 秒打一次插件接口。
+    stopQrPoll();
     pluginDetailId = '';
     forgetDetailHistory();
     pendingPluginFile = null;

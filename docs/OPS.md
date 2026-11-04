@@ -137,6 +137,8 @@ systemctl --user show -p MainPID --value qq-agent-linux.service   # 部署前后
 ## 备份/恢复与单实例锁
 
 - `backup` 需要停服时，`systemctl stop` 失败会**中止备份**（不再生成可能不一致的归档）。
+  归档生成后、加密前会按恢复侧同一套类型校验重读一遍：数据目录内若有符号链接/硬链接/
+  设备文件，本次备份直接失败并提示移除，避免留下"备份成功但 restore/drill 必拒绝"的包。
 - `restore` 停服后会再读一次 `<数据目录>/.server.lock`：仍被活实例占用（自定义服务名、
   容器、WSL 等）就拒绝覆盖并尝试把服务拉回。确认旧进程已退出后再恢复。
 - 恢复会清掉归档里的旧 `.server.lock`（跨主机恢复不会被上一个 pid/hostname 挡住）。

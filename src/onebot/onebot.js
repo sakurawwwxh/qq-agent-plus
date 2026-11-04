@@ -209,10 +209,22 @@ export class OneBotClient {
       // 竞态、HTTP 端瞬时不可达）就 selfId 恒空 —— 被艾特判定恒 false（degrade 模式下整体
       // 装死）、自己发的 message_sent 被当群友消息（有自回复循环风险）。带退避重试；
       // 连续失败则挂 60 秒单发重试直到拿到或连接失效（isCurrent 兜住旧 socket 迟到回调）。
+      // 每次重连都重新拉：协议端可能在 noVNC 里换了 QQ，沿用旧 selfId 会让 Qzone/日报的
+      // 账号绑定闸门误判成同一账号，用新登录去执行旧账号的待办（公开写错号）。
+      const previousSelfId = this.selfId;
+      this.selfInfo = null;
       const fetchLoginInfo = async (attempt) => {
-        if (!isCurrent(socket) || this.selfId) return;
+        if (!isCurrent(socket)) return;
         try {
-          this.selfInfo = await this.call('get_login_info');
+          const info = await this.call('get_login_info');
+          if (!isCurrent(socket)) return;
+          if (!info || typeof info !== 'object' || info.user_id == null) {
+            throw new Error('get_login_info 返回空');
+          }
+          this.selfInfo = info;
+          if (previousSelfId && String(info.user_id) !== previousSelfId) {
+            console.warn(`[onebot] 登录账号已变化：${previousSelfId} -> ${info.user_id}`);
+          }
         } catch (error) {
           if (attempt >= 10) {
             console.error(`[onebot] 获取登录信息已连续失败 ${attempt} 次，60 秒后继续重试:`, error?.message ?? error);
@@ -235,6 +247,19 @@ export class OneBotClient {
       let frame = null;
       try { frame = JSON.parse(String(data)); } catch { return; }
       if (!frame || typeof frame !== 'object') return;
+      // 每个 OneBot 事件都带当前登录号：get_login_info 还没回来时先用它兜底，
+      // 换号重连也不会继续拿旧 selfId 判“自己发的消息/账号绑定”。
+      if (frame.self_id != null) {
+        const eventSelfId = String(frame.self_id).trim();
+        if (eventSelfId && eventSelfId !== this.selfId) {
+          const previous = this.selfId;
+          this.selfInfo = { ...(this.selfInfo || {}), user_id: eventSelfId };
+          if (previous) {
+            this.selfInfo.nickname = '';
+            console.warn(`[onebot] 登录账号已变化：${previous} -> ${eventSelfId}`);
+          }
+        }
+      }
       // 带 echo 且命中在途表的帧是 WS 调用的响应，先于事件分发结清（callViaWs）。
       // echo 由本进程生成（ws_<序号>），事件帧不会带，不存在误吞。
       if (frame.echo !== undefined && this.wsPending.has(frame.echo)) {

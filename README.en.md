@@ -233,14 +233,15 @@ model key and group IDs are filled in later in the web console. SnowLuma already
 NapCat and Lagrange must not be installed on top of it.
 
 The installer may be started as root. It creates or reuses a dedicated non-root service account
-(default `qqagent`, or `SUDO_USER`), installs Docker, adds that account to the `docker` group,
-enables linger, and then re-runs the installer as that user. The bot process itself never runs as
-root. `deploy-all.sh` still requires a regular user.
+(default `qqagent`, or `SUDO_USER`), installs Docker, enables linger, and then re-runs the installer
+as that user. The bot process itself never runs as root. `deploy-all.sh` still requires a regular
+user.
 
-The service account is added to the `docker` group, which is required by the console protocol-update
-button. On Linux the `docker` group is equivalent to host root (members can mount host paths); this
-drops the application process identity, not the Docker privilege. Remove the account from that group
-and manage SnowLuma manually if you do not need the update button.
+The service account is **not** added to the `docker` group by default. The console protocol-update
+button needs that permission, so opt in explicitly by re-running the deployment with
+`QQ_AGENT_ALLOW_DOCKER_GROUP=1`. On Linux the `docker` group is equivalent to host root (members can
+mount host paths); this drops the application process identity, not the Docker privilege. Keep the
+default (no group) and manage SnowLuma manually if you do not need the update button.
 
 ```bash
 git clone https://github.com/sakurawwwxh/qq-agent-plus.git
@@ -481,7 +482,7 @@ node src/ops.js scan                     # undefined-call scan
 node src/ops.js backup --confirm         # stop/start the service, encrypt the archive, keep the last 4
 node src/ops.js restore --from ~/qq-agent/backups/qq-agent-data-XXXX.tar.gz.enc --dry-run
 node src/ops.js prune --days=90 --dry-run # only acked messages; preview first
-node src/ops.js install-timers --print   # show the four systemd user timers (backup / process-guard / health / audit-prune)
+node src/ops.js install-timers --print   # show the five systemd user timers (backup / backup-drill / process-guard / health / audit-prune)
 node src/ops.js console --open           # open an SSH tunnel and the console
 ```
 

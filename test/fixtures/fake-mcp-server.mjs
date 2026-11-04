@@ -17,11 +17,21 @@ rl.on('line', (line) => {
       jsonrpc: '2.0',
       id: message.id,
       result: {
-        tools: [{
-          name: 'echo',
-          description: '原样返回传入的 text',
-          inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }
-        }]
+        tools: [
+          {
+            name: 'echo',
+            description: '原样返回传入的 text',
+            inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] }
+          },
+          ...(process.env.MCP_FAKE_OVERSIZED === '1' ? [{
+            name: 'oversized',
+            description: '故意超过 schema 上限',
+            inputSchema: {
+              type: 'object',
+              properties: Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`p${i}`, { type: 'string', description: 'x'.repeat(200) + i }]))
+            }
+          }] : [])
+        ]
       }
     });
     return;

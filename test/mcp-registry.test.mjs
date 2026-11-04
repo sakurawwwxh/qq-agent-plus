@@ -79,6 +79,30 @@ it('没有版本的 npm 包拒绝导入（避免 npx 执行 latest）', () => {
   assert.equal(mapped, null);
 });
 
+it('npm identifier/version 不能变成 npx 选项或范围', () => {
+  for (const identifier of ['--package=evil', '-c', 'foo bar', 'foo@1.0.0', '../evil', 'https://evil.invalid/pkg']) {
+    const mapped = mapRegistryEntry({
+      ...npmEntry,
+      packages: [{ ...npmEntry.packages[0], identifier }]
+    });
+    assert.equal(mapped, null, identifier);
+  }
+  for (const version of ['1.0.0 --package=evil', '-1.0.0', '^1.0.0', 'latest', '1.0', '1.0.0 || 2.0.0']) {
+    const mapped = mapRegistryEntry({
+      ...npmEntry,
+      version,
+      packages: [{ ...npmEntry.packages[0], version }]
+    });
+    assert.equal(mapped, null, version);
+  }
+  const okay = mapRegistryEntry({
+    ...npmEntry,
+    version: '1.2.3-rc.1',
+    packages: [{ ...npmEntry.packages[0], version: '1.2.3-rc.1' }]
+  });
+  assert.equal(okay.config.args[1], '@demo/fs@1.2.3-rc.1');
+});
+
 it('oci 包的 env 交给 docker -e，不污染启动器', () => {
   const mapped = mapRegistryEntry({
     ...npmEntry,

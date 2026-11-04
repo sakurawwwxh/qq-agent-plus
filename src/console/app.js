@@ -1322,9 +1322,18 @@ function buildApp({
     return null;
   }
 
-  async function resolveReply(messageId) {
+  async function resolveReply(chatKey, messageId) {
     try {
       const msg = await onebot.getMsg(messageId);
+      // OneBot 的 message_id 是全局的：引用的可能是别的群/私聊消息。入站富化只能把
+      // 当前会话里的引用原文带进历史，否则跨会话内容会被复制到本群并送进模型。
+      const [kind, chatId] = String(chatKey).split(':');
+      if (kind === 'group') {
+        if (msg?.group_id == null || String(msg.group_id) !== String(chatId)) return null;
+      } else if (kind === 'private') {
+        if (msg?.message_type && String(msg.message_type) !== 'private') return null;
+        if (msg?.user_id != null && String(msg.user_id) !== String(chatId)) return null;
+      }
       const senderName = msg?.sender?.card || msg?.sender?.nickname || '';
       const senderId = String(msg?.sender?.user_id ?? msg?.user_id ?? '');
       let text = '';
@@ -1373,7 +1382,7 @@ function buildApp({
   }
 
   async function resolveReplyWithLocal(chatKey, mid, budget, cfgNow) {
-    const remote = await budget.run(resolveReply(mid), null);
+    const remote = await budget.run(resolveReply(chatKey, mid), null);
     if (remote) return remote;
     const local = store.findByMid(chatKey, mid);
     if (!local) return null;

@@ -3143,7 +3143,9 @@ button.uu-chip:hover { border-color: var(--accent); color: var(--text); }
 #price-dialog-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
 /* ── 调用明细弹窗 ── */
-.tool-breakdown { min-width: 380px; }
+/* 弹窗宽度只有 ~318px 时，380px 的 min-width 会把整个对话框撑出屏幕；
+   条形本身有 40px 底线，这里允许收缩，并在窄屏隐藏代码列。 */
+.tool-breakdown { min-width: 0; }
 .tb-lead {
   font-size: var(--fs-sm);
   color: var(--text);
@@ -3185,6 +3187,10 @@ button.uu-chip:hover { border-color: var(--accent); color: var(--text); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+@media (max-width: 560px) {
+  /* 390px 窄屏：代码列让位给条形与次数，避免把弹窗横向撑开。 */
+  .tb-code { display: none; }
 }
 /* 条形：宽度按最大次数归一，视觉上能立刻看出谁是主力 */
 .tb-bar {

@@ -51,6 +51,20 @@ it('启动 stdio server，列出工具并调用', async () => {
   }
 });
 
+it('inputSchema 超过上限的工具不挂载，正常工具不受影响', async () => {
+  configWith({ env: { MCP_FAKE_OVERSIZED: '1' } });
+  const manager = new McpManager();
+  try {
+    await manager.start();
+    const names = manager.toolDefsFor().map((entry) => entry.name);
+    assert.ok(names.includes('mcp_fake_echo'), '正常 schema 仍要挂载');
+    assert.ok(!names.includes('mcp_fake_oversized'), '超大 schema 必须整条摘掉');
+    assert.ok(manager.status()[0].tools.includes('oversized'), '状态里仍能看到 server 自报的工具');
+  } finally {
+    manager.stop();
+  }
+});
+
 it('meta 挂载只暴露一个 mcp_call，仍能转发到 server', async () => {
   configWith({ toolMounting: 'meta' });
   const manager = new McpManager();

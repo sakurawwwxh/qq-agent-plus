@@ -169,6 +169,25 @@ test('恢复拒绝符号链接/硬链接归档，不能把链接带进数据目�
   assert.equal(fs.existsSync(path.join(target, 'config.json')), false, '校验失败不能落盘');
 });
 
+test('备份拒绝数据目录内的符号链接/硬链接：不能生成恢复侧会拒绝的归档', {
+  skip: skipTar || (process.platform === 'win32' ? 'Windows 创建链接需要额外权限，改在 Linux/CI 验证' : false)
+}, (t) => {
+  for (const [label, make] of [
+    ['symlink', (data) => fs.symlinkSync('config.json', path.join(data, 'linked'))],
+    ['hardlink', (data) => fs.linkSync(path.join(data, 'config.json'), path.join(data, 'linked'))]
+  ]) {
+    const root = tempDir(t);
+    const data = path.join(root, 'data');
+    const backups = path.join(root, 'backups');
+    seedDataDir(data);
+    make(data);
+    const backup = runOps(['backup', '--confirm', '--data', data, '--backup-dir', backups]);
+    assert.notEqual(backup.status, 0, `${label}: ${backup.stdout}${backup.stderr}`);
+    assert.match(`${backup.stdout}${backup.stderr}`, /不允许的条目类型|备份作废/, label);
+    assert.equal(fs.existsSync(backups) ? newest(backups, '.enc') : '', '', `${label}: 不应留下不可恢复的归档`);
+  }
+});
+
 test('恢复拒绝硬链接与 FIFO 条目', {
   skip: skipTar || (process.platform === 'win32' ? 'Windows tar 对绝对盘符路径的兼容问题，改在 Linux/CI 验证' : false)
 }, (t) => {

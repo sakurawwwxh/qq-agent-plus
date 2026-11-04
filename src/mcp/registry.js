@@ -21,6 +21,23 @@ function safeId(name) {
     .slice(0, 40) || 'server';
 }
 
+/** npm 位置参数只能是包名：以 - 开头会被 npx 当成选项（--package=evil 可换包）。 */
+function safeNpmIdentifier(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length > 214 || text.startsWith('-')) return '';
+  if (/[\s\u0000-\u001f\u007f]/.test(text)) return '';
+  if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(text)) return '';
+  return text;
+}
+
+/** 版本只接受明确的 semver（含 rc/beta 与 build 元数据），拒绝范围、空白和选项形态。 */
+function safeNpmVersion(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length > 128 || text.startsWith('-')) return '';
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(text)) return '';
+  return text;
+}
+
 function versionScore(version) {
   return String(version || '').split('.').reduce((sum, part, index) => {
     const n = Number(String(part).replace(/\D/g, '')) || 0;
@@ -66,9 +83,9 @@ function packageConfig(entry, pkg) {
       env: {}
     };
   }
-  const identifier = String(pkg.identifier || '').trim();
+  const identifier = safeNpmIdentifier(pkg.identifier);
   if (!identifier) return null;
-  const version = String(pkg.version || entry.version || '').trim();
+  const version = safeNpmVersion(pkg.version || entry.version);
   // 没有明确版本就不导入：否则 npx 会执行 latest，卡片上显示的版本与实际执行的包不一致。
   if (!version) return null;
   const pinned = `${identifier}@${version}`;

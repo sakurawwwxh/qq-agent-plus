@@ -2556,6 +2556,38 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.ok(!bodies[2].tools.some((tool) => tool.function.name === 'demo__echo'),
       '注册表不给的时候，插件工具一个都不该出现');
   });
+
+  it('paced 唤醒把 paced 传给工具：life_feed_next 收到 manual=false', async (t) => {
+    const feedCalls = [];
+    const feed = {
+      shareMode: () => 'auto',
+      isShareTarget: () => true,
+      next: (args) => { feedCalls.push(args); return { items: [] }; },
+      candidate: () => null,
+      shareQuotaLeft: () => 0
+    };
+    const { cfg, runner } = fixture(t, { getLifeFeed: () => feed });
+    cfg.lifeFeed = { ...(cfg.lifeFeed || {}), enabled: true };
+    setRuntimeConfig(cfg);
+    let first = true;
+    globalThis.fetch = async () => {
+      if (first) {
+        first = false;
+        return Response.json({
+          choices: [{ message: { tool_calls: [{
+            id: 'lf1', type: 'function',
+            function: { name: 'life_feed_next', arguments: '{}' }
+          }] } }],
+          usage: { total_tokens: 10 }
+        });
+      }
+      return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
+    };
+
+    await runner.wake('group:1', { manual: true, paced: true, wakeNote: '到点看看' });
+    assert.deepEqual(feedCalls.map((call) => call.manual), [false],
+      'paced 带 manual:true 只是调度标记，工具侧必须看到 paced 并不当人工分享');
+  });
 });
 
 describe('proactiveCandidates（冷场开话题挑会话）', () => {

@@ -104,18 +104,24 @@ function check() {
       seen.add(target);
     }
   }
+  // 新安装默认只绑回环；旧版 .env 没有 PUBLISH_HOST 时按历史布局同时接受两种，
+  // 否则按默认装的栈第二次运行会被自己的预检拒绝。
+  if (env.PUBLISH_HOST !== undefined && !['0.0.0.0', '127.0.0.1'].includes(env.PUBLISH_HOST)) {
+    throw new Error('Invalid saved publish host');
+  }
+  const publishHosts = env.PUBLISH_HOST ? [env.PUBLISH_HOST] : ['0.0.0.0', '127.0.0.1'];
   const expectedPorts = new Map([
-    [3000, ['127.0.0.1', env.ONEBOT_HTTP_PORT]],
-    [3001, ['127.0.0.1', env.ONEBOT_WS_PORT]],
-    [5099, ['0.0.0.0', env.SNOWLUMA_WEBUI_HOST_PORT]],
-    [6081, ['0.0.0.0', env.NOVNC_PORT]]
+    [3000, { hosts: ['127.0.0.1'], published: env.ONEBOT_HTTP_PORT }],
+    [3001, { hosts: ['127.0.0.1'], published: env.ONEBOT_WS_PORT }],
+    [5099, { hosts: publishHosts, published: env.SNOWLUMA_WEBUI_HOST_PORT }],
+    [6081, { hosts: publishHosts, published: env.NOVNC_PORT }]
   ]);
   function checkPorts(entries) {
     requireMatch(Array.isArray(entries) && entries.length === expectedPorts.size, 'Unexpected SnowLuma ports');
     const seen = new Set();
     for (const { target, published, host_ip, protocol } of entries) {
       const expected = expectedPorts.get(Number(target));
-      requireMatch(expected && expected[0] === host_ip && expected[1] === String(published)
+      requireMatch(expected && expected.hosts.includes(host_ip) && expected.published === String(published)
         && protocol === 'tcp' && !seen.has(Number(target)), 'SnowLuma port bindings differ from the saved stack');
       seen.add(Number(target));
     }

@@ -782,7 +782,9 @@ export class IdentityPilotManager {
       && this.allowPrivateUser
     ) {
       try {
-        await this.allowPrivateUser(String(userId));
+        // friend_add 是协议端自动事件，不是管理员在控制台点“同意”：只补 allow，
+        // 不能把管理员手写的 deny.private 静默删掉（与启动/重排同步同一口径）。
+        await this.allowPrivateUser(String(userId), { clearDeny: false });
         for (const request of related) {
           this.identityStore.markIncomingFriendWhitelist(request.id, { applied: true });
         }

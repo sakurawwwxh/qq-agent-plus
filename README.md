@@ -186,12 +186,13 @@ SnowLuma 已包含 OneBot，无需另行安装 NapCat 或 Lagrange。
 
 **root 可以直接执行**。安装器会把机器人降权到一个普通服务用户（默认 `qqagent`），
 不会让机器人进程以 root 运行；如果是从普通用户 `sudo` 执行，则沿用该用户。root 只负责
-装 Docker、把服务用户加入 `docker` 组、开启 linger 和准备目录。装完后 root 用
-`sudo qq-agent-manage logs` 看日志，普通用户仍可直接用 `manage.sh`。
+装 Docker、开启 linger 和准备目录。装完后 root 用 `sudo qq-agent-manage logs` 看日志，
+普通用户仍可直接用 `manage.sh`。
 
-注意：服务用户会被加入 `docker` 组，这是控制台“更新协议端”的前提；`docker` 组在 Linux 上
-等价于宿主 root（可挂载宿主文件系统）。这里降的是应用进程身份，不是完整沙箱。如果你不需要
-控制台更新协议端，可以在部署后把该用户移出 `docker` 组并手工管理 SnowLuma。
+注意：默认**不会**把服务用户加入 `docker` 组。控制台“更新协议端”需要该权限时，请显式
+设置 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 重跑部署；`docker` 组在 Linux 上等价于宿主 root
+（可挂载宿主文件系统）。这里降的是应用进程身份，不是完整沙箱。不需要控制台更新协议端时，
+保持默认不加组、手工管理 SnowLuma 即可。
 
 开始前建议先确认机器规格：
 
@@ -425,7 +426,7 @@ node src/ops.js scan                     # 未定义调用扫描
 node src/ops.js backup --confirm         # 停/起服务 + 加密打包数据目录，只留最近 4 份
 node src/ops.js restore --from ~/qq-agent/backups/qq-agent-data-XXXX.tar.gz.enc --dry-run
 node src/ops.js prune --days=90 --dry-run # 只删已确认送达的消息，先预演
-node src/ops.js install-timers --print   # 查看四个 systemd user 定时器（backup / process-guard / health / audit-prune）
+node src/ops.js install-timers --print   # 查看五个 systemd user 定时器（backup / backup-drill / process-guard / health / audit-prune）
 node src/ops.js console --open           # 建 SSH 隧道并打开控制台
 ```
 

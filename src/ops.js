@@ -1376,6 +1376,22 @@ async function cmdBackup(args) {
     ngLine('tar 失败，本次备份作废（服务已恢复）');
     return 1;
   }
+  // 备份一侧也要过恢复侧的类型闸门：数据目录里若有符号链接/硬链接，tar 只存链接本身，
+  // 生成的归档会在 restore/drill 时被拒绝。宁可现在报“备份作废”，也不要留下一个看似成功、
+  // 真出事时却恢复不了的 .enc。
+  const archiveCheck = runTarVerboseList(plainFile);
+  if (!archiveCheck.ok) {
+    try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
+    ngLine(`备份归档读取失败（返回码 ${archiveCheck.code}）：本次备份作废`);
+    return 1;
+  }
+  try {
+    validateTarTypes(archiveCheck.stdout);
+  } catch (error) {
+    try { fs.rmSync(plainFile, { force: true }); } catch { /* 忽略 */ }
+    ngLine(`${error?.message || error}；本次备份作废（请移除数据目录内的链接/设备文件后重试）`);
+    return 1;
+  }
   // 服务已经恢复，加密放在这里做：不占停机时间。
   if (!noEncrypt) {
     try {
@@ -3030,6 +3046,16 @@ async function cmdPlugins(args) {
       ngLine('这会移除插件代码：请加 --confirm 执行（或 --dry-run 只预览）');
       return 1;
     }
+    // 运行中的服务把插件 host 放在内存里：CLI 只挪目录，服务仍会继续调用已卸载插件的
+    // 工具/进程，而控制台又因为目录消失看不到它。要求先停服务，或从控制台卸载（会先 stopOne）。
+    const lock = inspectInstanceLock(cfg.dataDir);
+    if (['live', 'foreign', 'transient'].includes(lock.state)) {
+      const who = lock.holder
+        ? `pid ${lock.holder.pid}${lock.holder.hostname ? ` @ ${lock.holder.hostname}` : ''}`
+        : lock.state;
+      ngLine(`数据目录仍被实例占用（${who}）：请先从控制台卸载，或停止服务后再执行本命令`);
+      return 1;
+    }
     try {
       const result = uninstallPlugin({ id, dataDir: cfg.dataDir, purgeData });
       okLine(`已卸载 ${result.id}`);
@@ -3320,6 +3346,7 @@ SSH 配置、防火墙、定时任务、可升级包、TLS 证书到期、备份
 
 安装 systemd user 定时器：
   qq-agent-backup.timer（每周日 04:10 备份，Persistent=true）
+  qq-agent-backup-drill.timer（每月 1 日 05:10 验证备份可解密/可恢复）
   process-guard.timer（每 10 分钟进程看门狗）
   qq-agent-health.timer（每 5 分钟健康巡检）
   qq-agent-audit-prune.timer（每月 1 日 04:20 清理审计日志）

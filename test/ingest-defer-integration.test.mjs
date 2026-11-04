@@ -99,13 +99,37 @@ test('慢引用解析不阻塞后续普通消息；到点按占位符放行', as
   assert.equal(wakeCalls.length, 2, '延迟消息收尾后也要唤醒');
 });
 
+test('引用消息 id 属于别的群：不把别群原文带进当前群历史', async () => {
+  app.onebot.getMsg = async () => ({
+    group_id: 2,
+    message_type: 'group',
+    sender: { card: '别群的人', user_id: 77 },
+    message: [{ type: 'text', data: { text: '别群的原文' } }]
+  });
+  wakeCalls.length = 0;
+  const event = groupEvent([
+    { type: 'reply', data: { id: '9100' } },
+    { type: 'text', data: { text: '看这个' } }
+  ]);
+  await app.onebot.onEvent(event);
+  await waitFor(() => rowByMid(event.message_id)?.state === 'pending');
+  const row = rowByMid(event.message_id);
+  assert.match(row.text, /\[引用消息\]/);
+  assert.doesNotMatch(row.text, /别群的原文/);
+});
+
 test('富化后的正文命中黑名单：丢弃且不唤醒', async () => {
   const storeCfg = getConfig().store;
   updateConfig({ store: { ...storeCfg, blacklistKeywords: ['广告'] } });
   try {
     app.onebot.getMsg = async () => {
       await sleep(30);
-      return { sender: { card: '广告号', user_id: 7 }, message: [{ type: 'text', data: { text: '广告内容' } }] };
+      return {
+        group_id: 1,
+        message_type: 'group',
+        sender: { card: '广告号', user_id: 7 },
+        message: [{ type: 'text', data: { text: '广告内容' } }]
+      };
     };
     wakeCalls.length = 0;
     const event = groupEvent([

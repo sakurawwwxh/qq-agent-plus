@@ -39,8 +39,9 @@ In particular:
   `systemctl --user`。
 - **`manage.sh` 必须在安装目录（含 `.deployment.json` 的那一层）里执行**；在源码 checkout 里跑会
   报 `Deployed Node.js runtime is unavailable` —— 那是目录不对，不要因此重跑 `deploy.sh`。
-- **`install-timers` 现在装四个定时器**：backup（每周日 04:10）、process-guard（每 10 分钟）、
-  health（每 5 分钟巡检；连续 3 次失败私聊 owner，恢复补发）、audit-prune（每月 1 日 04:20 清理审计日志）。
+- **`install-timers` 现在装五个定时器**：backup（每周日 04:10）、backup-drill（每月 1 日 05:10
+  验证备份可解密/可恢复）、process-guard（每 10 分钟）、health（每 5 分钟巡检；连续 3 次失败
+  私聊 owner，恢复补发）、audit-prune（每月 1 日 04:20 清理审计日志）。
 - **更新时 `--install-dir` / `--data-dir` 必须与现有安装一致**：`deploy.sh` 会在部署开始前把全部参数
   与 `.deployment.json` 记录做强校验（`scripts/verify-deployment-target.mjs`），`--data-dir` / `--service` /
   `--repository` / `--branch` 不符直接拒绝（此时什么都没动，无需回滚）；数据目录迁移需同时给

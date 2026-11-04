@@ -63,3 +63,14 @@ test('ops plugins uninstall：--dry-run / 缺 --confirm 不删任何东西', () 
   assert.equal(noConfirm.status, 1);
   assert.equal(fs.existsSync(path.join(dataDir, 'plugins', 'safe-me')), true);
 });
+
+test('ops plugins uninstall：运行中的实例拒绝 CLI 卸载（避免进程继续持有已删插件）', () => {
+  const dataDir = makePlugin('live-me');
+  fs.writeFileSync(path.join(dataDir, '.server.lock'), JSON.stringify({
+    pid: process.pid, hostname: os.hostname(), startedAt: Date.now()
+  }));
+  const result = run(dataDir, 'uninstall', 'live-me', '--confirm');
+  assert.equal(result.status, 1, result.stderr || result.stdout);
+  assert.match(`${result.stdout}${result.stderr}`, /仍被实例占用/);
+  assert.equal(fs.existsSync(path.join(dataDir, 'plugins', 'live-me')), true);
+});

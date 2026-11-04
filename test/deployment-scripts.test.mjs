@@ -31,6 +31,9 @@ test('deploy script verifies and rolls back the update service and timer', () =>
   assert.match(source, /^\s*systemd-analyze --user verify "\$UPDATE_UNIT_FILE"\s*$/m);
   assert.match(source, /systemctl --user enable --now "\$UPDATE_SERVICE\.timer"/);
   assert.match(source, /cp -p "\$LOCK_DIR\/state\/update\.service" "\$UPDATE_UNIT_FILE"/);
+  // 回滚失败时 EXIT trap 会删 .deploy.lock；state/ 里的部署前配置必须先复制到恢复目录。
+  assert.match(source, /deploy-recovery-/);
+  assert.match(source, /cp -a "\$LOCK_DIR\/state\/\." "\$RECOVERY_STATE_DIR\/"/);
   assert.match(source, /QQ_AGENT_SOURCE_REVISION/);
 });
 

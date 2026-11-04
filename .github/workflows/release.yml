@@ -116,11 +116,9 @@ jobs:
         run: npm ci --no-audit --no-fund
       - run: npm run test:local
       - name: 提示词 / 渲染 / 滚动 / 用量端到端回归
-        run: |
-          node test/test-prompt.mjs
-          node test/render-test.mjs
-          node test/scroll-test.mjs
-          node test/usage-e2e.mjs
+        # 必须走 test-suite 包装器：它会重定向 TMPDIR 并关掉启动期真实索引/网络探测。
+        # 裸跑四个脚本会让 release runner 发真实外网、并把临时目录散到默认位置。
+        run: npm run test:regression
       # 与 ci.yml 的 browser job 同口径：发布前用真 Chromium 跑一遍控制台冒烟。
       # 放在最后：它需要 devDeps（上一段已恢复），且不参与加固门禁的依赖裁剪。
       - name: 安装 Chromium（浏览器冒烟）

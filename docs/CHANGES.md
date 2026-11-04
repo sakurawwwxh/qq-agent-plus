@@ -6,6 +6,20 @@
 
 ## 总表
 
+- **2026-11-04 全项目审查（非仅 diff）修复一批跨域 P1/P2**：
+  - 安全：MCP Registry 的 npm `identifier`/`version` 拒绝选项与范围注入（`--package=evil` 不能被当成包名）；
+    OneBot 每次重连重新拉 `get_login_info`，并用事件里的 `self_id` 兜底，换号后不再拿旧账号执行
+    Qzone/日报的待办；数据目录被实例占用时 CLI 插件卸载直接拒绝；备份生成后按恢复侧类型校验，
+    数据目录内有符号/硬链接就中止，避免留下恢复侧必拒绝的归档。
+  - 行为：paced 唤醒把 `paced` 传给工具，`life_feed_next`/`share_bilibili` 不再把自主节奏当人工；
+    `friend_add` 自动白名单只补 allow，不清管理员手写的 `deny.private`；入站引用只接受当前会话的
+    message id，别群原文不会被复制进本群历史；Qzone 评论/点赞在动作间隔结束后才落 `acting`，
+    等待中被硬杀不会误判成 unknown。
+  - UI：390px 下“调用明细”弹窗不再被 380px 最小宽度撑出屏幕；离开插件页/返回目录时停止扫码轮询。
+  - 运维/CI：默认回环安装的栈能通过自己的 `check-stack-update` 预检；Docker verify 安装 ffmpeg；
+    release 的四个回归改走 `test-suite` 包装器；README/LINUX/AGENTS/OPS 更新 docker 组 opt-in、
+    五个定时器与压缩已知问题；补 MCP 超大 schema、换号重连、跨群引用、Qzone 时序、备份链接等回归。
+
 - **模型把群名片/备注当 `targetUserId` 传给 `send_poke`（工具说明写了"必须传 QQ"仍屡次发生），拍一拍直接失败 →
   非数字目标按名字反查当前会话成员**：当前群名片或备注（`displayNameOf`）精确命中优先，其次群名片前缀
   （至少 2 个字，单个 emoji 按 1 个字计）；只认唯一命中，重名或前缀歧义报错并列出候选 QQ

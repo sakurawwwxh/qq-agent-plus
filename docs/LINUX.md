@@ -681,9 +681,10 @@ Fedora / Arch…）通用；非 systemd 的发行版不在支持范围。
 
 ### 代价须知：加进 docker 组等于给这个账号 root 等价权限
 
-`deploy.sh` / `deploy-all.sh` 的收尾自愈会执行 `usermod -aG docker <部署用户>`。这不是
-"顺手加的一个组"：docker 组的成员可以起一个挂载了宿主根目录的容器
-（`docker run --rm -v /:/host alpine cat /host/etc/shadow`），**等价于宿主 root**。
+只有显式开启 `QQ_AGENT_ALLOW_DOCKER_GROUP=1` 后，`deploy.sh` / `deploy-all.sh` 的收尾自愈
+才会执行 `usermod -aG docker <部署用户>`。这不是"顺手加的一个组"：docker 组的成员可以起一个
+挂载了宿主根目录的容器（`docker run --rm -v /:/host alpine cat /host/etc/shadow`），
+**等价于宿主 root**。
 
 所以在**把账号加进 docker 组之前**，控制台被拿下最多是应用级 + 它自己的用户级服务
 （控制台跑的命令只有 `systemctl --user`）；加进去之后，同一个进程被拿下就等于宿主机 root。

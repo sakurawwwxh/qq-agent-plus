@@ -56,6 +56,17 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+      # 与 ci.yml / release.yml 同口径：runner 没有 ffmpeg，缺了会让 GIF 帧条/语音转码用例
+      # 静默跳过，而 Docker 镜像本身是带 ffmpeg 的；发布闸门不能用跳过换绿。
+      - name: 安装 ffmpeg（GIF 帧条 / 音频转码用例依赖）
+        run: |
+          APT_OPTS=(-o Acquire::ForceIPv4=true -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+          if ! timeout 180 sudo apt-get install -y -qq "${APT_OPTS[@]}" ffmpeg; then
+            if ! timeout 240 sudo apt-get update -qq "${APT_OPTS[@]}" || ! timeout 180 sudo apt-get install -y -qq "${APT_OPTS[@]}" ffmpeg; then
+              echo "::warning::ffmpeg 安装失败（apt 源不可达），相关用例将跳过"
+            fi
+          fi
+          ffmpeg -version | head -n 1 || echo "ffmpeg unavailable; dependent tests will be skipped"
       - name: Tag 与版本号一致
         if: github.ref_type == 'tag'
         run: |
