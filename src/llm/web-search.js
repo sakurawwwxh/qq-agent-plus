@@ -88,14 +88,24 @@ function decodeHtml(s) {
 }
 
 const TRACKING_QUERY_KEYS = new Set([
-  'gclid', 'fbclid', 'msclkid', 'yclid', 'mc_cid', 'mc_eid', 'spm_id_from', 'vd_source'
+  // 广告点击 ID 与跨站归因
+  'gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid', 'twclid', 'ttclid',
+  'yclid', 'srsltid',
+  // 邮件/联盟/社交归因
+  'mc_cid', 'mc_eid', 'mkt_tok', 'igshid', '_ga', '_gl',
+  // 站内分享归因（B 站等）
+  'spm_id_from', 'vd_source', 'share_source', 'share_medium', 'share_plat',
+  'share_session_id', 'share_tag', 'unique_k'
 ]);
+
+// 只忽略普通锚点；hash 路由（Vue `#/`、旧 AJAX `#!`、hash query `#?`）参与身份判断。
+const HASH_ROUTE_PREFIXES = ['#/', '#!', '#?'];
 
 /**
  * 仅用于结果去重的 URL 规范化：保留可能决定页面身份的 query，只移除明确的跟踪参数。
- * 普通锚点忽略；`#/route` / `#!/route` 这类 SPA 路由仍参与身份判断。
+ * 普通锚点忽略；hash 路由仍参与身份判断。导出仅供测试。
  */
-function searchResultDedupeKey(rawUrl) {
+export function searchResultDedupeKey(rawUrl) {
   const raw = String(rawUrl ?? '').trim();
   if (!raw) return '';
   let url;
@@ -116,7 +126,7 @@ function searchResultDedupeKey(rawUrl) {
     return leftKey < rightKey ? -1 : 1;
   });
   url.search = new URLSearchParams(parameters).toString();
-  if (!url.hash.startsWith('#/') && !url.hash.startsWith('#!/')) url.hash = '';
+  if (!HASH_ROUTE_PREFIXES.some((prefix) => url.hash.startsWith(prefix))) url.hash = '';
   return url.toString();
 }
 

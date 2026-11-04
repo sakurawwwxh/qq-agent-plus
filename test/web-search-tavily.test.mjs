@@ -198,6 +198,46 @@ test('aggregateSearch：同名参数顺序可能表示有序列表，不能交�
   ]);
 });
 
+test('searchResultDedupeKey：tracking、hash 路由、参数顺序与坏 URL 的完整口径', async () => {
+  const { searchResultDedupeKey: key } = await import('../src/llm/web-search.js');
+  const same = [
+    ['https://x.example/a?id=1&utm_source=1', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&UTM_SOURCE=1', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&fbclid=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&gclid=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&dclid=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&mkt_tok=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&_ga=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?id=1&share_source=x', 'https://x.example/a?id=1'],
+    ['https://x.example/a?b=2&a=1', 'https://x.example/a?a=1&b=2'],
+    ['https://x.example/a?q=a+b', 'https://x.example/a?q=a%20b'],
+    ['https://x.example/a#section', 'https://x.example/a'],
+    ['https://x.example/a?utm_source=x#/route', 'https://x.example/a#/route']
+  ];
+  for (const [left, right] of same) {
+    assert.equal(key(left), key(right), `${left} 应与 ${right} 去重`);
+  }
+
+  const different = [
+    ['https://x.example/a?id=one', 'https://x.example/a?id=two'],
+    ['https://x.example/a#/one', 'https://x.example/a#/two'],
+    ['https://x.example/a#!/one', 'https://x.example/a#!/two'],
+    ['https://x.example/a#!app=1', 'https://x.example/a#!app=2'],
+    ['https://x.example/a#?page=1', 'https://x.example/a#?page=2'],
+    ['https://x.example/a?tag=one&tag=two', 'https://x.example/a?tag=two&tag=one'],
+    ['https://x.example/a?q=a%2Bb', 'https://x.example/a?q=a+b'],
+    ['https://x.example/a', 'http://x.example/a'],
+    ['https://x.example/a', 'https://x.example/a/'],
+    ['relative/path', 'relative/other'],
+    ['ftp://x.example/a?utm_source=1', 'ftp://x.example/a?utm_source=2']
+  ];
+  for (const [left, right] of different) {
+    assert.notEqual(key(left), key(right), `${left} 不能与 ${right} 合并`);
+  }
+  assert.equal(key(''), '');
+  assert.equal(key('relative/path'), 'relative/path');
+});
+
 test('aggregateSearch：全部源失败才报错，错误信息带各源原因', async () => {
   setWebSearch({ provider: 'aggregate', aggregate: { sources: ['doubao'], count: 4 }, doubao: { apiKey: '' } });
   const { aggregateSearch } = await import('../src/llm/web-search.js');
