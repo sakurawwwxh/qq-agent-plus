@@ -317,14 +317,38 @@ export async function installPlugin({
         const rawOld = JSON.parse(fs.readFileSync(path.join(target, 'plugin.json'), 'utf8'));
         // 旧 manifest 也过一遍宿主的归一化：新 manifest 已经补了默认字段，
         // 直接拿原始 JSON 对比会把"默认值补齐"误判成权限变化。
+        // 解析失败按“读不了”处理：拿原始 JSON 硬比会漏掉权限面变化（fail-open）。
         const parsedOld = parsePluginManifest(rawOld, { dir: target });
-        oldManifest = parsedOld.ok ? parsedOld.manifest : rawOld;
+        oldManifest = parsedOld.ok ? parsedOld.manifest : null;
       } catch { oldManifest = null; }
       try {
         const info = JSON.parse(fs.readFileSync(path.join(dataDir, 'plugin-data', finalId, 'install.json'), 'utf8'));
         oldPublisher = String(info.publisher || '');
         oldSignature = info.signatureVerified === true ? 'verified' : '';
       } catch { /* 老安装没有来源记录：按空值比较 */ }
+      if (!oldManifest) {
+        // 已装目录存在但 manifest 读不了/不合法：无法判断权限差异。没有 force 就拒绝，
+        // 不能让一个损坏目录变成“跳过确认、跳过清授权”的升级后门。
+        if (!force) {
+          throw fail('E_UPGRADE_UNREADABLE_OLD',
+            '已安装插件的 plugin.json 读不了或不合法，无法判断升级权限差异；'
+            + '请先在控制台卸载/修复旧版，或显式 force 覆盖（覆盖后必须重新授权）');
+        }
+        upgradeDiff = {
+          fromVersion: 'unknown',
+          toVersion: parsed.manifest.version,
+          permissionChanged: true,
+          diffHash: '',
+          areas: ['unreadable-old-manifest'],
+          summary: ['旧版 plugin.json 读不了：按 force 覆盖后，旧授权与写开关都必须重新确认'],
+          added: { capabilities: [], httpDomains: [], tools: [], approvals: [], secrets: [], schedule: [], quotas: [] },
+          removed: { capabilities: [], httpDomains: [], tools: [], approvals: [], secrets: [], schedule: [], quotas: [] },
+          changed: {
+            tools: [], approvals: [], quotas: [], settings: [], schedule: [],
+            publisher: false, signature: false, apiVersion: false
+          }
+        };
+      }
       if (oldManifest) {
         upgradeDiff = diffManifests(oldManifest, parsed.manifest, {
           previousPublisher: oldPublisher,

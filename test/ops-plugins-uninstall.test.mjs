@@ -21,8 +21,20 @@ function makePlugin(id) {
   fs.writeFileSync(path.join(dataDir, 'plugin-data', id, 'state.json'), '{"kept":true}');
   fs.mkdirSync(path.join(dataDir, 'plugin-secrets'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'plugin-secrets', `${id}.json`), '{"token":"secret"}');
+  fs.mkdirSync(path.join(dataDir, 'plugin-grants'), { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'plugin-grants', `${id}.json`),
+    JSON.stringify({ version: 1, approvals: [{ action: 'write' }], quota: {} }));
+  fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
+    plugins: {
+      enabledIds: [id, 'someone-else'],
+      switches: { [id]: { write: true }, 'someone-else': { write: false } },
+      settings: { [id]: { token: 'x' }, 'someone-else': { token: 'y' } }
+    }
+  }));
   return dataDir;
 }
+
+const readConfig = (dataDir) => JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
 
 function run(dataDir, ...args) {
   return spawnSync(process.execPath, [OPS, 'plugins', ...args, `--data=${dataDir}`], {
@@ -36,22 +48,32 @@ test.after(() => {
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
-test('ops plugins uninstall：默认保留数据与凭据，代码移入 .removed-*', () => {
+test('ops plugins uninstall：默认保留插件数据，但授权/凭据/开关一定清理', () => {
   const dataDir = makePlugin('keep-me');
   const result = run(dataDir, 'uninstall', 'keep-me', '--confirm');
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(path.join(dataDir, 'plugins', 'keep-me')), false);
   assert.equal(fs.readFileSync(path.join(dataDir, 'plugin-data', 'keep-me', 'state.json'), 'utf8'), '{"kept":true}');
-  assert.equal(fs.existsSync(path.join(dataDir, 'plugin-secrets', 'keep-me.json')), true);
+  // 与控制台卸载同口径：同 id 的下一个包绝不能继承旧批准/凭据
+  assert.equal(fs.existsSync(path.join(dataDir, 'plugin-secrets', 'keep-me.json')), false);
+  assert.equal(fs.existsSync(path.join(dataDir, 'plugin-grants', 'keep-me.json')), false);
+  const cfg = readConfig(dataDir);
+  assert.deepEqual(cfg.plugins.enabledIds, ['someone-else']);
+  assert.equal(cfg.plugins.switches['keep-me'], undefined);
+  assert.equal(cfg.plugins.switches['someone-else'].write, false, '别的插件开关不能被动');
+  assert.deepEqual(cfg.plugins.settings['keep-me'], { token: 'x' }, '非 purge 时 settings 保留');
   assert.ok(fs.readdirSync(path.join(dataDir, 'plugins')).some((name) => name.startsWith('.removed-keep-me.')));
 });
 
-test('ops plugins uninstall --purge-data：数据与凭据一起删', () => {
+test('ops plugins uninstall --purge-data：数据、凭据与设置一起删', () => {
   const dataDir = makePlugin('purge-me');
   const result = run(dataDir, 'uninstall', 'purge-me', '--purge-data', '--confirm');
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(path.join(dataDir, 'plugin-data', 'purge-me')), false);
   assert.equal(fs.existsSync(path.join(dataDir, 'plugin-secrets', 'purge-me.json')), false);
+  const cfg = readConfig(dataDir);
+  assert.equal(cfg.plugins.settings['purge-me'], undefined);
+  assert.deepEqual(cfg.plugins.settings['someone-else'], { token: 'y' });
 });
 
 test('ops plugins uninstall：--dry-run / 缺 --confirm 不删任何东西', () => {

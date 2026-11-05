@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { openDatabase } from '../src/core/sqlite.js';
+import { acquireMaintenanceLock } from '../src/core/maintenance.js';
 import { buildTar } from './helpers/tar.mjs';
 
 const OPS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'ops.js');
@@ -269,4 +270,20 @@ test('恢复拒绝 Windows 尾随点/空格与反斜杠路径', { skip: skipTar 
   assert.notEqual(res.status, 0, res.stdout + res.stderr);
   assert.match(`${res.stdout}${res.stderr}`, /不安全/);
   assert.equal(fs.existsSync(path.join(target, 'config.json')), false);
+});
+
+test('维护锁：另一个维护任务持锁时，备份直接拒绝且不生成归档', { skip: skipTar }, (t) => {
+  const root = tempDir(t);
+  const data = path.join(root, 'data');
+  const backups = path.join(root, 'backups');
+  seedDataDir(data);
+  const lock = acquireMaintenanceLock(data, { kind: 'test-hold' });
+  try {
+    const out = runOps(['backup', '--confirm', '--data', data, '--backup-dir', backups]);
+    assert.equal(out.status, 1, out.stderr || out.stdout);
+    assert.match(`${out.stdout}${out.stderr}`, /维护任务占用/);
+    assert.equal(fs.existsSync(backups), false, '拿不到锁就不能开始打包');
+  } finally {
+    lock.release();
+  }
 });

@@ -107,7 +107,9 @@ async function saveConfig({ quiet = false } = {}) {
         cwd: read('.mcp-cwd'),
         timeoutMs: clampInt(read('.mcp-timeout'), 1000, 300000, 30000),
         maxCallsPerMinute: clampInt(read('.mcp-maxcalls'), 1, 600, 30),
-        toolMounting: read('.mcp-mounting') === 'meta' ? 'meta' : 'direct'
+        toolMounting: read('.mcp-mounting') === 'meta' ? 'meta' : 'direct',
+        permissionIsolation: row.querySelector('.mcp-permission-isolation')?.checked === true,
+        memoryMb: clampInt(read('.mcp-memory'), 0, 4096, 0)
       };
     }).filter((server) => server.id && server.command);
     patch.mcp = { __replace__: { enabled: chk('#cfg-mcp-enabled', c.mcp?.enabled === true), servers } };

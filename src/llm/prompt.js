@@ -824,7 +824,11 @@ function formatEntry(m, { withId = true } = {}) {
   const replyPrefix = quotePrefixFor(m);
   const hasMid = m.mid !== null && m.mid !== undefined && String(m.mid) !== '';
   const idPrefix = withId && hasMid ? `#${m.mid} ` : '';
-  return `[${formatShortTime(m.ts)}] ${idPrefix}${adminTag}${who}：${replyPrefix}${m.text}`;
+  // 一条消息在提示词里必须永远只占一行：正文/引用里的换行会渲染成新的 transcript
+  // 行，群友据此可伪造"另一个人说的话"或 [管理员] 段头（2026-11-04 复核 P2）。
+  // 折叠放在最后统一做，因为正文与引用前缀都是 QQ 侧可控内容。
+  const line = `[${formatShortTime(m.ts)}] ${idPrefix}${adminTag}${who}：${replyPrefix}${m.text}`;
+  return line.replace(/\r\n?|\n/g, ' ');
 }
 
 /** 正则元字符转义（名字来自配置与群名片，可能含 . * ( 这类字符）。 */

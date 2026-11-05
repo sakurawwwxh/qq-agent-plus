@@ -6,6 +6,55 @@
 
 ## 总表
 
+- **2026-11-05 第二轮复核（续）**：
+  - 可靠性：MCP server 意外退出或启动失败后按 2s→60s 指数退避自动重启（默认最多 8 次），
+    成功后重新拉取工具并挂载；主动 `stop()`/重载不会触发重启，重试耗尽后在控制台状态里
+    给出“请重载 MCP”的可读提示。状态新增 `restarting`/`restartAttempts`。
+  - 运维：健康检查新增 systemd 定时器漂移项 —— 已用定时器部署的机器在升级后缺少
+    `backup-drill`/`process-guard`/`qq-agent-health`/`audit-prune` 时直接报红并提示
+    `node src/ops.js install-timers --confirm`（此前只有文档提醒，线上确实漏装过）。
+  - 运维：CLI `plugins uninstall` 与控制台同口径，始终清理授权与凭据、从 `enabledIds`
+    和动作开关中移除；`--purge-data` 才连插件数据与 `settings` 一起删，避免重装同 id
+    继承旧批准。
+  - 运维：健康检查的磁盘项除“剩余 <1GB”外新增“已用 >85%”阈值（40G 盘约 6G 余量即报警），
+    避免等盘快满才发现；每日保留期调度新增 SQLite `wal_checkpoint(TRUNCATE)` + `optimize`。
+  - 运维：备份/恢复新增数据目录同级的 `.maintenance.lock`（死 pid/超时锁可接管）与
+    SIGINT/SIGTERM/SIGHUP 守卫，Ctrl+C 不再跳过 finally 把服务留在停止状态；备份文件名
+    加随机后缀，同秒并发不再撞名。
+  - 安全：MCP server 新增 `networkIsolation: true` 选项（Linux `unshare --net`，本机不支持时
+    启动失败而不是静默联网）；控制台“安装文件”升级在权限面变化时补做清批准/关写开关。
+  - 安全：MCP 新增 `permissionIsolation`（Node 权限模型，只读入口目录，禁止写/子进程/Worker；
+    只对 `command=node` 生效，npx/docker 与白名单覆盖数据目录时 fail-closed）与 `memoryMb`
+    堆上限；隔离模式剥掉 `NODE_OPTIONS`/`LD_PRELOAD` 等启动注入变量。控制台 MCP 表单与状态同步。
+  - 运维：unknown 外发支持按会话/年龄筛选、全选、批量核对与导出 JSON，批量按行写审计；
+    新增 `outbox.unknownAutoReleaseDays`（默认 0，整段会话安静超过 N 天时按已发送留痕释放）。
+  - 运维：控制台“安装文件/URL”遇到同 id 升级的 `E_UPGRADE_CONFIRM` 会展示权限 diff，
+    确认后带 `expectedDiffHash` 重试（与索引升级、插件批量升级同一口径）。
+  - 观测：`/api/metrics` 与控制台“运行指标”新增 unknown 数量/最老年龄、MCP 重启中与累计重试、
+    磁盘已用比例；Prometheus 输出同步新增 `qqagent_outbox_unknown*`、`qqagent_mcp_*`、
+    `qqagent_disk_used_ratio`。
+  - CI：`npm run test:coverage` 从“只出数”改为门槛（line 67% / branch 69% / funcs 72%，
+    基线 68.15/70.06/73.58），每个 release 只许上调。
+  - 联网搜索：`web_search` 把本轮 `AbortSignal` 传进所有 provider 与聚合/梗补充链，
+    停止/超时后不再让底层请求空跑 60–75s。
+
+- **2026-11-04 第二轮全项目审查修复**：
+  - 可靠性：`finishSend` 记账失败留在 `sending` 的 outbox 行不再只能等重启 —— 5 秒回收循环
+    把超过 `runTimeoutMs + 60s` 的行降级为 `unknown`，进入人工核对清单（unknown 仍按设计
+    不自动重发，但运维不必等到重启才能看到并核对）；
+    因全局并发已满而 3 秒重试时不再创建/丢弃等待会话，消除每个被阻塞会话每 3 秒一次的落盘抖动；
+    事件流写失败时关闭 socket，不再留下半开连接。
+  - 安全：控制台没有 `server.token` 且本机无法隔离插件网络时拒绝加载插件（loopback 免鉴权
+    不能被插件子进程用来读明文 Key/轮换令牌/写 MCP 命令）；插件能力调用对
+    storage/secrets/quota/approval 也加宽桶限频（这些同步读盘+解密，原来完全不限）。
+  - 提示词：transcript 行统一折叠换行，群友不能再靠 `\n` 伪造下一条发言或 `[管理员]` 段头。
+  - 插件：`media.merge` / `media.frames` 写盘后复核 `diskMb`，超限删掉产物并报
+    `E_DISK_QUOTA`（原来只看单个输入，反复 merge/抽帧可绕过配额）。
+  - 入站：拍一拍/贴表情按事件签名做进程内去重，协议端重放不再落两条并重复唤醒。
+  - 运维/CI：`install-timers` 不会被升级自动重跑，文档明确要求已有安装升级后手动补跑
+    （线上缺失的 `backup-drill` 即由此产生）；CI 在 main 上增加 `release-check`；
+    修正 OPS 演练命令、LINUX 的 sudo 范围与 KNOWN-ISSUES 的已修复条目。
+
 - **2026-11-04 控制台补齐“已实现但只能改配置”的设置入口**：
   - 白名单页新增 `deny.groups` / `deny.private` 编辑（优先于 allow；控件缺失的旧页面仍不覆盖存量）；
   - 聊天设置新增模型失败兜底开关/冷却、请求超时与整轮超时、上下文分层、补话延迟/冷却、
@@ -2337,3 +2386,14 @@ QQ 语音音色）与**协议端 SnowLuma v1.14.22 的能力接入**（表情回
 - **只在源码变化时重启**：部署链每小时会跑一遍所有补丁脚本，无条件重启会让服务每小时被重启多次、打断正在进行的对话；于是加哈希比对，源码没变就跳过重启。
 - **运维工具与回归测试**：`src/ops.js`（单入口，详见 `docs/OPS.md`）与 `test/local/`（详见 `test/local/README.md`），均为本仓库新增。原 `ops/` 目录下的 shell/python 脚本已全部移植进 `src/ops.js`，目录本身已删除；开发机私有的 ssh 文件传输/执行脚本不再随仓库分发，远程执行直接用 `ssh`/`scp`。
 - **关闭上游调试探针**：`src/*.js`、`ui/*.js`。上游作者在自己开发机上留了一批调试上报（往其私网地址的 7777/7780 端口发数据），与本项目无关，已全部关闭（守卫条件置假 + 目标地址换成本机兜底）。
+
+## 27. 2026-11-05 多维审查加固（本地 + 部署机验证）
+
+- **MCP 权限隔离补绕过口**：`src/mcp/isolation.js`。配置 args 里不再允许 `--permission`、`--allow-*`、`--require`/`--import`/`--loader`、`-e`/`-p`、`--max-old-space-size` 等能改写启动行为的参数（Node 的 allow 是累加的，追加一条 `--allow-fs-read=/` 就能整段绕过白名单）；读取目录取最后一个脚本参数，避免把 `-r preload.js` 当成入口；允许目录先 realpath，拒绝与数据目录重叠；递归检查目录内软链，指向白名单外/数据目录的一律 fail-closed。隔离变量从只剥 `NODE_OPTIONS`/`LD_PRELOAD` 扩到全部 `LD_*`/`DYLD_*`/`NODE_PATH`。管理器新增 `close()`，进程退出阶段不会被重启计时器复活子进程。
+- **outbox 单条核对跨会话**：`src/core/store.js`、`src/console/routes/outbox.js`。`reconcileUnknownOperation` 接 `chatKey` 并在更新前过滤；控制台把 URL 会话传下去，store 返回别的会话时仍按 404。`olderThanDays` 在列表与批量核对都必须是 0–3650 的有限数，`Infinity`/`NaN` 直接 400，不再被当成 0 或落成超大范围。
+- **维护锁接管竞态**：`src/core/maintenance.js`。陈旧锁的接管本身加 `.takeover` 文件互斥（`wx` 创建 + 60 秒过期），抢不到就重试/报忙，避免 A 删旧锁、B 又把 A 的新锁删掉；`release()` 只在 owner 的 pid/hostname/startedAt 完全匹配时删文件，锁被接管或写坏后不会误删。
+- **插件升级 fail-closed**：`src/plugins/install.js`、`src/plugins/upgrade-security.js`、`src/console/routes/plugins.js`、`src/ops.js`。已装 `plugin.json` 读不出/不合法时，没有 `force` 直接 `E_UPGRADE_UNREADABLE_OLD`；`force` 覆盖按“权限面已变”生成 diff。权限面变化（含缺 diff 的 force 覆盖）一律清对象级批准/待批并关写开关；关开关失败返回 `warning`，不再静默。CLI `plugins install --force` 与回退路径走同一收口。
+- **账本改判边界**：`src/core/effect-outbox.js`（从 ops.js 抽出）、`src/core/effects.js`、`src/core/outbox-auto-release.js`。`ops effects resolve` 只改 `unknown` 行，绝不改仍在发送的 `sending`；`sending` 未决时不释放 held。人工/policy 改判保留 `resolvedBy`；超期自动释放逐条写 `outbox.auto-release` 审计（operationId/runId/remaining/policyDays）。
+- **MCP 网络隔离启动参数**：`src/mcp/isolation.js`、`src/mcp/client.js`。此前 `command = 'unshare'` 后还拿新值拼参数，实际启动成 `unshare … unshare <脚本>`，Linux 上必现 126 退出（配置了 `networkIsolation` 的 server 全起不来）；抽成 `wrapWithNetns()` 并补纯参数断言与 Linux 真启动用例。
+- **观测与恢复**：Prometheus `qqagent_outbox_pending` 改取 `byState.sending`（原字段不存在，指标恒 0）；恢复后启动失败仅在确有旧数据时回滚，否则保留已恢复数据并明确提示；提醒发送检测把 `sending` 也算作未决，避免急停后误判“没发出去”。
+- **验证**：本地 `node --test` 2754 条（2697 pass / 0 fail / 57 skip）、回归 38、Playwright 31、覆盖率 68.19/70.10/73.61（门槛 67/69/72）、ESLint、`ops scan --strict`、`release-check` 全通过；部署机 Linux Node 22.23.2 跑同一套 2754 条（2695 pass / 57 skip），仅 2 条因部署目录里遗留的 `docker-compose.yml` 还是 0.9.12 而失败——临时换上仓库版本后这 2 条 7/7 通过，确认是环境残留而非代码问题。新增 20 条针对上述边界的回归用例。

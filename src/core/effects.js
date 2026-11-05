@@ -146,7 +146,7 @@ export class EffectLedger {
     if (next !== 'sent' && next !== 'failed') throw new Error(`resolve 只接受 sent|failed: ${next}`);
     const row = this.#byId(id);
     if (!row || row.state !== 'unknown') return false;
-    const merged = { ...parseJson(row.detail), ...(detail || {}), resolvedAt: this.now(), resolvedBy: 'manual' };
+    const merged = { ...parseJson(row.detail), ...(detail || {}), resolvedAt: this.now(), resolvedBy: detail.resolvedBy || 'manual' };
     const result = this.db.prepare(`UPDATE effects SET state=?, detail=?, settled_at=?
       WHERE id=? AND state='unknown'`).run(next, safeJson(merged), this.now(), String(id));
     return Number(result.changes) > 0;

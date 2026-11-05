@@ -720,54 +720,140 @@ async function openChatRuntimeControl(chatKey) {
   });
 }
 
+function unknownAgeLabel(ageMs) {
+  if (!ageMs) return '刚刚';
+  const hours = Math.floor(ageMs / 3_600_000);
+  if (hours < 1) return '不到 1 小时';
+  if (hours < 24) return `${hours} 小时`;
+  return `${Math.floor(hours / 24)} 天`;
+}
+
 async function openUnknownOperations(chatKey) {
-  const data = await api(`/api/chats/${chatKey.replace(':', '_')}/unknown-operations`);
-  const operations = data.operations || [];
+  const base = `/api/chats/${chatKey.replace(':', '_')}/unknown-operations`;
+  let olderThanDays = 0;
+  let operations = [];
+  let summary = { total: 0, oldestAgeMs: 0 };
+
   const overlay = modelModalShell({
     head: `核对未知写入 · ${formatChatTitle(chatKey, chatNameOf(chatKey))}`,
-    body: operations.length
-      ? `<div class="control-key-list">${operations.map((operation) => `
-          <div class="control-key-row">
-            <span><strong>${esc(operation.payload?.type || '外部操作')}</strong>
-              <small>${esc(JSON.stringify(operation.payload || {}).slice(0, 180))}</small>
-              <small>${esc(operation.error || '结果未知')}</small></span>
-            <span class="settings-actions" style="margin:0">
-              <button type="button" class="btn btn-small" data-unknown-result="sent" data-operation-id="${esc(operation.id)}">确认已发送</button>
-              <button type="button" class="btn btn-small" data-unknown-result="failed" data-operation-id="${esc(operation.id)}">确认未发送</button>
-            </span>
-          </div>`).join('')}</div>`
-      : '<div class="empty-hint">没有待核对的外部写入</div>',
+    body: `<div class="chat-toolbar" style="margin:0 0 8px;flex-wrap:wrap">
+        <label class="muted">只看
+          <select data-unknown-age>
+            <option value="0">全部</option>
+            <option value="1">超过 1 天</option>
+            <option value="3">超过 3 天</option>
+            <option value="7">超过 7 天</option>
+            <option value="30">超过 30 天</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-small" data-unknown-select-all>全选</button>
+        <button type="button" class="btn btn-small" data-unknown-batch="sent">批量确认已发送</button>
+        <button type="button" class="btn btn-small" data-unknown-batch="failed">批量确认未发送</button>
+        <button type="button" class="btn btn-small" data-unknown-export>导出 JSON</button>
+        <span class="muted" data-unknown-summary></span>
+      </div>
+      <div data-unknown-list></div>`,
     foot: '<button type="button" class="btn" data-unknown-close>关闭</button>'
   });
-  overlay.querySelector('[data-unknown-close]').addEventListener('click', () =>
-    closeModelModal(overlay));
-  overlay.querySelectorAll('[data-unknown-result]').forEach((button) => {
+  const listBox = overlay.querySelector('[data-unknown-list]');
+  const summaryBox = overlay.querySelector('[data-unknown-summary]');
+  const ageSelect = overlay.querySelector('[data-unknown-age]');
+
+  const render = () => {
+    summaryBox.textContent = summary.total
+      ? `共 ${summary.total} 条待核对${summary.oldestAgeMs ? `，最老一条 ${unknownAgeLabel(summary.oldestAgeMs)}` : ''}`
+      : '';
+    if (!operations.length) {
+      listBox.innerHTML = '<div class="empty-hint">没有待核对的外部写入</div>';
+      return;
+    }
+    listBox.innerHTML = `<div class="control-key-list">${operations.map((operation) => `
+      <div class="control-key-row">
+        <span style="display:flex;gap:8px;align-items:flex-start">
+          <input type="checkbox" data-unknown-pick value="${esc(operation.id)}" aria-label="选择这条记录" />
+          <span><strong>${esc(operation.payload?.type || '外部操作')}</strong>
+            <small>${esc(JSON.stringify(operation.payload || {}).slice(0, 180))}</small>
+            <small>${esc(operation.error || '结果未知')} · ${esc(unknownAgeLabel(operation.ageMs))}前</small></span>
+        </span>
+        <span class="settings-actions" style="margin:0">
+          <button type="button" class="btn btn-small" data-unknown-result="sent" data-operation-id="${esc(operation.id)}">确认已发送</button>
+          <button type="button" class="btn btn-small" data-unknown-result="failed" data-operation-id="${esc(operation.id)}">确认未发送</button>
+        </span>
+      </div>`).join('')}</div>`;
+  };
+
+  const load = async () => {
+    const query = olderThanDays > 0 ? `?olderThanDays=${olderThanDays}&limit=500` : '?limit=500';
+    const data = await api(`${base}${query}`);
+    operations = data.operations || [];
+    summary = data.summary || { total: 0, oldestAgeMs: 0 };
+    render();
+  };
+
+  const reconcile = async (ids, result) => {
+    const sent = result === 'sent';
+    const count = ids.length;
+    if (!await askForConfirmation(sent
+      ? `确认这 ${count} 条操作都已在 QQ 中看到成功？确认后不会再次发送。`
+      : `确认这 ${count} 条操作都未成功？系统也不会自动重试。`)) return;
+    // 单条核对走原端点（审计里不带 batch 标记）；多条才走批量端点。
+    const path = ids.length === 1
+      ? `${base}/${encodeURIComponent(ids[0])}/reconcile`
+      : `${base}/reconcile`;
+    const body = ids.length === 1 ? { result, confirm: true } : { ids, result, confirm: true };
+    await api(path, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+    closeModelModal(overlay);
+    await loadChats();
+  };
+
+  overlay.querySelector('[data-unknown-close]').addEventListener('click', () => closeModelModal(overlay));
+  ageSelect.addEventListener('change', async () => {
+    olderThanDays = Number(ageSelect.value) || 0;
+    try { await load(); } catch (error) { alert(`读取失败：${error.message}`); }
+  });
+  overlay.querySelector('[data-unknown-select-all]').addEventListener('click', () => {
+    listBox.querySelectorAll('[data-unknown-pick]').forEach((box) => { box.checked = true; });
+  });
+  overlay.querySelectorAll('[data-unknown-batch]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const ids = [...listBox.querySelectorAll('[data-unknown-pick]:checked')].map((box) => box.value);
+      if (!ids.length) return alert('先勾选要核对的记录');
       try {
-        const sent = button.dataset.unknownResult === 'sent';
-        if (!await askForConfirmation(sent
-          ? '确认已在 QQ 中看到这次操作成功？不会再次发送。'
-          : '确认这次操作未成功？系统也不会自动重试。')) return;
         button.disabled = true;
-        await api(
-          `/api/chats/${chatKey.replace(':', '_')}/unknown-operations/${encodeURIComponent(button.dataset.operationId)}/reconcile`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              result: button.dataset.unknownResult,
-              confirm: true
-            })
-          }
-        );
-        closeModelModal(overlay);
-        await loadChats();
+        await reconcile(ids, button.dataset.unknownBatch);
       } catch (error) {
-        // 失败时保留弹窗（用户可以再试或关掉），并给出明确反馈
         button.disabled = false;
-        alert(`核对写入失败：${error.message}`);
+        alert(`批量核对失败：${error.message}`);
       }
     });
   });
+  overlay.querySelector('[data-unknown-export]').addEventListener('click', () => {
+    const payload = JSON.stringify({
+      chatKey, exportedAt: new Date().toISOString(), summary, operations
+    }, null, 2);
+    const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `unknown-${chatKey.replace(':', '_')}-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  });
+  listBox.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-unknown-result]');
+    if (!button) return;
+    try {
+      button.disabled = true;
+      await reconcile([button.dataset.operationId], button.dataset.unknownResult);
+    } catch (error) {
+      // 失败时保留弹窗（用户可以再试或关掉），并给出明确反馈
+      button.disabled = false;
+      alert(`核对写入失败：${error.message}`);
+    }
+  });
+  await load();
 }
 
 function renderChatList() {

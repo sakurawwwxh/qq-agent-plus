@@ -1,7 +1,6 @@
 // 插件控制台路由（v1 列表/索引/安装/卸载/启停/重载 + v2 设置/凭据/授权/配额）
 // （从 console/app.js 拆出，2026-10-31 结构整治 M2）。
 // 索引加载（loadIndex）与 6 小时定时刷新仍在 app.js：它们和 start/stop 生命周期绑在一起。
-import fs from 'node:fs';
 import path from 'node:path';
 import { safeFetchBinary } from '../../llm/safe-fetch.js';
 import {
@@ -11,8 +10,9 @@ import { fetchBinaryWithMirrors } from '../../plugins/mirrors.js';
 import { pluginSecretStatus, writePluginSecrets, secretFieldKeys, clearPluginSecrets } from '../../plugins/secrets.js';
 import {
   grantsStatus, listPendingApprovals, approvePendingApproval,
-  rejectPendingApproval, listPluginWrites, clearPluginGrants, resetPluginGrants
+  rejectPendingApproval, listPluginWrites, clearPluginGrants
 } from '../../plugins/grants.js';
+import { applyUpgradeSecurity } from '../../plugins/upgrade-security.js';
 
 export function registerPluginRoutes(router, deps = {}) {
   const json = deps.json;
@@ -480,27 +480,16 @@ export function registerPluginRoutes(router, deps = {}) {
       });
       auditWrite('plugins.install', `plugins:${result.id}`, { req, version: result.version, upgraded: result.upgraded });
       // 权限面变了：清对象级批准/待批，并关闭所有写动作开关（保留配额计数，防止用升级刷额度）
-      if (result.upgraded && result.diff?.permissionChanged) {
-        const reset = resetPluginGrants(dataDir, result.id);
-        try {
-          const manifest = JSON.parse(fs.readFileSync(path.join(dataDir, 'plugins', result.id, 'plugin.json'), 'utf8'));
-          const actions = (Array.isArray(manifest.approvals) ? manifest.approvals : [])
-            .map((item) => String(item.action || '')).filter(Boolean);
-          if (actions.length) {
-            updateConfig({
-              plugins: { switches: { [result.id]: Object.fromEntries(actions.map((action) => [action, false])) } }
-            });
-          }
-        } catch (error) {
-          log(`[plugins] 升级后关闭写开关失败（相关授权已清空）：${error?.message ?? error}`);
-        }
+      const upgradeSecurity = applyUpgradeSecurity(dataDir, result, { updateConfig, log });
+      if (upgradeSecurity) {
         auditWrite('plugins.upgrade', `plugins:${result.id}`, {
-          req, version: result.version, areas: result.diff.areas, summary: result.diff.summary, reset
+          req, version: result.version, areas: result.diff?.areas || [], summary: result.diff?.summary || [],
+          reset: upgradeSecurity.reset, disabledActions: upgradeSecurity.disabledActions
         });
       }
       // 装完重排一次：让控制台立刻看到新插件（默认未授权，不会自动跑）
       await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list() });
+      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list(), warning: upgradeSecurity?.warning || '' });
     } catch (error) {
       // 上面为了能换目录才停旧进程：只有真的动过目录失败时才需要按原配置放回去。
       // 下载超时/sha 不符这类失败发生在换入之前，此时重排纯属误伤（会打断其它插件在途的工具调用）
@@ -557,8 +546,16 @@ export function registerPluginRoutes(router, deps = {}) {
         log: pluginLog
       });
       auditWrite('plugins.install-file', `plugins:${result.id}`, { req, version: result.version, upgraded: result.upgraded, fileName });
+      // 与索引安装同口径：升级改变权限面时清批准并关写开关（此前这条入口漏了）
+      const upgradeSecurity = applyUpgradeSecurity(dataDir, result, { updateConfig, log });
+      if (upgradeSecurity) {
+        auditWrite('plugins.upgrade', `plugins:${result.id}`, {
+          req, version: result.version, areas: result.diff?.areas || [], summary: result.diff?.summary || [],
+          reset: upgradeSecurity.reset, disabledActions: upgradeSecurity.disabledActions
+        });
+      }
       await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, sha256: sha256Of(buffer), fileName, ...pluginRegistry.list() });
+      return json(res, 200, { ok: true, ...result, sha256: sha256Of(buffer), fileName, ...pluginRegistry.list(), warning: upgradeSecurity?.warning || '' });
     } catch (error) {
       // 换入阶段失败时旧进程已被停掉：按原配置放回去（更早的失败没停过任何进程，不重排）
       if (replaced) await pluginRegistry.reconfigure().catch(() => {});
@@ -578,9 +575,16 @@ export function registerPluginRoutes(router, deps = {}) {
     try {
       await pluginRegistry.stopOne(id);       // 先收进程再换目录（Windows 上不能 rename 存活进程的 cwd）
       const result = rollbackPlugin({ id, dataDir: dataDir, log: pluginLog });
-      auditWrite('plugins.rollback', `plugins:${id}`, { req, version: result.version });
+      // 回退也会换 manifest：旧版本的权限面未必比当前窄，按“权限面变化”清批准/关开关，
+      // 让管理员重新授权一次，不能靠版本号大小假设权限只会变小。
+      const rollbackSecurity = applyUpgradeSecurity(dataDir,
+        { id, upgraded: true, diff: { permissionChanged: true } }, { updateConfig, log });
+      auditWrite('plugins.rollback', `plugins:${id}`, {
+        req, version: result.version, reset: rollbackSecurity?.reset || false,
+        disabledActions: rollbackSecurity?.disabledActions || 0
+      });
       await pluginRegistry.reconfigure();
-      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list() });
+      return json(res, 200, { ok: true, ...result, ...pluginRegistry.list(), warning: rollbackSecurity?.warning || '' });
     } catch (error) {
       // 回退失败时**也要**重排一次：stopOne 已经把进程收掉了，不重排的话这个插件会一直停在
       // "已停"直到下次配置变更或重启 —— 用户只看到一条"回退失败"，不知道插件被一并停掉了

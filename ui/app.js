@@ -624,6 +624,11 @@ async function loadControlObservability() {
     const statuses = http.requests?.byStatus || {};
     const queues = metrics.queues?.byState || {};
     const outbox = metrics.outbox?.byState || {};
+    const unknown = metrics.unknown || {};
+    const mcp = metrics.mcp || {};
+    const disk = metrics.host?.disk || {};
+    const unknownAge = Number(unknown.oldestAgeMs) > 0
+      ? `${Math.max(1, Math.floor(Number(unknown.oldestAgeMs) / 86400000))} 天` : '-';
     const entries = Array.isArray(audit.entries) ? audit.entries : [];
     box.className = 'control-result';
     box.innerHTML = `
@@ -635,6 +640,9 @@ async function loadControlObservability() {
         <div><span>LLM 请求 / 兜底 / 失败</span><strong>${Number(metrics.llm?.requests) || 0} / ${Number(metrics.llm?.fallbackUses) || 0} / ${Number(metrics.llm?.failures) || 0}</strong></div>
         <div><span>入站队列 pending / leased / held</span><strong>${Number(queues.pending) || 0} / ${Number(queues.leased) || 0} / ${Number(queues.held) || 0}</strong></div>
         <div><span>出站 pending / failed</span><strong>${Number(outbox.pending) || 0} / ${Number(outbox.failed) || 0}</strong></div>
+        <div><span>待核对 unknown / 最老</span><strong>${Number(unknown.total) || 0} / ${esc(unknownAge)}</strong></div>
+        <div><span>MCP 重启中 / 累计重试 / 隔离生效</span><strong>${Number(mcp.restarting) || 0} / ${Number(mcp.restartAttempts) || 0} / ${Number(mcp.permissionActive) || 0}</strong></div>
+        <div><span>磁盘已用</span><strong>${disk.usedPercent == null ? '不可用' : `${esc(disk.usedPercent)}%`}</strong></div>
         <div><span>OneBot</span><strong>${metrics.onebot?.connected ? '已连接' : '未连接'}</strong></div>
       </div>
       <div class="table-wrap" style="margin-top:10px"><table class="usage-table">

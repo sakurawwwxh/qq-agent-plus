@@ -97,6 +97,7 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
     ],
     'pages/life-feed.js': ['cfg-lifefeed-rss-urls', 'cfg-lifefeed-rss-per-forage'],
     'pages/living-memory.js': ['lm-auto-capture', 'lm-capture-idle'],
+    'pages/features.js': ['cfg-outbox-auto-release'],
     'pages/settings-voice.js': [
       'cfg-asr-max-perchat', 'cfg-tts-max', 'cfg-tts-max-perchat',
       'cfg-img-response-format', 'cfg-img-timeout'

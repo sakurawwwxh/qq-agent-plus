@@ -171,6 +171,8 @@ test('回收循环的启动和 5 秒 tick 都接入了自动释放', () => {
     '启动和周期 tick 都必须调用 releaseResolvedHeld');
   assert.ok((block.match(/this\.releaseStaleDeferred\(\)/g) || []).length >= 2,
     '启动和周期 tick 都必须调用 releaseStaleDeferred');
+  assert.ok((block.match(/ageStaleSending/g) || []).length >= 2,
+    '启动和周期 tick 都必须把超龄 sending 收口（不能只等重启）');
 });
 
 test('启动时把遗留 sending 收口成 unknown（不能永远停在发送中）', (t) => {
@@ -183,6 +185,24 @@ test('启动时把遗留 sending 收口成 unknown（不能永远停在发送中
   const row = store.db.prepare('SELECT state,error FROM outbox WHERE id=?').get(op);
   assert.equal(row.state, 'unknown');
   assert.match(String(row.error), /进程重启/);
+});
+
+test('运行期把超龄 sending 收口成 unknown，新鲜的在途行不动', (t) => {
+  const store = makeStore('age-sending');
+  t.after(() => store.close());
+  const lease = appendAndLease(store, 'group:1', 1);
+  const stale = store.beginSend('group:1', lease.id, { text: 'stale' });
+  const fresh = store.beginSend('group:1', lease.id, { text: 'fresh' });
+  store.db.prepare('UPDATE outbox SET created_at=? WHERE id=?')
+    .run(Date.now() - 10 * 60_000, stale);
+  assert.equal(store.ageStaleSending(5 * 60_000), 1);
+  const aged = store.db.prepare('SELECT state,error FROM outbox WHERE id=?').get(stale);
+  assert.equal(aged.state, 'unknown');
+  assert.match(String(aged.error), /超过时限/);
+  assert.equal(store.db.prepare('SELECT state FROM outbox WHERE id=?').get(fresh).state, 'sending',
+    '还在正常时限内的发送不能被动');
+  // 降级后进入人工核对清单（默认只列 unknown），运维才看得到
+  assert.deepEqual(store.listUnknownOperations('group:1').map((row) => row.id), [stale]);
 });
 
 test('没有 held 时是空操作，不会误删 active 租约的 outbox', (t) => {

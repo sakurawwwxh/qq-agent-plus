@@ -11,6 +11,7 @@ process.env.QQ_AGENT_DATA_DIR = dataDir;
 
 const { ChatStore } = await import('../src/core/store.js');
 const { EffectLedger } = await import('../src/core/effects.js');
+const { reconcileEffectOutbox } = await import('../src/core/effect-outbox.js');
 
 const freshStore = () => new ChatStore(0, { dataDir: fs.mkdtempSync(path.join(dataDir, 'db-')) });
 
@@ -171,6 +172,49 @@ test('resolve 的人工审计在后续 failed→planned 重试后仍然保留', 
     // 非 unknown 不允许 resolve
     ledger.settle(begun.id, 'sent');
     assert.equal(ledger.resolve(begun.id, 'failed'), false, 'sent 不能被 resolve 回退');
+  } finally { store.close(); }
+});
+
+test('resolve 的 resolvedBy 可由策略方标记，不被默认 manual 覆盖', () => {
+  const store = freshStore();
+  try {
+    const ledger = new EffectLedger(store.db);
+    const begun = ledger.begin({ kind: 'digest', idemKey: 'd:policy' });
+    ledger.settle(begun.id, 'unknown', { reason: 'timeout' });
+    assert.equal(ledger.resolve(begun.id, 'sent', { resolvedBy: 'policy', reason: 'auto-release' }), true);
+    const row = ledger.get('digest', 'd:policy');
+    assert.equal(row.detail.resolvedBy, 'policy');
+    assert.equal(row.detail.reason, 'auto-release');
+  } finally { store.close(); }
+});
+
+test('账本改判同步 outbox：只碰 unknown，sending 在途时 held 不提前释放', () => {
+  const store = freshStore();
+  try {
+    const ledger = new EffectLedger(store.db);
+    const begun = ledger.begin({ kind: 'direct:react', chatKey: 'group:1', idemKey: 'react:sending' });
+    ledger.settle(begun.id, 'unknown');
+    const insert = store.db.prepare('INSERT INTO outbox(id,run_id,chat_key,state,payload) VALUES (?,?,?,?,?)');
+    insert.run('op_live', begun.id, 'group:1', 'sending', '{}');
+    insert.run('op_unknown', begun.id, 'group:1', 'unknown', '{}');
+    store.db.prepare(`INSERT INTO messages
+      (chat_key,id,mid,ts,sender_id,sender_name,text,self,state,lease_id)
+      VALUES (?,?,?,?,?,?,?,1,?,?)`).run('group:1', 1, 'm1', Date.now(), '1', 'A', 'x', 'held', begun.id);
+    store.db.prepare('INSERT INTO runs(id,chat_key,state,expires_at,error) VALUES (?,?,?,?,?)')
+      .run(begun.id, 'group:1', 'held', Date.now() + 60_000, '');
+
+    assert.equal(reconcileEffectOutbox(store.db, begun.id, 'sent'), 1, '只改判 unknown 行');
+    const stateOf = (id) => store.db.prepare('SELECT state FROM outbox WHERE id=?').get(id)?.state;
+    assert.equal(stateOf('op_live'), 'sending', '在途行不能被 CLI 改判成终态');
+    assert.equal(stateOf('op_unknown'), 'reconciled_sent');
+    assert.equal(store.db.prepare("SELECT state FROM messages WHERE chat_key='group:1' AND id=1").get().state, 'held',
+      '还有 sending 未决时不能释放 held');
+
+    store.db.prepare("UPDATE outbox SET state='unknown' WHERE id='op_live'").run();
+    assert.equal(reconcileEffectOutbox(store.db, begun.id, 'sent'), 1);
+    assert.equal(store.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE run_id=?").get(begun.id).n, 0);
+    assert.equal(store.db.prepare("SELECT state FROM messages WHERE chat_key='group:1' AND id=1").get().state, 'acked');
+    assert.equal(store.db.prepare('SELECT state FROM runs WHERE id=?').get(begun.id).state, 'acked');
   } finally { store.close(); }
 });
 

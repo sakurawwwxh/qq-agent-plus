@@ -26,6 +26,13 @@ describe('ChatStore', () => {
     assert.deepEqual(store.recent('group:1', { limit: 1, offset: 1 }).map((m) => m.mid), ['1']);
   });
 
+  it('maintain() 能截断 WAL 并刷新查询计划统计', (t) => {
+    const { store } = fixture(t);
+    append(store, 1);
+    const out = store.maintain();
+    assert.deepEqual(out, { checkpointed: true, optimized: true });
+  });
+
   it('lastSelfMessageAt 直接查库，不被最近 100 条窗口截断', (t) => {
     const { store } = fixture(t);
     const base = Date.now() - 200_000;
@@ -198,6 +205,74 @@ describe('ChatStore', () => {
       '在途证据必须保留，finishSend/hasUncertainEffects 还要用');
     store.finishSend(live, { error: 'response lost' });
     assert.equal(store.reconcileUnknownOperation(live, 'sent').result, 'sent');
+  });
+
+  it('单条核对带 chatKey：跨会话的 operation 一律视为不存在，不能改判', (t) => {
+    const { store } = fixture(t);
+    const other = store.beginSend('group:8', 'run-8', { type: 'text', text: 'other chat' });
+    store.finishSend(other, { error: 'response lost' });
+    assert.equal(store.listUnknownOperations('group:8').length, 1);
+
+    assert.equal(store.reconcileUnknownOperation(other, 'sent', 'group:9'), null,
+      'URL 会话不匹配时必须返回 null，不能按 id 直接改掉别的会话');
+    assert.equal(store.listUnknownOperations('group:8').length, 1, '被拒绝后行仍是 unknown');
+    assert.equal(store.reconcileUnknownOperation(other, 'failed', 'group:8').result, 'failed');
+  });
+
+  it('批量核对 unknown：只动指定会话/选中行，最后一次核对才释放 held', (t) => {
+    const { store } = fixture(t);
+    const message = store.appendIncoming('group:9', {
+      mid: 902, ts: Date.now(), senderId: '42', text: 'batch unknown'
+    });
+    const lease = store.claimUnread('group:9');
+    const first = store.beginSend('group:9', lease.id, { type: 'text', text: 'one' });
+    const second = store.beginSend('group:9', lease.id, { type: 'poke', targetUserId: '42' });
+    store.finishSend(first, { error: 'response lost' });
+    store.finishSend(second, { error: 'response lost' });
+    store.failLease(lease.id, 'Delivery uncertain; batch held for operator review');
+    // 另一个会话也有一条 unknown：批量核对必须按 chatKey 隔离。
+    const other = store.beginSend('group:8', 'other-run', { type: 'text', text: 'other' });
+    store.finishSend(other, { error: 'response lost' });
+
+    const summary = store.unknownSummary('group:9');
+    assert.equal(summary.total, 2);
+    assert.ok(summary.oldestAgeMs >= 0);
+
+    const one = store.reconcileUnknownRows({ chatKey: 'group:9', ids: [first], result: 'sent' });
+    assert.equal(one.reconciled, 1);
+    assert.equal(one.remaining, 1, '同一 run 还有一条没核对，held 不能提前放');
+    assert.equal(store.findByMid('group:9', message.mid).state, 'held');
+    assert.equal(store.listUnknownOperations('group:8').length, 1, '其他会话不受影响');
+
+    const rest = store.reconcileUnknownRows({ chatKey: 'group:9', result: 'failed' });
+    assert.equal(rest.reconciled, 1);
+    assert.equal(rest.remaining, 0);
+    assert.equal(store.listUnknownOperations('group:9').length, 0);
+    assert.equal(store.findByMid('group:9', message.mid).state, 'acked', '整个 run 核对完要释放 held');
+    assert.equal(store.getChatMeta('group:9').held, 0);
+  });
+
+  it('unknown 可按年龄过滤；超期自动释放只清“整段会话都安静”的记录', (t) => {
+    const { store } = fixture(t);
+    const at = (id, days) => store.db.prepare('UPDATE outbox SET created_at=? WHERE id=?')
+      .run(Date.now() - days * 86_400_000, id);
+    const old = store.beginSend('group:7', 'run-old', { text: 'old' });
+    const recent = store.beginSend('group:7', 'run-recent', { text: 'recent' });
+    store.finishSend(old, { error: 'response lost' });
+    store.finishSend(recent, { error: 'response lost' });
+    at(old, 10);
+    assert.equal(store.listUnknownOperations('group:7', 100, {
+      olderThanMs: 5 * 86_400_000
+    }).map((row) => row.id).join(','), old, '过滤只返回超过 5 天的行');
+    assert.ok(store.listUnknownOperations('group:7').every((row) => row.ageMs >= 0));
+
+    // 同会话还有新的 unknown：整段会话不算“安静”，自动释放必须放弃。
+    assert.equal(store.autoReleaseStaleUnknown(5).released, 0);
+    at(recent, 6);
+    const out = store.autoReleaseStaleUnknown(5);
+    assert.equal(out.released, 2);
+    assert.equal(store.listUnknownOperations('group:7').length, 0);
+    assert.equal(store.autoReleaseStaleUnknown(0).released, 0, '0 = 关闭，且不能清任何行');
   });
 
   it('persists leases and recovers an interrupted unsent run after reopening', (t) => {

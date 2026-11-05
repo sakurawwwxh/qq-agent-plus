@@ -28,6 +28,10 @@ function mcpServerRowHtml(server = {}, { open = false } = {}) {
         <div class="field"><label>工作目录（可选）</label><input class="mcp-cwd" type="text" value="${esc(server.cwd || '')}" placeholder="/srv/workspace" /></div>
         <div class="field"><label>环境变量（JSON 对象，可留空）</label><input class="mcp-env" type="text" value="${env}" placeholder='{"TOKEN":"..."}' /></div>
         <div class="field-row">
+          <div class="field"><label><input class="mcp-permission-isolation" type="checkbox" ${server.permissionIsolation === true ? 'checked' : ''} /> Node 权限隔离（只读入口目录）</label></div>
+          <div class="field"><label>堆上限 MB（隔离时生效）</label><input class="mcp-memory" type="number" min="0" max="4096" value="${esc(server.memoryMb ?? 0)}" /></div>
+        </div>
+        <div class="field-row">
           <div class="field"><label>挂载方式</label><select class="mcp-mounting">
             <option value="direct" ${mounting === 'direct' ? 'selected' : ''}>direct（每个工具一个定义）</option>
             <option value="meta" ${mounting === 'meta' ? 'selected' : ''}>meta（只挂 mcp_call）</option>
@@ -304,7 +308,9 @@ function bindExtensionSettings() {
         env: {},
         timeoutMs: 30000,
         maxCallsPerMinute: 30,
-        toolMounting: 'direct'
+        toolMounting: 'direct',
+        permissionIsolation: false,
+        memoryMb: 0
       }, { open: true }));
     });
   }

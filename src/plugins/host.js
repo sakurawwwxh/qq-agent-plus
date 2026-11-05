@@ -83,6 +83,7 @@ export class PluginHost {
     this.capInFlight = 0;          // 当前在途能力调用数
     this.mediaInFlight = 0;        // 其中媒体类（下载/合并/抽帧）并发
     this.capWindow = [];           // 媒体/HTTP/日志能力的一分钟窗口
+    this.capSyncWindow = [];       // 其余能力（storage/secrets/quota/approval）的宽桶窗口
     this.rssKb = 0;                // 最近一次采样到的常驻内存（Linux 读 /proc，其他平台 0）
     this.unconfined = false;
     this.netIsolated = false;
@@ -311,8 +312,10 @@ export class PluginHost {
 
   /**
    * 能力调用闸门（插件→宿主方向）：并发上限对所有能力生效，媒体类再加"同时 1 个"。
-   * 媒体/HTTP/日志额外限频 —— 这三类是内存与磁盘的主要放大器（80MB 下载、整包进内存、
-   * 无限刷日志）；storage 这类高频小调用不按分钟限，避免把正常插件卡死。
+   * 媒体/HTTP/日志是内存与磁盘的主要放大器（80MB 下载、整包进内存、无限刷日志），
+   * 按 callsPerMinute 限；其余能力（storage/secrets/quota/approval）走更宽的 6 倍桶 ——
+   * 它们虽是高频小调用，但 secrets.get / quota.consume 每次都同步读盘+解密，
+   * 完全不限时插件可以在 stdio 上连发把宿主事件循环占住（2026-11-04 复核 P2）。
    */
   #allowCapability(method) {
     const now = this.now();
@@ -326,16 +329,17 @@ export class PluginHost {
       this.stats.busy = (this.stats.busy || 0) + 1;
       throw Object.assign(new Error(`插件 ${this.id} 已有媒体任务在跑，请稍后重试`), { code: 'E_BUSY' });
     }
-    if (media || /^http\./.test(method) || /^log\./.test(method)) {
-      const limit = Number(this.limits.callsPerMinute) || 0;
-      if (limit > 0) {
-        this.capWindow = this.capWindow.filter((at) => at > now - 60000);
-        if (this.capWindow.length >= limit) {
-          this.stats.rateLimited = (this.stats.rateLimited || 0) + 1;
-          throw Object.assign(new Error(`插件 ${this.id} 能力调用太频繁（每分钟上限 ${limit} 次，来源：${method}）`), { code: 'E_RATE_LIMIT' });
-        }
-        this.capWindow.push(now);
+    const heavy = media || /^http\./.test(method) || /^log\./.test(method);
+    const limit = Number(this.limits.callsPerMinute) || 0;
+    if (limit > 0) {
+      const cap = heavy ? limit : limit * 6;
+      const key = heavy ? 'capWindow' : 'capSyncWindow';
+      this[key] = this[key].filter((at) => at > now - 60000);
+      if (this[key].length >= cap) {
+        this.stats.rateLimited = (this.stats.rateLimited || 0) + 1;
+        throw Object.assign(new Error(`插件 ${this.id} 能力调用太频繁（每分钟上限 ${cap} 次，来源：${method}）`), { code: 'E_RATE_LIMIT' });
       }
+      this[key].push(now);
     }
   }
 

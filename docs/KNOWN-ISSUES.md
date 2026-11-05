@@ -7,17 +7,18 @@
 
 ### 2026-11-03 MCP 隔离遗留
 
-- **MCP stdio server 没有复用插件的 OS 隔离**：MCP 子进程以宿主用户身份运行，能读数据目录、
-  网络与宿主环境（环境变量已只带 allowlist，但不是 `--permission`/netns）。这属于"管理员显式
-  配置并启用的第三方命令"，不是远程触发；但一旦导入的 npm/OCI 包本身有恶意代码，隔离面小于插件。
-  已先收紧 Registry 的 `runtimeHint`/`runtimeArguments`/env（未知运行器/换包 flag/启动器变量
-  一律丢弃）。彻底修法是把 MCP 启动接到插件宿主同一套权限/网络隔离，工作量大，单列一批。
-- **outbox 的 `unknown`/`sending` 仍没有年龄上限**：启动会把遗留 `sending` 转 `unknown` 并纳入
-  健康巡检，但只要还有 unknown，legacy 闸门仍会挡住该会话；没有连续运行的自动 TTL 释放。
-  修法需要给 outbox 记录 created_at 并按年龄降级为“仅审计、不再阻塞新消息”，等产品口径确认。
-- **backup/restore 没有信号处理与跨进程互斥**：SSH 里 Ctrl+C/SIGHUP 会跳过 finally，可能留下
-  “服务停着 + 半套恢复数据”或明文 `.plain`；同秒启动两个备份会撞同名文件，备份/恢复也可能
-  交错。修法：注册 SIGINT/SIGTERM/SIGHUP 收尾、`DATA_DIR/.maintenance.lock`、文件名加随机串。
+- **MCP stdio server 默认仍没有 OS 隔离**：MCP 子进程以宿主用户身份运行，能读数据目录、
+  网络与宿主环境（环境变量已只带 allowlist）。这属于"管理员显式配置并启用的第三方命令"，
+  不是远程触发；但一旦导入的 npm/OCI 包本身有恶意代码，隔离面小于插件。
+  已提供两个可选开关：`networkIsolation`（Linux `unshare --net`）与 `permissionIsolation`
+  （Node 权限模型：只读入口目录、禁止写/子进程/Worker，只对 `command=node` 生效）。两者都在
+  不支持时 fail-closed。**未覆盖**：`npx`/`docker` 外壳进程无法套权限模型，Windows/macOS
+  没有 netns；这类 server 仍需管理员自行信任，彻底修法要引入外部沙箱/容器运行时。
+- **outbox 的 `unknown` 年龄上限默认关闭**：启动和运行期都会把遗留/卡住的 `sending`
+  降级为 `unknown`，进入人工核对清单；控制台已支持筛选/全选/批量核对/导出 JSON，
+  并有 `outbox.unknownAutoReleaseDays`（默认 0，上限 90）让"整段会话都安静超过 N 天"的
+  unknown 按已发送留痕自动释放。默认关闭是产品口径：自动释放意味着放弃人工确认，
+  可能漏掉一条实际未送达的回复；开启前应先在测试群观察。
 
 ### 2026-11-02 全项目审查遗留
 
@@ -71,23 +72,14 @@ quiet 保存后误报未保存、保存双写/暂停半生效/并发保存旧快
 
 **插件 / MCP**
 
-- 本地安装的**两段式确认 UI** 仍未做：API（`expectedDiffHash`）与 CLI（`--expect-diff`）
-  已支持，但控制台"安装文件"遇到 E_UPGRADE_CONFIRM 只会显示错误，不会引导用户确认；
-  install-file/CLI 升级后也不做 `resetPluginGrants`/关闭写开关（`src/console/app.js:3704`、
-  `src/ops.js:2704`）。
-- `media.describe` / `media.asr.transcribe` 不消费 ASR/视觉配额，插件可无限放大付费调用
-  （`src/plugins/capabilities.js:459-497`）。
-- `media.merge` / `media.frames` 不检查磁盘配额，输入各自低于单文件上限时可写出远超
-  `plugins.limits.diskMb` 的产物（`src/plugins/capabilities.js:416-456`）。
+- `media.describe` 的视觉调用没有用户可调的配额，目前只有"每插件 60 次/小时"的硬上限
+  （2026-11-04 已加，防止无限放大付费调用）；`media.asr.transcribe` 已复用宿主 ASR 配额。
+  要按插件配置额度，需要在 manifest 里引入统一的付费能力键（`src/plugins/capabilities.js`）。
 - 待批审批只保存 `actionPreview` 前 300 字，管理员批准的是全文哈希
   （`src/plugins/grants.js:290`、`src/plugins/registry.js:686`）。
-- CLI 卸载不清授权与凭据，重装同 id 会继承旧批准（`src/ops.js:2692`；控制台路径有清理）。
-- MCP server 进程退出后不会自动重启（单次超时不再置 not-ready；连续 3 次超时才会标记未就绪）。
 - 控制台备份/恢复若把备份口令放在 `QQ_AGENT_BACKUP_KEY`，会经 `systemd-run --setenv` 进入
   进程参数与 transient unit 环境（同机可见）；建议改为 0600 临时 key 文件 + `*_KEY_FILE`
   （`src/console/app.js:5939`）。
-- `web_search` 没有把本轮 AbortSignal 传进聚合搜索链，超时/暂停后底层 provider 请求仍会
-  跑 60–75s，批次重试时可能重复计费（`src/tools/tools-core.js:3126`）。
 - cron 提醒在 DST 切换日按传统 cron 语义处理：秋季回拨的重复小时会触发两次，春季跳过的
   挂钟时间当天不触发（daily/weekly 则顺延到跳变后）。这是有意保留的差异，因为 cron 本身
   允许一天多次触发，不能按"每个本地日期一次"去重（`src/core/reminders.js:198`）。
@@ -136,12 +128,6 @@ quiet 保存后误报未保存、保存双写/暂停半生效/并发保存旧快
 修法方向：把媒体类工具的超时上限放宽（manifest 目前最大 300 秒）并与 ASR 上限对齐，
 或按视频时长分段转写、每段独立超时。
 
-### 提醒播报确认（已修复，2026-11-03）
-
-`orchestrator` 现在只认本轮 `wake()` 实际产生的 `result.sent`，日报/游戏/插件的自发消息
-不会再被误当成提醒已播报；`test/orchestrator.test.mjs` 有对应回归。仍保留的近似语义只在
-“同一轮批量提醒中部分发送”时存在，见 `docs/CHANGES.md` 的第五轮记录。
-
 ### 只读挂载的数据目录无法用在线 backup API 备份（2026-10-21 复查记录）
 
 `manage.sh backup` 对所有 `*.sqlite` 走 SQLite 在线备份。SQLite 3.22+ 在"文件可读、目录不可写"
@@ -186,20 +172,6 @@ id 集合（`activeRuns` 的 sessionId）传入 store，清理时排除。留待
 （重复贴一次表情、重复设一次签名，结果相同），且各自有 24h 闸门配额封顶。
 真要收口需要让这些工具也走发送队列（或明确"哪些动作允许不确定地重复"），涉及写路径重构，
 单独排期。
-
-### 控制台 `?token=` 在所有已认证路由被接受（已知搁置项，2026-09-24 评估）
-
-**已修复（2026-10-06，见 v0.7.8 后的复审批次）**：`authorize()` 已把查询串令牌收窄到
-`/api/events`（EventSource 不能自定义请求头，是唯一有正当理由的消费方）；其余路由只认
-cookie 与 `x-console-token` 头，`src/ops.js` 的两处调用方也已改为传请求头。
-下面保留当初的评估记录备查。
-
-`docs/LINUX.md` 写的是"`?token=` 只有自动登录捷径接受"，实际 `authorize()` 对**所有** /api/*
-路由都接受查询串令牌（与 cookie、`x-console-token` 并列的第三条通道）。要收窄就得改
-`authorize()` 本身——它同时服务 SSH 隧道、免密登录与 cookie 三条路径，回归风险高，单独排期。
-缓解现状：控制台自动登录成功后会从地址栏剥掉明文令牌；控制台默认只监听本机/内网，且令牌本就是
-完全管理凭据（拿到它的人可以直接读明文 Key）。在修掉之前，**不要把带 `?token=` 的控制台链接
-发给不受信任的聊天对象或贴到公开场合**。
 
 - **非 Linux 平台拦不住插件网络**：Node 的权限模型覆盖 fs / child_process / worker / addons，但
   **不覆盖网络**（`--allow-net` 在本机 v24 与生产 v22.23.2 上都是 `bad option`）。Linux 上用网络命名空间

@@ -393,6 +393,12 @@ export const DEFAULT_CONFIG = {
     hardSplitAt: 4000,      // QQ 硬限制切分（0 = 不限制）
     typingIndicator: true   // 私聊发言前亮「正在输入」（群聊 QQ 没有这个能力）
   },
+  // 外发账本策略
+  outbox: {
+    // 超过 N 天且同会话此后再无新 unknown 的记录，自动按“已发送”留痕释放（不再阻塞会话）。
+    // 默认 0 = 关闭；开启前先确认这个群的发送结果可以接受人工不核对。
+    unknownAutoReleaseDays: 0
+  },
   // 人类化（可选）：只影响"怎么发"，不改模型内容本身。
   // 默认关闭：延迟发送会改变用户可感知的节奏，升级后应由管理员显式打开。
   humanize: {
@@ -824,7 +830,9 @@ export const DEFAULT_CONFIG = {
     servers: []
     // 单个 server 形状：
     // { id, enabled, transport: 'stdio', command, args: [], env: {}, cwd,
-    //   timeoutMs: 30000, maxCallsPerMinute: 30, toolMounting: 'direct' | 'meta' }
+    //   timeoutMs: 30000, maxCallsPerMinute: 30, toolMounting: 'direct' | 'meta',
+    //   networkIsolation: false, permissionIsolation: false, memoryMb: 0 }
+    // permissionIsolation 只对 command=node 的 server 生效：只读入口目录，禁止写/子进程/Worker。
   },
   // 群管理动作（禁言/踢人/撤回/设管理员）：只对全局管理员开放。
   moderation: {
@@ -2384,6 +2392,15 @@ export function updateConfig(patch, { force = false } = {}) {
       throw invalidConfig('审批管理员 QQ 必须同时加入私聊白名单');
     }
   }
+  const outbox = next.outbox || {};
+  next.outbox = {
+    ...outbox,
+    // 0 = 关闭；上限 90 天，避免误填成“永久自动释放”。
+    unknownAutoReleaseDays: Math.min(
+      90,
+      Math.max(0, Math.round(Number(outbox.unknownAutoReleaseDays) || 0))
+    )
+  };
   const incidentPilot = next.incidentPilot || {};
   next.incidentPilot = {
     ...incidentPilot,

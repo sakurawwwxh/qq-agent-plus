@@ -8,10 +8,11 @@ import { fileURLToPath } from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ops = fs.readFileSync(path.join(repo, 'src', 'ops.js'), 'utf8');
+const tarSource = fs.readFileSync(path.join(repo, 'src', 'core', 'backup-tar.js'), 'utf8');
 const keySource = fs.readFileSync(path.join(repo, 'src', 'core', 'backup-key.js'), 'utf8');
 
 test('备份：数据目录软链按真实目录打包，恢复替换真实目录', () => {
-  assert.match(ops, /fs\.realpathSync\(dataDir\)[\s\S]{0,160}path\.dirname\(sourceDir\)/,
+  assert.match(tarSource, /fs\.realpathSync\(dataDir\)[\s\S]{0,160}path\.dirname\(sourceDir\)/,
     'tar 打包必须解析 dataDir 软链，否则会归档 symlink 条目');
   assert.match(ops, /fs\.realpathSync\(cfg\.dataDir\)[\s\S]{0,240}const pre = `\$\{targetDir\}/,
     '恢复必须替换软链指向的真实目录，保留软链布局');

@@ -1297,6 +1297,12 @@
   },
   {
     "method": "POST",
+    "path": "/^\\/api\\/chats\\/(group|private)_(\\d+)\\/unknown-operations\\/reconcile$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
     "path": "/^\\/api\\/incidents\\/(inc_[a-f0-9]{16})\\/(acknowledge|resolve)$/i",
     "auth": true,
     "keyEndpoint": false

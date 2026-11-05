@@ -441,3 +441,19 @@ test('黑名单规则：保存时非数组直接 400；手改配置加载时丢�
     reloadConfig();
   }
 });
+
+test('unknown 自动释放策略：默认关闭，越界值收敛到 0–90 天', () => {
+  const file = path.join(dir, 'config.json');
+  const original = fs.readFileSync(file, 'utf8');
+  try {
+    assert.equal(DEFAULT_CONFIG.outbox.unknownAutoReleaseDays, 0, '默认关闭');
+    // 归一化在保存路径（updateConfig）跑，与 incidentPilot 的数值段同口径。
+    updateConfig({ outbox: { unknownAutoReleaseDays: 999 } });
+    assert.equal(getConfig().outbox.unknownAutoReleaseDays, 90, '上限 90 天');
+    updateConfig({ outbox: { unknownAutoReleaseDays: -3 } });
+    assert.equal(getConfig().outbox.unknownAutoReleaseDays, 0, '负数按关闭处理');
+  } finally {
+    fs.writeFileSync(file, original);
+    reloadConfig();
+  }
+});
