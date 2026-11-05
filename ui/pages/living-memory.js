@@ -378,6 +378,7 @@ function settingsHtml() {
     <div class="lm-card-head"><div><span class="lm-section-kicker">生命周期</span><h3>运行、隐私与模式</h3><p>关闭后不写入、不召回；影子模式先记录召回结果，确认质量后再注入回复。</p></div></div>
     <div class="lm-option-grid">
       ${settingCheck('lm-enabled', cfg.enabled === true, '启用长期记忆', '总开关；关闭后不产生任何模型调用')}
+      ${settingCheck('lm-auto-capture', cfg.autoCapture !== false, '自动提炼记忆', '关掉后只保留手动新建与召回；不会因为聊天自动写入新记忆')}
       ${settingCheck('lm-private', cfg.allowPrivate === true, '允许私聊自动记忆', '默认只记群聊，避免把私聊内容带进其他会话')}
       ${settingCheck('lm-global', cfg.allowGlobal === true, '允许管理员全局知识', '新增 owner-global 范围，只给管理员本人使用')}
       ${settingCheck('lm-shadow-semantic', cfg.shadowSemantic === true, '影子模式也跑语义召回', '会调用 Embedding；关掉可省成本')}
@@ -395,6 +396,7 @@ function settingsHtml() {
     <div class="lm-card-head"><div><span class="lm-section-kicker">性能与范围</span><h3>提炼节奏与保留</h3><p>这些参数只在启用后生效；改完点下方保存。</p></div></div>
     <div class="lm-form-grid">
       <label class="lm-field">自动总结阈值（回合）<input id="lm-capture-min" type="number" min="2" max="60" value="${num(cfg.captureMinMessages) || 6}" /></label>
+      <label class="lm-field">空闲多久后提炼（秒）<input id="lm-capture-idle" type="number" min="10" max="1800" step="5" value="${Math.round((num(cfg.captureIdleMs) || 90000) / 1000)}" /></label>
       <label class="lm-field">召回等待上限（毫秒）<input id="lm-recall-timeout" type="number" min="300" max="5000" step="100" value="${num(cfg.recallTimeoutMs) || 1800}" /></label>
       <label class="lm-field">来源回合保留（天）<input id="lm-turn-retention" type="number" min="1" max="365" value="${num(cfg.turnRetentionDays) || 7}" /></label>
       <label class="lm-field lm-field-wide">启用的群号（留空＝所有群）<input id="lm-groups" value="${esc((cfg.groups || []).join(','))}" placeholder="123456, 234567" /></label>
@@ -525,18 +527,36 @@ async function saveConfig(button) {
   button.disabled = true;
   try {
     const cfg = config();
+    // 清空/非法 = 保持原值，不能把空串当 0 再夹成最小值（那会把“删掉重填”变成最激进配置）。
+    const intValue = (selector, fallback) => {
+      const raw = String($(selector)?.value ?? '').trim();
+      const n = Number(raw);
+      return raw !== '' && Number.isFinite(n) ? n : fallback;
+    };
+    const autoBox = $('#lm-auto-capture');
+    const idleFallbackSec = Math.round((num(cfg.captureIdleMs) || 90000) / 1000);
+    const idleRaw = intValue('#lm-capture-idle', idleFallbackSec);
+    // 0/低于下限 = 保持原值；运行期本身也把下限收在 10 秒，不应借“填 0”把 90 秒静默变成 10 秒。
+    const captureIdleSec = Math.max(10, Math.min(1800, idleRaw >= 10 ? idleRaw : idleFallbackSec));
+    const checkedValue = (selector, fallback) => {
+      const el = $(selector);
+      return el ? el.checked : fallback;
+    };
+    const modeBox = $('#lm-mode');
     const patch = {
-      enabled: $('#lm-enabled')?.checked === true,
+      enabled: checkedValue('#lm-enabled', cfg.enabled === true),
       graduated: cfg.graduated === true,
-      mode: $('#lm-mode')?.value === 'active' ? 'active' : 'shadow',
-      allowPrivate: $('#lm-private')?.checked === true,
-      allowGlobal: $('#lm-global')?.checked === true,
-      shadowSemantic: $('#lm-shadow-semantic')?.checked === true,
-      turnRetentionDays: Number($('#lm-turn-retention')?.value),
-      maxInjectChars: Number($('#lm-max-chars')?.value),
-      maxRecallItems: Number($('#lm-max-items')?.value),
-      recallTimeoutMs: Number($('#lm-recall-timeout')?.value),
-      captureMinMessages: Number($('#lm-capture-min')?.value),
+      mode: modeBox ? (modeBox.value === 'active' ? 'active' : 'shadow') : (cfg.mode === 'active' ? 'active' : 'shadow'),
+      autoCapture: autoBox ? autoBox.checked : cfg.autoCapture !== false,
+      captureIdleMs: Math.round(captureIdleSec * 1000),
+      allowPrivate: checkedValue('#lm-private', cfg.allowPrivate === true),
+      allowGlobal: checkedValue('#lm-global', cfg.allowGlobal === true),
+      shadowSemantic: checkedValue('#lm-shadow-semantic', cfg.shadowSemantic === true),
+      turnRetentionDays: Math.max(1, Math.min(365, intValue('#lm-turn-retention', num(cfg.turnRetentionDays) || 7))),
+      maxInjectChars: Math.max(300, Math.min(8000, intValue('#lm-max-chars', num(cfg.maxInjectChars) || 2400))),
+      maxRecallItems: Math.max(1, Math.min(16, intValue('#lm-max-items', num(cfg.maxRecallItems) || 6))),
+      recallTimeoutMs: Math.max(300, Math.min(5000, intValue('#lm-recall-timeout', num(cfg.recallTimeoutMs) || 1800))),
+      captureMinMessages: Math.max(2, Math.min(60, intValue('#lm-capture-min', num(cfg.captureMinMessages) || 6))),
       groups: parseGroups($('#lm-groups')?.value)
     };
     const result = await api('/api/config', { method: 'POST', body: JSON.stringify({ livingMemory: patch }) });

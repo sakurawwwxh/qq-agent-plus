@@ -31,7 +31,7 @@ async function boot(t) {
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   await app.start();
-  return { port };
+  return { port, app };
 }
 
 function get(port, urlPath) {
@@ -84,6 +84,11 @@ test('/api/metrics：真实请求计数、进程指标、脱敏；prometheus 输
   assert.equal(typeof body.outbox.total, 'number');
   assert.equal(typeof body.outbox.byState, 'object');
   assert.equal(typeof body.queues.oldestAgeMs, 'number');
+  assert.equal(typeof body.unknown.total, 'number', 'unknown 数量要进指标');
+  assert.equal(typeof body.unknown.oldestAgeMs, 'number');
+  assert.equal(typeof body.mcp.restartAttempts, 'number', 'MCP 重启次数要进指标');
+  assert.ok(Array.isArray(body.mcp.servers));
+  assert.ok(body.host === null || typeof body.host.disk?.usedPercent === 'number');
   assert.equal(typeof body.llm.requests, 'number');
   assert.equal(typeof body.llm.failures, 'number');
   assert.equal(typeof body.llm.retries, 'number');
@@ -99,9 +104,24 @@ test('/api/metrics：真实请求计数、进程指标、脱敏；prometheus 输
   assert.match(prometheus.text, /qqagent_outbox_pending \d+/);
   assert.match(prometheus.text, /qqagent_inbound_pending \d+/);
   assert.match(prometheus.text, /qqagent_inbound_oldest_age_seconds \d+/);
+  assert.match(prometheus.text, /qqagent_outbox_unknown \d+/);
+  assert.match(prometheus.text, /qqagent_outbox_unknown_oldest_age_seconds \d+/);
+  assert.match(prometheus.text, /qqagent_mcp_restart_attempts_total \d+/);
+  assert.match(prometheus.text, /qqagent_disk_used_ratio [\d.]+/);
   assert.match(prometheus.text, /qqagent_llm_requests_total \d+/);
   assert.match(prometheus.text, /qqagent_llm_failures_total \d+/);
   assert.match(prometheus.text, /qqagent_event_loop_utilization [\d.]+/);
+});
+
+test('Prometheus qqagent_outbox_pending 取 sending 桶，不是不存在的 pending 字段', async (t) => {
+  const { port, app } = await boot(t);
+  const insert = app.store.db.prepare('INSERT INTO outbox(id,run_id,chat_key,state,payload) VALUES (?,?,?,?,?)');
+  insert.run('m1', 'r1', 'group:1', 'sending', '{}');
+  insert.run('m2', 'r1', 'group:1', 'unknown', '{}');
+  insert.run('m3', 'r1', 'group:1', 'sent', '{}');
+  const prometheus = await get(port, '/api/metrics?format=prometheus');
+  assert.match(prometheus.text, /qqagent_outbox_pending 1\n/);
+  assert.match(prometheus.text, /qqagent_outbox_unknown 1\n/);
 });
 
 test('/api/health 返回最近巡检结果（没有文件时 health=null）', async (t) => {

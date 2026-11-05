@@ -126,6 +126,7 @@ import { currentProviders } from './providers.js';
 import { buildSlangContextForChat } from '../console/asset-observer.js';
 import { parseInlineToolCalls } from '../tools/inline-tools.js';
 import { createLogger, newTraceId, withTrace } from './logger.js';
+import { releaseStaleUnknown } from './outbox-auto-release.js';
 import { ttsConfigured } from '../llm/tts-openai.js';
 
 const log = createLogger('orchestrator');
@@ -674,6 +675,7 @@ export class Orchestrator {
    * 而它们的 outbox 如果已经终结，这一轮就该解除会话阻塞，不能等人工点「核对」。
    */
   releaseResolvedHeld() {
+    releaseStaleUnknown({ store: this.store, effects: this.effects, emit: this.emit.bind(this) });
     let result;
     try {
       result = this.store.autoReleaseResolvedHeld();
@@ -713,9 +715,15 @@ export class Orchestrator {
 
   startRecoveryLoop() {
     clearInterval(this.retryTimer);
+    // sending 行的年龄上限：一次发送最多等 runTimeoutMs，再留 60 秒给记账。
+    // 运行期也必须收口 —— 只在启动时收（markStaleSendingUnknown）会让记账失败的
+    // 那一行把会话永久挡到下一次重启（2026-11-04 复核 P1）。
+    const staleSendingMs = () => Math.max(5 * 60_000,
+      (Number(getConfig().api?.runTimeoutMs) || 180_000) + 60_000);
     // 启动首轮与周期 tick 同口径：SQLITE_BUSY/磁盘暂时不可用不能把整个进程带崩，
     // 更不能让 retryTimer 没装上。下一轮 5 秒后重试。
     try {
+      this.store.ageStaleSending?.(staleSendingMs());
       this.store.recoverExpired(Date.now(), { live: this.liveLeases });
       this.releaseResolvedHeld();
       this.releaseStaleDeferred();
@@ -727,6 +735,7 @@ export class Orchestrator {
       // 兜底回收不能把进程带走：SQLITE_BUSY、磁盘满、库损坏都可能在恢复期间抛出，
       // 而 server.js 的 uncaughtException 会直接 process.exit(1)。下一个 tick 再试即可。
       try {
+        this.store.ageStaleSending?.(staleSendingMs());
         this.store.recoverExpired(Date.now(), { live: this.liveLeases });
         this.releaseResolvedHeld();
         this.releaseStaleDeferred();
@@ -835,7 +844,8 @@ export class Orchestrator {
         return;
       }
     }
-    const directDelay = Math.max(0, Math.min(2000, Number(getConfig().directWakeDelayMs) || 300));
+    const directCfgMs = Number(getConfig().directWakeDelayMs);
+    const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
     this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
   }
 
@@ -1087,7 +1097,7 @@ export class Orchestrator {
     this.#applySessionTrigger(session, predicted, { chatKey });
   }
 
-  scheduleWake(chatKey, delay = null, { direct = false } = {}) {
+  scheduleWake(chatKey, delay = null, { direct = false, skipWaitingSession = false } = {}) {
     if (this.paused || this.aborted || !canRun(chatKey)) return;
     if (!this.#chatRuntimeDecision(chatKey).allowed) return;
     const now = Date.now();
@@ -1107,7 +1117,9 @@ export class Orchestrator {
     //    就**不创建**"等待中"会话 —— 否则用户会在会话页看到一堆
     //    等半天最后变成"中止"的条目，既干扰又让人以为出了错。
     //    窗口结束前若来了新消息且命中，届时再创建（见下面 pendingSessions 分支）。
-    if (ms > 0 && !this.runningChats.has(chatKey)) {
+    // 因全局并发已满而 3 秒后重试时不建等待会话：preflight 每次都会把它丢弃再
+    // 重排，等于每个被阻塞的会话每 3 秒创建+落盘+删除一次（2026-11-04 复核 P2）。
+    if (ms > 0 && !skipWaitingSession && !this.runningChats.has(chatKey)) {
       // 概率档下"要不要回"是随机的：预判与实跑必须是同一次掷骰，
       // 否则会出现"会话页显示等待中、随后又干净消失"或者反过来的自相矛盾
       // （2026-09-22 审查发现）。这里掷一次存起来，wake 时取走。
@@ -1377,7 +1389,7 @@ export class Orchestrator {
     // 全局并发限制：满了就稍后重试
     if (this.runningChats.size >= Math.max(1, Number(getConfig().maxConcurrentRuns) || 2)) {
       if (waitingSessionId) this.#discardWaiting(waitingSessionId);
-      this.scheduleWake(chatKey, 3000);
+      this.scheduleWake(chatKey, 3000, { skipWaitingSession: true });
       return false;
     }
     return true;
@@ -2978,7 +2990,8 @@ export class Orchestrator {
         const pending = this.store.peekUnread(chatKey, this.#unreadScanLimit()) || [];
         const direct = chatKey.startsWith('private:')
           || pending.some((m) => mentionsOrPokesBot(m, this.onebot.selfId));
-        const directDelay = Math.max(0, Math.min(2000, Number(cfgNow.directWakeDelayMs) || 300));
+        const directCfgMs = Number(cfgNow.directWakeDelayMs);
+        const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
         log.info(`[wake] ${chatKey} 已有未读，主动唤醒改为普通回复`);
         this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
         continue;
@@ -3211,9 +3224,9 @@ export class Orchestrator {
         return 'exhausted';
       };
       const note = buildReminderNote(batch.map((pair) => pair.it), { now });
-      // 只把**本次唤醒新产生**的 unknown 当成本轮结果不确定：历史遗留的 unknown/sending
-      // （上次硬崩溃、别的 run 的残行）不该让每条提醒一上来就放弃重试。
-      const unknownBefore = new Set(this.store.listUnknownOperations(chatKey).map((op) => op.id));
+      // 只把本次唤醒新产生的 unknown 当本轮不确定；includeSending 覆盖“记账失败留在 sending”
+      // 的行，否则人工清掉 held 后提醒会重发一遍。
+      const unknownBefore = new Set(this.store.listUnknownOperations(chatKey, 100, { includeSending: true }).map((op) => op.id));
       for (const pair of batch) this.#remindersInFlight.add(pair.it.id);
       this.wake(chatKey, { manual: true, paced: true, wakeNote: note })
         .then((result) => {
@@ -3226,9 +3239,9 @@ export class Orchestrator {
             log.info(`[reminder] 已播报 ${batch.length} 条：${chatKey} ${batch.map((pair) => String(pair.it.text)).join(' / ')}`);
             return;
           }
-          // 发送结果不确定（outbox unknown）时绝不自动重试：换一轮 lease 后
+          // 发送结果不确定（outbox unknown/sending）时绝不自动重试：换一轮 lease 后
           // 原来的 hasUncertainEffects 看不到这批副作用，重说一遍就会重复提醒。
-          const uncertain = this.store.listUnknownOperations(chatKey)
+          const uncertain = this.store.listUnknownOperations(chatKey, 100, { includeSending: true })
             .some((op) => !unknownBefore.has(op.id));
           if (uncertain) {
             settleAll('unknown', { reason: 'outbox-unknown' });

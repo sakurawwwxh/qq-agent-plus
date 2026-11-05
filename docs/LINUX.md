@@ -223,7 +223,9 @@ bash deploy.sh \
 ```
 
 Create the parent directory with appropriate ownership first. Run deployment as
-the service user, not root. The installer uses sudo only for linger if required.
+the service user, not root. The installer uses sudo for linger, `loginctl`, and
+the opt-in Docker-group self-heal (`QQ_AGENT_AUTO_DOCKER_GROUP=1`); nothing else
+requires root.
 When updating, `--install-dir` / `--data-dir` / `--service` / `--repository` /
 `--branch` are verified against the installation record (`.deployment.json`)
 **before anything is touched** — a mismatch is rejected with exit 2 and nothing

@@ -496,6 +496,15 @@ export class IdentityStore {
     } catch { /* 清理失败不影响运行 */ }
   }
 
+  /** 每日低峰维护：截断 WAL 并刷新查询计划统计；失败不抛（由保留期调度统一记日志）。 */
+  maintain() {
+    let checkpointed = false;
+    let optimized = false;
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); checkpointed = true; } catch { /* busy/只读副本 */ }
+    try { this.db.exec('PRAGMA optimize'); optimized = true; } catch { /* 老 SQLite 没有 optimize 也继续 */ }
+    return { checkpointed, optimized };
+  }
+
   close() {
     this.db.close();
   }

@@ -43,6 +43,8 @@ rl.on('line', (line) => {
       send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `unknown tool ${name}` } });
       return;
     }
+    // 模拟第三方 server 在调用中崩溃：不应答、直接退出。
+    if (process.env.MCP_FAKE_EXIT_ON_CALL === '1') process.exit(7);
     send({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: `echo:${args.text ?? ''}` }] } });
     return;
   }

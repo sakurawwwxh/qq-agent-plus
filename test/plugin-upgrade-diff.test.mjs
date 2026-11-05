@@ -12,6 +12,7 @@ import {
   listPendingApprovals, requestPendingApproval, resetPluginGrants, approvePendingApproval
 } from '../src/plugins/grants.js';
 import { installPlugin } from '../src/plugins/install.js';
+import { applyUpgradeSecurity } from '../src/plugins/upgrade-security.js';
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-upgrade-diff-'));
@@ -179,6 +180,34 @@ test('同版本重装：权限面变化同样要确认哈希（不能因为版�
   const preview = await install('1.0.0', { actionTarget: 'bvid' }, { previewOnly: true });
   const applied = await install('1.0.0', { actionTarget: 'bvid' }, { expectedDiffHash: preview.diff.diffHash });
   assert.equal(applied.upgraded, true);
+});
+
+test('旧清单损坏：没 force 拒绝升级，force 覆盖后按“权限已变”清授权', async (t) => {
+  const dir = tempDir(t);
+  const install = (version, options = {}, extra = {}) => installPlugin({
+    id: 'demo', tarball: pack(version, options), dataDir: dir, log: () => {}, ...extra
+  });
+  await install('1.0.0');
+  const hash = hashManifest(manifest('1.0.0'));
+  grantApproval(dir, 'demo', 'write', { target: 'BV1', manifestHash: hash });
+  assert.equal(checkApproval(dir, 'demo', 'write', { target: 'BV1', manifestHash: hash }).approved, true);
+
+  // 模拟半写/手改损坏：读不出旧权限面，不能默认“没变化”直接放行。
+  fs.writeFileSync(path.join(dir, 'plugins', 'demo', 'plugin.json'), '{"id":"demo",');
+  await assert.rejects(
+    () => install('2.0.0'),
+    (error) => error.code === 'E_UPGRADE_UNREADABLE_OLD'
+  );
+  assert.equal(fs.existsSync(path.join(dir, 'plugins', 'demo', 'index.mjs')), true, '拒绝升级不能破坏已装目录');
+
+  const forced = await install('2.0.0', {}, { force: true });
+  assert.equal(forced.upgraded, true);
+  assert.equal(forced.diff.permissionChanged, true, '读不出旧清单时 force 必须按权限变化处理');
+  assert.deepEqual(forced.diff.areas, ['unreadable-old-manifest']);
+
+  const secured = applyUpgradeSecurity(dir, forced);
+  assert.ok(secured.reset.clearedApprovals >= 1, '覆盖损坏清单后必须清掉旧授权');
+  assert.equal(checkApproval(dir, 'demo', 'write', { target: 'BV1', manifestHash: hash }).approved, false);
 });
 
 test('版本比较：数字段优先，v 前缀与预发布后缀不干扰', () => {

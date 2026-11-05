@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { createRouter } from './router.js';
 import { createMetrics } from './metrics.js';
 import { registerStorageRoutes } from './storage.js';
+import { createSseSender } from './sse.js';
+import { createNoticeDedup, emojiNoticeKey, pokeNoticeKey } from './notice-dedup.js';
 
 import { asrApiKey, asrAvailable, asrConfigured, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, conversationConfigForChat, findWhisperBinSync, getConfig, getConfigConflict, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, incidentPilotEnabled, slangPilotEnabled, storeConfigForChat, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { redactText } from '../core/redact.js';
@@ -50,6 +52,7 @@ import { registerAssetRoutes } from './routes/assets.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerPluginRoutes } from './routes/plugins.js';
 import { registerChatRoutes } from './routes/chats.js';
+import { registerOutboxRoutes } from './routes/outbox.js';
 import { registerBackupRoutes } from './routes/backup.js';
 import { registerSessionRoutes } from './routes/sessions.js';
 import { registerStatusRoutes } from './routes/status.js';
@@ -583,25 +586,8 @@ function buildApp({
     return asrInstallSnapshot();
   }
 
-  // SSE 背压与心跳（2026-10-01 审查）：页面留在后台、或者对端半开（拔网线、NAT 表项过期）时，
-  // res.write 只会往内核发送缓冲里堆，没人读就无限涨；半开连接连 close 事件都不会有，
-  // 于是永久挂在集合里，每次广播都白写一遍、还拖着内存。
-  // 两条兜底：① 写之前看 writableLength，积压超过上限就把这个客户端丢掉；
-  // ② 定期发注释行心跳，让"写不进去"在半开连接上尽早暴露（EventSource 会忽略注释行）。
-  const sseSend = (res, line) => {
-    const closed = Boolean(res.writableEnded || res.destroyed);
-    if (closed || Number(res.writableLength) > sseBacklogLimit) {
-      sseClients.delete(res);
-      const why = closed ? '连接已关闭' : `积压超过 ${Math.round(sseBacklogLimit / 1024)}KB`;
-      log(`[console] 丢弃事件流客户端（${why}）`);
-      try { res.end(); } catch { /* 已经断了 */ }
-      // 只 end() 不够：keep-alive 下 socket 会一直留到 keepAliveTimeout 才关，
-      // 对端既收不到 FIN 也不会重连，等于把"半开连接"换了个地方挂（2026-10-01 审查实测）。
-      try { res.destroy?.(); } catch { /* 已经断了 */ }
-      return;
-    }
-    try { res.write(line); } catch { sseClients.delete(res); }
-  };
+  // SSE 背压与半开连接处理在 ./sse.js（含积压丢弃与写失败时关闭 socket）。
+  const sseSend = createSseSender({ clients: sseClients, log, backlogLimit: sseBacklogLimit });
   const sseHeartbeat = setInterval(() => {
     // 遍历副本：sseSend 会顺手把坏客户端从集合里摘掉
     for (const res of [...sseClients]) sseSend(res, ': ping\n\n');
@@ -786,7 +772,9 @@ function buildApp({
     // 索引里标了 revoked 的插件一律拒载（索引改一次，所有机器下次读到就生效）
     getIndexRevoked: indexRevokedRules,
     // 插件声明 send 能力后，发言走机器人自己那条发送队列（禁言/限频/白名单/记账全在里面）
-    getSender: () => sender
+    getSender: () => sender,
+    // 无令牌 + 无网络隔离时拒绝加载插件（loopback 免鉴权会被插件进程利用）
+    getConsoleToken: () => String(getConfig().server?.token ?? '')
   });
   // OneBot 入站新鲜度告警：连接还在但 10 分钟没有任何事件/心跳（半开连接/上游卡死）——
   // 只在主进程里看着，一次发作只通知一次，恢复后复位。
@@ -986,6 +974,8 @@ function buildApp({
       // 压缩放在清理之后：先按保留期/预算删掉该删的，剩下的旧留档再压成 .gz。
       // 每次最多压 100 个，避免每日任务占满事件循环；没压完的下一轮继续。
       { name: '留档压缩', run: () => sessions.compressSessions() },
+      // WAL 截断/查询计划统计放在删除之后：先腾行，再回收文件，最后刷新统计。
+      { name: 'SQLite 维护', run: () => { store.maintain(); identityPilot?.identityStore?.maintain?.(); } },
       { name: '副作用账本', run: () => effects.prune() },
       { name: '人物记忆', run: () => memory.maybePrune(Date.now()) }
     ];
@@ -1870,6 +1860,9 @@ function buildApp({
     return true;
   }
 
+  // 拍一拍/贴表情的去重表在 ./notice-dedup.js（notice 没有平台 mid，NULL 不参与唯一约束）。
+  const noticeDedup = createNoticeDedup();
+
   async function ingestPoke(event, arrivedInactive = false) {
     // OneBot v11: notice_type=notify, sub_type=poke；群拍 target_id，私聊拍自己
     const isGroup = event.group_id != null;
@@ -1888,6 +1881,7 @@ function buildApp({
     // 会覆盖同一 QQ 在普通消息里的真实昵称 —— 记忆整理时取名字会拿到这个占位符，
     // 导致"<uin> 的名字叫（拍一拍事件）"这种脏数据。
     const chatKeyNow = `${isGroup ? 'group' : 'private'}:${id}`;
+    if (noticeDedup.alreadySeen(pokeNoticeKey(chatKeyNow, operatorId, targetId, event))) return;
     // 拍一拍/贴表情也在同一条 ingress 串行链上：成员资料查询必须同样有预算，
     // 否则一个慢 get_group_member_info 会卡住这个群的后续消息（Issue #85）。
     const nameBudget = createTimeBudget(
@@ -1940,6 +1934,7 @@ function buildApp({
     if (operatorId && operatorId === onebot.selfId) return;   // 自己贴的自己在发送时不重复记
     if (operatorId && (cfgNow.blocklist?.[groupId] || []).map(String).includes(operatorId)) return;
     const chatKeyNow = `group:${groupId}`;
+    if (noticeDedup.alreadySeen(emojiNoticeKey(chatKeyNow, operatorId, event))) return;
     const nameBudget = createTimeBudget(
       Math.max(200, Math.min(15000, Number(cfgNow.messageTypes?.enrichTimeoutMs) || 5000)),
       { signal: ingestAbort.signal }
@@ -2446,6 +2441,25 @@ function buildApp({
       inFlight: Number(plugin.status?.inFlight) || 0,
       stats: plugin.status?.stats || {}
     }));
+    // 指标页要能一眼回答“群里不回话是卡在哪”：unknown/held 是发送链，
+    // MCP 重启次数是工具链，磁盘水位是所有链的共同前提。
+    const unknown = store.unknownSummaryAll?.() || { total: 0, oldestAgeMs: 0 };
+    const mcpRows = typeof mcpManager?.status === 'function' ? mcpManager.status() : [];
+    const mcp = {
+      restarting: mcpRows.filter((row) => row.restarting).length,
+      restartAttempts: mcpRows.reduce((sum, row) => sum + (Number(row.restartAttempts) || 0), 0),
+      permissionActive: mcpRows.filter((row) => row.permissionActive).length,
+      servers: mcpRows.map((row) => ({
+        id: row.id,
+        ready: row.ready === true,
+        restarting: row.restarting === true,
+        restartAttempts: Number(row.restartAttempts) || 0,
+        permissionIsolation: row.permissionIsolation === true,
+        permissionActive: row.permissionActive === true
+      }))
+    };
+    let host = null;
+    try { host = hostStats({ dir: DATA_DIR }); } catch { host = null; }
     const snapshot = {
       ok: true,
       timestamp: Date.now(),
@@ -2461,7 +2475,10 @@ function buildApp({
         sendFailures: Number(outbox?.byState?.failed) || 0
       },
       outbox,
+      unknown,
       queues,
+      mcp,
+      host: host ? { mem: host.mem, disk: host.disk } : null,
       llm,
       plugins
     };
@@ -2473,13 +2490,23 @@ function buildApp({
         '# TYPE qqagent_http_requests_total counter',
         `qqagent_http_requests_total ${snapshot.http.requests.total}`,
         '# TYPE qqagent_outbox_pending gauge',
-        `qqagent_outbox_pending ${Number(outbox?.byState?.pending) || 0}`,
+        `qqagent_outbox_pending ${Number(outbox?.byState?.sending) || 0}`,
         '# TYPE qqagent_outbox_failed gauge',
         `qqagent_outbox_failed ${Number(outbox?.byState?.failed) || 0}`,
         '# TYPE qqagent_inbound_pending gauge',
         `qqagent_inbound_pending ${Number(queues?.byState?.pending) || 0}`,
         '# TYPE qqagent_inbound_oldest_age_seconds gauge',
         `qqagent_inbound_oldest_age_seconds ${Math.round((Number(queues?.oldestAgeMs) || 0) / 1000)}`,
+        '# TYPE qqagent_outbox_unknown gauge',
+        `qqagent_outbox_unknown ${Number(unknown?.total) || 0}`,
+        '# TYPE qqagent_outbox_unknown_oldest_age_seconds gauge',
+        `qqagent_outbox_unknown_oldest_age_seconds ${Math.round((Number(unknown?.oldestAgeMs) || 0) / 1000)}`,
+        '# TYPE qqagent_mcp_restart_attempts_total gauge',
+        `qqagent_mcp_restart_attempts_total ${mcp.restartAttempts}`,
+        '# TYPE qqagent_mcp_restarting gauge',
+        `qqagent_mcp_restarting ${mcp.restarting}`,
+        '# TYPE qqagent_disk_used_ratio gauge',
+        `qqagent_disk_used_ratio ${(Number(snapshot.host?.disk?.usedPercent) || 0) / 100}`,
         '# TYPE qqagent_llm_requests_total counter',
         `qqagent_llm_requests_total ${llm.requests}`,
         '# TYPE qqagent_llm_failures_total counter',
@@ -3246,52 +3273,7 @@ function buildApp({
     return json(res, 200, buildSessionView(s, store));
   });
 
-  router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/unknown-operations$/, async (req, res, params) => {
-    const key = `${params[1]}:${params[2]}`;
-    return json(res, 200, { operations: store.listUnknownOperations(key) });
-  });
-  router.add('POST', /^\/api\/chats\/(group|private)_(\d+)\/unknown-operations\/([\w-]+)\/reconcile$/, async (req, res, params) => {
-    const body = await readBody(req);
-    if (body.confirm !== true || !['sent', 'failed'].includes(body.result)) {
-      return json(res, 409, { error: '核对未知写入需要明确结果和确认' });
-    }
-    const key = `${params[1]}:${params[2]}`;
-    try {
-      const result = store.reconcileUnknownOperation(
-        params[3],
-        body.result
-      );
-      if (!result || result.chatKey !== key) {
-        return json(res, 404, { error: '未知写入不存在或已核对' });
-      }
-      // run_id 可能就是副作用账本的 effect id（日报/提醒等）：admin 核对完 outbox 后
-      // 账本同步改判，否则「未知写入」标了已发送、日报仍显示 unknown 甚至会被强制重发。
-      // 只在该 run 的所有未知行都核对完、且管理员确认"已发送"时同步账本：
-      // 标 sent 是保守方向（宁可不去重发，也不重复发）；标 failed 交给日报的显式重试路径。
-      try {
-        if (result.runId && result.remaining === 0 && body.result === 'sent') {
-          // 账本可能停在 planned（发送后、结算前崩溃且 15 分钟内重启）或 unknown；
-          // settle 处理 planned，resolve 处理 unknown，两者互补才能覆盖全部非终态。
-          const settled = effects.settle(String(result.runId), 'sent', {
-            reason: 'outbox-reconcile', operationId: result.operationId, resolvedBy: 'manual'
-          });
-          if (!settled) {
-            effects.resolve(String(result.runId), 'sent', {
-              reason: 'outbox-reconcile', operationId: result.operationId
-            });
-          }
-        }
-      } catch { /* 账本改判失败不影响 outbox 核对结果 */ }
-      auditWrite('outbox.reconcile', key, {
-        req,
-        after: { operationId: result.operationId, runId: result.runId || '', result: body.result, remaining: result.remaining }
-      });
-      emit('chat-update', key);
-      return json(res, 200, { ok: true, result });
-    } catch (error) {
-      return json(res, 409, { error: String(error?.message ?? error) });
-    }
-  });
+  registerOutboxRoutes(router, { json, readBody, store, effects, auditWrite, emit });
   router.add('POST', /^\/api\/incidents\/(inc_[a-f0-9]{16})\/(acknowledge|resolve)$/i, async (req, res, params) => {
     const body = await readBody(req);
     try {
@@ -3679,7 +3661,7 @@ function buildApp({
     groupDigest.stop();
     adminBriefing.stop();
     // 插件子进程要在 onebot 关闭之前停掉：停机后不该再有插件在读消息
-    mcpManager.stop();
+    mcpManager.close();
     await pluginRegistry.stop();
     await qzoneInteractions.abort();
     autoUpdate.stop();

@@ -247,10 +247,11 @@ test('分群响应概率：单独设过的群按它算，别的群与私聊跟�
   assert.equal(storeConfigForChat('group:111').randomPercent, 50);
 });
 
-test('保存白名单不会清掉屏蔽名单（界面没有 deny 控件，靠服务端保留现状）', async () => {
+test('保存白名单不会清掉屏蔽名单（旧页面不发 deny 时靠服务端保留现状）', async () => {
   // 背景（2026-09-23 全项目审查）：ui 的「保存白名单」以前无条件发 deny={groups:[],private:[]}，
   // 而 deepMerge 对数组是整体替换 —— --import-bridge / 手改 config.json 配的屏蔽名单被静默清空，
-  // access.js 却还按（已经空了的）deny 判人。现在 UI 不再发这个字段，这里钉住服务端行为。
+  // access.js 却还按（已经空了的）deny 判人。现在控制台有 deny 控件时显式提交；
+  // 控件缺失/旧页面不发这个字段时，服务端必须保留原值。
   const { updateConfig } = await import('../src/core/config.js');
 
   updateConfig({ deny: { groups: ['999'], private: ['888'] } });
@@ -435,6 +436,22 @@ test('黑名单规则：保存时非数组直接 400；手改配置加载时丢�
     const cfg = reloadConfig();
     assert.deepEqual(cfg.store.blacklistKeywords, ['广告', 're:^转发.*抽奖$'],
       '手改的不安全/非法规则在加载时被丢弃（fail-closed）');
+  } finally {
+    fs.writeFileSync(file, original);
+    reloadConfig();
+  }
+});
+
+test('unknown 自动释放策略：默认关闭，越界值收敛到 0–90 天', () => {
+  const file = path.join(dir, 'config.json');
+  const original = fs.readFileSync(file, 'utf8');
+  try {
+    assert.equal(DEFAULT_CONFIG.outbox.unknownAutoReleaseDays, 0, '默认关闭');
+    // 归一化在保存路径（updateConfig）跑，与 incidentPilot 的数值段同口径。
+    updateConfig({ outbox: { unknownAutoReleaseDays: 999 } });
+    assert.equal(getConfig().outbox.unknownAutoReleaseDays, 90, '上限 90 天');
+    updateConfig({ outbox: { unknownAutoReleaseDays: -3 } });
+    assert.equal(getConfig().outbox.unknownAutoReleaseDays, 0, '负数按关闭处理');
   } finally {
     fs.writeFileSync(file, original);
     reloadConfig();

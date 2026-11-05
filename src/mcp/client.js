@@ -2,6 +2,8 @@
 // 不实现采样/资源/提示词，只做 tools/list + tools/call —— 这是给聊天机器人用的最小闭环。
 
 import { spawn } from 'node:child_process';
+import { networkIsolationSupported } from '../plugins/isolation.js';
+import { mcpPermissionSpec, stripIsolationEnv, wrapWithNetns } from './isolation.js';
 
 const DEFAULT_TIMEOUT = 30000;
 const PROTOCOL_VERSION = '2024-11-05';
@@ -19,14 +21,27 @@ function safeEnv() {
 }
 
 export class McpStdioClient {
-  constructor({ id, command, args = [], env = {}, cwd = '', timeoutMs = DEFAULT_TIMEOUT, log = () => {} }) {
+  constructor({ id, command, args = [], env = {}, cwd = '', timeoutMs = DEFAULT_TIMEOUT, log = () => {}, onExit = null, networkIsolation = false, permissionIsolation = false, memoryMb = 0 }) {
     this.id = String(id || '').trim();
     this.command = String(command || '').trim();
     this.args = Array.isArray(args) ? args.map(String) : [];
     this.env = env && typeof env === 'object' ? env : {};
     this.cwd = String(cwd || '').trim() || undefined;
-    this.timeoutMs = Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT);
+    this.timeoutMs = Math.min(600_000, Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT));
     this.log = log;
+    // 可选的 Linux 网络隔离：MCP server 默认仍能联网（搜索/GitHub 类需要），
+    // 管理员对本地不可信 server 显式打开后，进程连不上任何网络接口。
+    this.networkIsolation = networkIsolation === true;
+    // 可选的 Node 权限模型隔离：只读白名单 + 禁止子进程/Worker/加载插件。只对
+    // command 就是 node 的 server 生效；npx/docker 外壳会在 start() 里 fail-closed。
+    this.permissionIsolation = permissionIsolation === true;
+    // 小于 64MB 的堆上限只会让 server 起不来；按 0（不设）处理。
+    const heapMb = Math.floor(Number(memoryMb) || 0);
+    this.memoryMb = heapMb >= 64 ? Math.min(4096, heapMb) : 0;
+    this.permissionActive = false;
+    // 意外退出时通知管理器。主动 stop()（重载/关闭）不触发，避免把关闭当成崩溃重启。
+    this.onExit = typeof onExit === 'function' ? onExit : null;
+    this.intentionalStop = false;
     this.proc = null;
     this.nextId = 0;
     this.pending = new Map();
@@ -48,18 +63,51 @@ export class McpStdioClient {
     if (this.running) return;
     this.ready = false;
     this.lastError = '';
+    this.intentionalStop = false;
     this.buffer = '';
     this.stderrTail = '';
-    const child = spawn(this.command, this.args, {
+    let command = this.command;
+    let args = [...this.args];
+    this.permissionActive = false;
+    let permissionEnabled = false;
+    if (this.permissionIsolation) {
+      const spec = mcpPermissionSpec({ command, args, cwd: this.cwd || '' });
+      if (!spec.ok) {
+        // 配了隔离但跑不起来：宁可启动失败，也不能静默退化成“能读整个磁盘”。
+        const error = new Error(`MCP ${this.id} 要求权限隔离，但${spec.error}`);
+        error.code = 'E_MCP_ISOLATION';
+        throw error;
+      }
+      command = spec.command;
+      args = spec.args;
+      if (this.memoryMb > 0) args.unshift(`--max-old-space-size=${this.memoryMb}`);
+      permissionEnabled = true;
+      this.log.info?.(`MCP ${this.id} 启用 Node 权限模型隔离（只读 ${spec.allowDir}）`);
+    }
+    if (this.networkIsolation) {
+      const probe = networkIsolationSupported();
+      if (!probe.ok) {
+        // 配了隔离但机器做不到：宁可启动失败，也不能静默退化成“能联网”。
+        const error = new Error(`MCP ${this.id} 要求网络隔离，但本机不支持：${probe.error}`);
+        error.code = 'E_MCP_ISOLATION';
+        throw error;
+      }
+      const wrapped = wrapWithNetns(command, args);
+      command = wrapped.command;
+      args = wrapped.args;
+      this.log.info?.(`MCP ${this.id} 启用网络命名空间隔离（unshare --net）`);
+    }
+    const child = spawn(command, args, {
       cwd: this.cwd,
       // 不继承完整 process.env：第三方 server 不该读到宿主的所有凭据/代理变量。
-      // 配置变量可以扩展，但 PATH/HOME/NODE_OPTIONS 等受控变量必须由宿主最终覆盖。
-      env: { ...this.env, ...safeEnv() },
+      // 配置变量可以扩展；隔离模式下 NODE_OPTIONS/LD_PRELOAD 这类能改写启动行为的键会被剥掉。
+      env: { ...((this.permissionIsolation || this.networkIsolation) ? stripIsolationEnv(this.env) : this.env), ...safeEnv() },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true
     });
     this.proc = child;
+    this.permissionActive = permissionEnabled;
     this.startedAt = Date.now();
     child.stdin.on('error', (error) => {
       // 子进程退出/关闭 stdin 后再写会异步抛 EPIPE；没有监听会变成 uncaughtException，
@@ -88,6 +136,9 @@ export class McpStdioClient {
       this.lastError = detail;
       this.log.warn?.(detail);
       this.#failAll(new Error(detail));
+      if (!this.intentionalStop) {
+        try { this.onExit?.({ code, signal }); } catch { /* 重启逻辑自身不能拖垮宿主 */ }
+      }
     });
     try {
       await this.request('initialize', {
@@ -203,6 +254,8 @@ export class McpStdioClient {
   }
 
   stop() {
+    this.intentionalStop = true;
+    this.permissionActive = false;
     const child = this.proc;
     this.proc = null;
     this.ready = false;

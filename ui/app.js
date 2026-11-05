@@ -435,6 +435,13 @@ function renderControlHub(data = {}) {
     </section>
     <section class="settings-card">
       <div class="control-section-title">
+        <div><h3>存储维护</h3><span class="muted">按保留天数把已结束的会话留档压成 .gz（幂等，不删除）</span></div>
+        <button type="button" class="btn btn-small" id="control-storage-compress">立即压缩留档</button>
+      </div>
+      <div id="control-storage-output" class="control-result muted" role="status" aria-live="polite">压缩天数与总量上限在「设置 → 聊天设置 → 数据保留」里调整。</div>
+    </section>
+    <section class="settings-card">
+      <div class="control-section-title">
         <div><h3>群策略总览</h3><span class="muted">只读；修改仍走各自设置页</span></div>
         <button type="button" class="btn btn-small" id="control-group-policy-refresh">刷新</button>
       </div>
@@ -617,6 +624,11 @@ async function loadControlObservability() {
     const statuses = http.requests?.byStatus || {};
     const queues = metrics.queues?.byState || {};
     const outbox = metrics.outbox?.byState || {};
+    const unknown = metrics.unknown || {};
+    const mcp = metrics.mcp || {};
+    const disk = metrics.host?.disk || {};
+    const unknownAge = Number(unknown.oldestAgeMs) > 0
+      ? `${Math.max(1, Math.floor(Number(unknown.oldestAgeMs) / 86400000))} 天` : '-';
     const entries = Array.isArray(audit.entries) ? audit.entries : [];
     box.className = 'control-result';
     box.innerHTML = `
@@ -628,6 +640,9 @@ async function loadControlObservability() {
         <div><span>LLM 请求 / 兜底 / 失败</span><strong>${Number(metrics.llm?.requests) || 0} / ${Number(metrics.llm?.fallbackUses) || 0} / ${Number(metrics.llm?.failures) || 0}</strong></div>
         <div><span>入站队列 pending / leased / held</span><strong>${Number(queues.pending) || 0} / ${Number(queues.leased) || 0} / ${Number(queues.held) || 0}</strong></div>
         <div><span>出站 pending / failed</span><strong>${Number(outbox.pending) || 0} / ${Number(outbox.failed) || 0}</strong></div>
+        <div><span>待核对 unknown / 最老</span><strong>${Number(unknown.total) || 0} / ${esc(unknownAge)}</strong></div>
+        <div><span>MCP 重启中 / 累计重试 / 隔离生效</span><strong>${Number(mcp.restarting) || 0} / ${Number(mcp.restartAttempts) || 0} / ${Number(mcp.permissionActive) || 0}</strong></div>
+        <div><span>磁盘已用</span><strong>${disk.usedPercent == null ? '不可用' : `${esc(disk.usedPercent)}%`}</strong></div>
         <div><span>OneBot</span><strong>${metrics.onebot?.connected ? '已连接' : '未连接'}</strong></div>
       </div>
       <div class="table-wrap" style="margin-top:10px"><table class="usage-table">
@@ -741,6 +756,26 @@ async function runBackupNow() {
   }
 }
 
+async function runStorageCompress() {
+  const btn = $('#control-storage-compress');
+  const out = $('#control-storage-output');
+  if (!btn) return;
+  btn.disabled = true;
+  if (out) { out.className = 'control-result muted'; out.textContent = '正在压缩…'; }
+  try {
+    const result = await api('/api/storage/compress', { method: 'POST', body: '{}' });
+    const saved = Math.max(0, Number(result.bytesBefore) - Number(result.bytesAfter));
+    if (out) {
+      out.className = 'control-result success';
+      out.textContent = `本次压缩 ${Number(result.compressed) || 0} 个留档，省 ${(saved / 1024 / 1024).toFixed(1)} MB；当前共 ${Number(result.storage?.files) || 0} 个文件。`;
+    }
+  } catch (error) {
+    if (out) { out.className = 'control-result error'; out.textContent = `压缩失败：${error.message}`; }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function loadGroupPolicy() {
   const box = $('#control-group-policy');
   if (!box) return;
@@ -775,6 +810,7 @@ function bindControlHubHandlers() {
   $('#control-observability-refresh')?.addEventListener('click', loadControlObservability);
   $('#control-backup-refresh')?.addEventListener('click', loadBackupStatus);
   $('#control-backup-run')?.addEventListener('click', runBackupNow);
+  $('#control-storage-compress')?.addEventListener('click', runStorageCompress);
   $('#control-group-policy-refresh')?.addEventListener('click', loadGroupPolicy);
   void loadBackupStatus();
   void loadGroupPolicy();

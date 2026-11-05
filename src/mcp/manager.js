@@ -46,16 +46,31 @@ function serverConfigs() {
 }
 
 export class McpManager {
-  constructor({ log: logger = log } = {}) {
+  constructor({ log: logger = log, restartBaseMs = 2000, restartMaxMs = 60_000, maxRestarts = 8 } = {}) {
     this.log = logger;
+    this.restartBaseMs = Math.max(50, Number(restartBaseMs) || 2000);
+    this.restartMaxMs = Math.max(this.restartBaseMs, Number(restartMaxMs) || 60_000);
+    this.maxRestarts = Math.max(1, Number(maxRestarts) || 5);
     this.clients = new Map();   // id -> { client, config, tools }
     this.defs = [];
     this.generation = 0;
     this.starting = null;
     this.pendingReload = false;
+    // 进程退出阶段的 stop 与普通重载不同：后者允许再次 start，前者必须拒绝。
+    this.closed = false;
+  }
+
+  /** 只用于宿主退出：设置后任何 start()/reload() 都不再拉起子进程。 */
+  close() {
+    this.closed = true;
+    this.stop();
   }
 
   async start() {
+    if (this.closed) {
+      this.log.warn?.('MCP manager 已关闭，忽略启动请求');
+      return [];
+    }
     if (this.starting) {
       // 启动期间又有保存/重载：当前这批配置已经读进 #start 了，必须等它结束后再跑一轮，
       // 否则第二次保存会静默不生效，直到进程重启。
@@ -99,7 +114,11 @@ export class McpManager {
         env: server.env,
         cwd: server.cwd,
         timeoutMs: server.timeoutMs,
-        log: this.log
+        networkIsolation: server.networkIsolation === true,
+        permissionIsolation: server.permissionIsolation === true,
+        memoryMb: server.memoryMb,
+        log: this.log,
+        onExit: () => this.#scheduleRestart(id, gen)
       });
       // 先放进 map：启动中的 client 也必须在 stop() 的清理范围内。
       const entry = { client, config: server, calls: [], tools: [], starting: true };
@@ -114,6 +133,11 @@ export class McpManager {
         entry.starting = false;
         entry.error = cleanText(error?.message ?? error, 400);
         this.log.warn(`MCP ${id} 启动失败：`, error?.message ?? error);
+        // 隔离配置本身不成立（命令不是 node/目录不存在）重试也不会变好：
+        // 停在明确错误上，等管理员改配置，不要每 2 秒刷一次重试日志。
+        if (error?.code === 'E_MCP_ISOLATION') return;
+        // 启动失败也走有界重试：命令暂时不可用/依赖还没起来时，不该等到人工重载。
+        this.#scheduleRestart(id, gen);
       }
     }));
     if (gen === this.generation) this.#buildDefs();
@@ -123,10 +147,87 @@ export class McpManager {
     this.generation += 1;
     this.pendingReload = false;
     for (const entry of this.clients.values()) {
+      if (entry.restartTimer) {
+        clearTimeout(entry.restartTimer);
+        entry.restartTimer = null;
+      }
+      if (entry.stabilityTimer) {
+        clearTimeout(entry.stabilityTimer);
+        entry.stabilityTimer = null;
+      }
       try { entry.client.stop(); } catch { /* 已停止 */ }
     }
     this.clients.clear();
     this.defs = [];
+  }
+
+  #scheduleRestart(id, gen) {
+    if (gen !== this.generation) return;
+    const entry = this.clients.get(id);
+    if (!entry || entry.restartTimer || entry.restartExhausted) return;
+    const attempts = (Number(entry.restartAttempts) || 0) + 1;
+    entry.restartAttempts = attempts;
+    if (attempts > this.maxRestarts) {
+      entry.restartAttempts = this.maxRestarts;
+      entry.restartExhausted = true;
+      entry.error = `连续 ${this.maxRestarts} 次自动重启未成功，已停止重试；请在控制台重载 MCP`;
+      this.log.warn?.(`MCP ${id} ${entry.error}`);
+      return;
+    }
+    const delay = Math.min(this.restartMaxMs, this.restartBaseMs * 2 ** (attempts - 1));
+    this.log.warn?.(`MCP ${id} 将在 ${delay}ms 后进行第 ${attempts}/${this.maxRestarts} 次自动重启`);
+    const timer = setTimeout(() => {
+      entry.restartTimer = null;
+      if (gen !== this.generation) return;
+      void this.#restartEntry(id, entry, gen);
+    }, delay);
+    timer.unref?.();
+    entry.restartTimer = timer;
+  }
+
+  async #restartEntry(id, entry, gen) {
+    if (gen !== this.generation || this.clients.get(id) !== entry) return;
+    entry.starting = true;
+    const client = new McpStdioClient({
+      id,
+      command: entry.config.command,
+      args: entry.config.args,
+      env: entry.config.env,
+      cwd: entry.config.cwd,
+      timeoutMs: entry.config.timeoutMs,
+      networkIsolation: entry.config.networkIsolation === true,
+      permissionIsolation: entry.config.permissionIsolation === true,
+      memoryMb: entry.config.memoryMb,
+      log: this.log,
+      onExit: () => this.#scheduleRestart(id, gen)
+    });
+    entry.client = client;
+    try {
+      await client.start();
+      if (gen !== this.generation) { client.stop(); return; }
+      entry.tools = client.tools;
+      entry.error = '';
+      entry.starting = false;
+      entry.restartExhausted = false;
+      this.#buildDefs();
+      this.log.info?.(`MCP ${id} 自动重启成功，${entry.tools.length} 个工具`);
+      // 只有稳定运行一段时间才清零重试预算：既能扛住偶发崩溃，也不会让"起来就崩"的
+      // server 无限重启。用实例比对，防止旧实例的计时器把新一轮崩溃循环的预算清零。
+      const stability = setTimeout(() => {
+        entry.stabilityTimer = null;
+        if (gen === this.generation && entry.client === client && client.ready) entry.restartAttempts = 0;
+      }, Math.max(60_000, this.restartBaseMs * 5));
+      stability.unref?.();
+      entry.stabilityTimer = stability;
+    } catch (error) {
+      if (gen !== this.generation) { client.stop(); return; }
+      entry.starting = false;
+      this.log.warn(`MCP ${id} 自动重启失败：`, error?.message ?? error);
+      // 隔离配置不成立是确定性失败，重试只会刷日志；保留错误等管理员修配置。
+      if (error?.code !== 'E_MCP_ISOLATION') this.#scheduleRestart(id, gen);
+      // 重试预算耗尽的提示优先于最后一次进程退出信息，否则控制台只剩一句 code=3。
+      if (!entry.restartExhausted) entry.error = cleanText(error?.message ?? error, 400);
+    }
   }
 
   async reload() {
@@ -236,13 +337,18 @@ export class McpManager {
       id,
       ready: Boolean(entry.client.running && entry.client.ready),
       starting: entry.starting === true,
+      restarting: Boolean(entry.restartTimer),
+      restartAttempts: Number(entry.restartAttempts) || 0,
       enabled: entry.config.enabled !== false && getConfig().mcp?.enabled === true,
       globalEnabled: getConfig().mcp?.enabled === true,
       error: redactText(entry.error || entry.client.lastError || '', 400),
       stderr: redactText(entry.client.stderrTail || '', 400),
       tools: entry.tools.map((tool) => String(tool.name || '')).filter(Boolean),
       command: redactText(entry.config.command, 120),
-      argsCount: Array.isArray(entry.config.args) ? entry.config.args.length : 0
+      argsCount: Array.isArray(entry.config.args) ? entry.config.args.length : 0,
+      networkIsolation: entry.config.networkIsolation === true,
+      permissionIsolation: entry.config.permissionIsolation === true,
+      permissionActive: entry.client.permissionActive === true
     }));
     const seen = new Set(rows.map((row) => row.id));
     for (const server of Array.isArray(getConfig().mcp?.servers) ? getConfig().mcp.servers : []) {
@@ -252,13 +358,18 @@ export class McpManager {
         id,
         ready: false,
         starting: false,
+        restarting: false,
+        restartAttempts: 0,
         enabled: server.enabled !== false && getConfig().mcp?.enabled === true,
         globalEnabled: getConfig().mcp?.enabled === true,
         error: '',
         stderr: '',
         tools: [],
         command: redactText(server.command || '', 120),
-        argsCount: Array.isArray(server.args) ? server.args.length : 0
+        argsCount: Array.isArray(server.args) ? server.args.length : 0,
+        networkIsolation: server.networkIsolation === true,
+        permissionIsolation: server.permissionIsolation === true,
+        permissionActive: false
       });
     }
     return rows;

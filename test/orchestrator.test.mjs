@@ -182,6 +182,23 @@ describe('Orchestrator', () => {
     assert.equal(delays.length, before, '普通消息不能把已经排好的直接互动短聚批顶回长窗口');
   });
 
+  it('directWakeDelayMs = 0 是合法值：直接互动不等待，不能回落 300ms', async (t) => {
+    const { runner, store, cfg } = fixture(t);
+    cfg.directWakeDelayMs = 0;
+    const delays = [];
+    const original = runner.scheduleWake.bind(runner);
+    runner.scheduleWake = (chatKey, delay = null, options = {}) => {
+      const scheduled = original(chatKey, delay, options);
+      if (scheduled) delays.push(delay);
+      return scheduled;
+    };
+    const direct = store.appendIncoming('group:1', {
+      mid: 9011, text: '@bot 在吗', senderId: '42', senderName: 'member-42', mentionsSelf: true
+    });
+    runner.onIncoming('group:1', direct);
+    assert.equal(delays.at(-1), 0, '0 必须原样生效');
+  });
+
   it('records why a batch was skipped for the console', async (t) => {
     const { runner, cfg, append } = fixture(t);
     cfg.store.randomPercent = 0;

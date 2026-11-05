@@ -71,6 +71,9 @@ test('聊天设置：回复纠正 / 拍一拍 / 自主节奏 / 数据保留控�
   }
   assert.match(save, /patch\.mcp = \{ __replace__/, 'MCP server 列表要整段替换');
   assert.match(save, /cwd: read\('\.mcp-cwd'\)/, '保存 MCP server 不能丢掉 cwd');
+  assert.match(save, /permissionIsolation: row\.querySelector\('\.mcp-permission-isolation'\)/, '保存权限隔离开关');
+  assert.match(extensions, /mcp-permission-isolation/, 'MCP 表单要有 Node 权限隔离开关');
+  assert.match(extensions, /mcp-memory/, 'MCP 表单要有堆上限输入');
   assert.match(extensions, /mcp-cwd/, 'MCP 表单要有 cwd 输入');
   assert.match(save, /patch\.knowledge = \{/);
   assert.match(save, /patch\.moderation = \{/);

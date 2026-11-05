@@ -189,6 +189,31 @@ URL 里不能内嵌 `user:pass@`（safe-fetch 一律拒绝凭据），需要鉴�
 `vision: true` 表示主模型能看图（收图后直接把图片交给模型）；上下文窗口按模型实际能力填写，
 影响历史裁剪策略。
 
+## failureNotice：模型最终失败时的兜底提示
+
+```json
+{
+  "failureNotice": {
+    "enabled": true,
+    "cooldownMinutes": 8
+  }
+}
+```
+
+只在直接互动（@ / 私聊 / 引用机器人 / 点名）经过重试仍失败时，发一句不含模型与密钥细节的短说明；
+普通群消息不会收到。同一会话 `cooldownMinutes` 内最多发一次。控制台「设置 → 聊天设置 → 失败兜底」可调。
+
+## deny：优先于白名单的屏蔽名单
+
+```json
+{
+  "deny": { "groups": ["123456"], "private": ["10001"] }
+}
+```
+
+命中这里的群/QQ 即使在 `allow` 里也不会运行、不会收发消息。控制台「设置 → 聊天白名单」下方可直接编辑；
+只想屏蔽群内个别人时用 `blocklist` / 聊天设置里的「屏蔽名单」。
+
 ## proactive：主动开话题
 
 ```json
@@ -561,11 +586,15 @@ URL 里不能内嵌 `user:pass@`（safe-fetch 一律拒绝凭据），需要鉴�
     "model": "FunAudioLLM/CosyVoice2-0.5B",
     "voice": "FunAudioLLM/CosyVoice2-0.5B:anna",
     "speed": 1.1,
-    "gain": 0
+    "gain": 0,
+    "maxPerHour": 30,
+    "maxPerHourPerChat": 6
   }
 }
 ```
 
+- `maxPerHour` / `maxPerHourPerChat`：语音合成的全局/每会话每小时硬闸门（默认 30 / 6）。
+  合成发生在发送限频之前，超限直接拒绝，不会先扣服务商额度。
 - **五种适配器**（按 `provider` 分发，`src/llm/tts.js`）：
   `openai`（兼容 `POST {baseUrl}/audio/speech`，硅基流动/OpenAI/自建，**已实测**）、
   `volc`（火山引擎语音合成 **v1** HTTP，需要数字 `appId` + `apiKey`=Access Token，`cluster` 默认 `volcano_tts`、
@@ -770,7 +799,9 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
     "minute": 30,
     "scheduleWindows": null,
     "intervalDays": 1,
-    "startupCatchup": true
+    "startupCatchup": true,
+    "visibility": 4,
+    "targetUins": []
   }
 }
 ```
@@ -782,6 +813,8 @@ MiMo 的写法（想要语气、又不想上 GPU 时最省事）：
   检查）。改成 `true` 才会按时直接发；旧行为是 `source: "group"` + `autoPublish: true`。
 - `hour` / `minute`：固定时刻模式，按上海时间；`scheduleWindows: [{ "start": "20:00", "end": "23:00", "count": 1 }]`
   可按窗口随机取点；`intervalDays` 控制间隔；`startupCatchup` 控制错过定时点后是否补一次。
+- `visibility`：`1` 所有人、`4` 好友（默认）、`16` 指定好友可见、`64` 仅自己、`128` 指定好友不可见；
+  `16` / `128` 时把 QQ 号放进 `targetUins`。控制台「说说可见范围」已提供这五档与名单输入。
 - 发布走 SnowLuma `send_qzone_msg`，按日期记录幂等状态，重启不会重复发布结果不明的说说。
 - 控制台「设置 → QQ 空间动态」：来源、发布方式、最近预览（带来源）、草稿编辑与“发布这份草稿”。
 

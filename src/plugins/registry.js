@@ -14,7 +14,7 @@ import path from 'node:path';
 import { parsePluginManifest, qualifiedToolName } from './manifest.js';
 import { readPluginInstallInfo, listPluginBackups } from './install.js';
 import { PluginHost } from './host.js';
-import { isolationSummary, probeIsolation } from './isolation.js';
+import { isolationSummary, networkIsolationSupported, probeIsolation } from './isolation.js';
 import { sanitizeUserText } from '../core/util.js';
 import { sanitizeDeep } from '../tools/tools-core.js';
 import { canonicalVersion } from './version.js';
@@ -97,12 +97,16 @@ export class PluginRegistry {
    */
   constructor({
     root, dataDir, log = () => {}, getConfig = () => ({}), hostFactory = null, timeouts = {},
-    probe = probeIsolation, scheduleIntervalMs = 15000, getIndexRevoked = () => [], getSender = () => null
+    probe = probeIsolation, scheduleIntervalMs = 15000, getIndexRevoked = () => [], getSender = () => null,
+    getConsoleToken = () => null
   } = {}) {
     this.root = root;
     this.dataDir = dataDir;
     this.log = log;
     this.getConfig = getConfig;
+    // 控制台令牌 getter（返回 null = 调用方不关心这项检查，测试默认如此）。
+    // 空令牌时 loopback 等于操作员身份，而插件子进程也是 loopback 客户端。
+    this.getConsoleToken = typeof getConsoleToken === 'function' ? getConsoleToken : () => null;
     this.hostFactory = hostFactory;
     this.timeouts = timeouts;
     this.scheduleIntervalMs = scheduleIntervalMs;   // 测试会调小；manifest 里 everyMs 下限是 1 分钟
@@ -298,6 +302,16 @@ export class PluginRegistry {
     if (!isolated.ok && cfg.requireIsolation) {
       this.log(`插件未加载：本机隔离不可用（${isolated.error}）。要么换支持 --permission 的 Node，要么在配置里明确关掉 plugins.requireIsolation`);
       return { started: [], skipped: 'no-isolation' };
+    }
+    // 空令牌的控制台把任意 loopback 对端当操作员，而插件子进程也是 loopback 客户端。
+    // 本机又拦不住插件网络时（非 Linux / userns 被禁 / plugins.networkIsolation=false），
+    // 插件可读明文 Key、轮换令牌、写 mcp.servers 并以宿主用户起进程（2026-11-04 复核 P1）。
+    // 有令牌或确有网络隔离，两者满足其一才放行。
+    const consoleToken = this.getConsoleToken();
+    if (consoleToken === '' && !(cfg.networkIsolation && networkIsolationSupported().ok)) {
+      this.log('插件未加载：控制台没有设置 server.token，而本机无法隔离插件网络 —— '
+        + '插件可以访问 127.0.0.1 的控制台接口。请先在控制台设置令牌，或在支持网络命名空间的 Linux 上运行');
+      return { started: [], skipped: 'console-token-required' };
     }
     const started = [];
     for (const item of this.discovered) {

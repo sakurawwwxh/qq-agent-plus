@@ -32,5 +32,8 @@ test('experiment settings use a dedicated living-memory card', () => {
 test('living-memory settings expose the recall time budget', () => {
   const page = fs.readFileSync(path.join(ROOT, 'ui', 'pages', 'living-memory.js'), 'utf8');
   assert.match(page, /id="lm-recall-timeout"/);
-  assert.match(page, /recallTimeoutMs:\s*Number\(\$\('#lm-recall-timeout'\)\?\.value\)/);
+  assert.match(page, /recallTimeoutMs:\s*Math\.max\(300,\s*Math\.min\(5000,\s*intValue\('#lm-recall-timeout'/);
+  assert.match(page, /settingCheck\('lm-auto-capture'/);
+  assert.match(page, /id="lm-capture-idle"/);
+  assert.match(page, /autoCapture:\s*autoBox\s*\?\s*autoBox\.checked\s*:\s*cfg\.autoCapture\s*!==\s*false/);
 });

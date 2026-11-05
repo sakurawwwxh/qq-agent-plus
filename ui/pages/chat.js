@@ -255,6 +255,17 @@ return `
       <div class="field"><label>批次间隔（毫秒）—— 上轮结束到下轮处理的间隔</label><input type="number" id="cfg-draindelay" min="0" value="${esc(c.drainDelayMs)}" /></div>
       <div class="field"><label>同时处理几个会话</label><input type="number" id="cfg-maxruns" min="1" max="8" value="${esc(c.maxConcurrentRuns)}" /></div>
     </div>
+    <details class="collapsible settings-advanced" id="wake-batch-advanced">
+      <summary>高级：直接互动与攒批窗口</summary>
+      <div class="field-row" style="margin-top:8px">
+        <div class="field"><label for="cfg-direct-wake-delay">被 @ / 私聊 / 引用后的合并窗口（毫秒）</label>
+          <input type="number" id="cfg-direct-wake-delay" min="0" max="2000" step="50" value="${esc(c.directWakeDelayMs ?? 300)}" />
+          <div class="hint">直接互动不再等常规 8–12 秒，只留这点时间合并连发；默认 300，最大 2000。</div></div>
+        <div class="field"><label for="cfg-max-batch-wait">普通消息最长攒批（毫秒）</label>
+          <input type="number" id="cfg-max-batch-wait" min="100" max="20000" step="100" value="${esc(c.maxBatchWaitMs ?? 20000)}" />
+          <div class="hint">连续来消息时最多等这么久就处理，默认 20000；调小更跟手，调大更容易合并。</div></div>
+      </div>
+    </details>
 
     <h3>所有模式 · 发送保护</h3>
     <div class="field-row">
@@ -297,6 +308,12 @@ return `
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-pro-followup" ${c.proactive?.followUpEnabled !== false ? 'checked' : ''} />
       <label for="cfg-pro-followup">发言后无人回应时，稍后补一句</label></div>
+    <div class="field-row" id="cfg-pro-followup-timing">
+      <div class="field"><label for="cfg-pro-followup-delay">补话基准延迟（分钟）</label>
+        <input type="number" id="cfg-pro-followup-delay" min="1" max="120" value="${esc(Number(c.proactive?.followUpDelayMinutes) > 0 ? Number(c.proactive.followUpDelayMinutes) : 10)}" /></div>
+      <div class="field"><label for="cfg-pro-followup-cooldown">同一会话两次补话最小间隔（分钟）</label>
+        <input type="number" id="cfg-pro-followup-cooldown" min="1" max="240" value="${esc(Number(c.proactive?.followUpCooldownMinutes) > 0 ? Number(c.proactive.followUpCooldownMinutes) : 20)}" /></div>
+    </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-pro-selfwake" ${c.proactive?.selfWakeEnabled !== false ? 'checked' : ''} />
       <label for="cfg-pro-selfwake">允许模型给自己安排稍后的主动发言</label></div>
     <div class="hint">
@@ -315,6 +332,13 @@ return `
       回复纠正只在“模型写了正文却没调用发送工具”时触发，会多跑一次模型；关掉后这类情况不再补救。
       拍一拍必回会跳过随机概率；关掉后拍一拍按普通群消息处理。
     </div>
+
+    <h3>所有模式 · 失败兜底</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-failure-notice" ${c.failureNotice?.enabled !== false ? 'checked' : ''} />
+      <label for="cfg-failure-notice">模型最终失败时，直接互动（@ / 私聊 / 引用）回一句短说明</label></div>
+    <div class="field"><label for="cfg-failure-notice-cooldown">同一会话冷却（分钟）</label>
+      <input type="number" id="cfg-failure-notice-cooldown" min="1" max="240" value="${esc(Number(c.failureNotice?.cooldownMinutes) > 0 ? Number(c.failureNotice.cooldownMinutes) : 8)}" />
+      <div class="hint">只在已经重试完仍失败时触发，不会暴露模型/密钥细节；普通群消息不会收到这条兜底。</div></div>
 
     <h3>所有模式 · 拟人化表达（实验性）</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-humanize-enabled" ${humanize.enabled === true ? 'checked' : ''} />
@@ -355,6 +379,34 @@ return `
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-humanize-respect-card" ${humanize.respectPersonaCard !== false ? 'checked' : ''} />
       <label for="cfg-humanize-respect-card">角色卡优先时不覆盖角色语气（推荐）</label></div>
+    <details class="collapsible settings-advanced" id="humanize-advanced">
+      <summary>高级：作息、气泡与动作冷却</summary>
+      <div class="field-row" style="margin-top:8px">
+        <div class="field"><label for="cfg-humanize-sleep-start">作息开始（睡觉）</label>
+          <input type="time" id="cfg-humanize-sleep-start" value="${esc(humanize.personaState?.sleepStart || '00:00')}" /></div>
+        <div class="field"><label for="cfg-humanize-sleep-end">作息结束（起床）</label>
+          <input type="time" id="cfg-humanize-sleep-end" value="${esc(humanize.personaState?.sleepEnd || '07:00')}" /></div>
+        <div class="field"><label for="cfg-humanize-cap">等待封顶（秒）</label>
+          <input type="number" id="cfg-humanize-cap" min="1" max="60" step="0.5" value="${esc((Number(replyDelay.capMs) > 0 ? Number(replyDelay.capMs) : 8000) / 1000)}" /></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="cfg-humanize-max-bubbles">一轮最多拆几条气泡</label>
+          <input type="number" id="cfg-humanize-max-bubbles" min="1" max="8" value="${esc(Number(humanize.shape?.maxBubbles) > 0 ? Number(humanize.shape.maxBubbles) : 3)}" /></div>
+        <div class="field"><label for="cfg-humanize-actions-max">每轮最多动作次数</label>
+          <input type="number" id="cfg-humanize-actions-max" min="1" max="20" value="${esc(Number(humanize.actions?.maxPerRun) > 0 ? Number(humanize.actions.maxPerRun) : 4)}" /></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="cfg-humanize-cooldown-sticker">贴纸冷却（秒）</label>
+          <input type="number" id="cfg-humanize-cooldown-sticker" min="0" max="3600" value="${esc((Number.isFinite(Number(humanize.actions?.stickerCooldownMs)) ? Number(humanize.actions.stickerCooldownMs) : 60000) / 1000)}" /></div>
+        <div class="field"><label for="cfg-humanize-cooldown-poke">拍一拍冷却（秒）</label>
+          <input type="number" id="cfg-humanize-cooldown-poke" min="0" max="3600" value="${esc((Number.isFinite(Number(humanize.actions?.pokeCooldownMs)) ? Number(humanize.actions.pokeCooldownMs) : 300000) / 1000)}" /></div>
+        <div class="field"><label for="cfg-humanize-cooldown-voice">语音冷却（秒）</label>
+          <input type="number" id="cfg-humanize-cooldown-voice" min="0" max="3600" value="${esc((Number.isFinite(Number(humanize.actions?.voiceCooldownMs)) ? Number(humanize.actions.voiceCooldownMs) : 600000) / 1000)}" /></div>
+        <div class="field"><label for="cfg-humanize-cooldown-react">表情回应冷却（秒）</label>
+          <input type="number" id="cfg-humanize-cooldown-react" min="0" max="3600" value="${esc((Number.isFinite(Number(humanize.actions?.reactCooldownMs)) ? Number(humanize.actions.reactCooldownMs) : 30000) / 1000)}" /></div>
+      </div>
+      <div class="hint">作息只影响状态提示词里"现在是否该困/精神"的文案；动作次数最少 1，冷却填 0 = 不限制该项。</div>
+    </details>
     <div class="field">
       <label>当前状态（只读）</label>
       <div class="hint" id="humanize-state-text">读取中…</div>
@@ -431,6 +483,17 @@ return `
       会减少运行中会话的落盘频率，并把消息库改成 NORMAL 同步；代价是进程异常退出时最多丢对应间隔内的运行记录，
       消息库掉电可能丢最近几条提交。正常结束的会话始终立即完整落盘。选「自定义」才会显示具体数值。
     </div>
+    <div class="settings-divider"></div>
+    <h3>上下文分层</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-context-layering" ${st.contextLayering?.enabled !== false ? 'checked' : ''} />
+      <label for="cfg-context-layering">限制每轮实际带入的历史（默认开，防止 300 条历史把输入顶爆）</label></div>
+    <div class="field-row">
+      <div class="field"><label for="cfg-context-layer-messages">最多带最近多少条</label>
+        <input type="number" id="cfg-context-layer-messages" min="1" max="500" value="${esc(Number(st.contextLayering?.maxHistoryMessages) > 0 ? Number(st.contextLayering.maxHistoryMessages) : 24)}" /></div>
+      <div class="field"><label for="cfg-context-layer-chars">最多带多少字符</label>
+        <input type="number" id="cfg-context-layer-chars" min="500" max="100000" step="500" value="${esc(Number(st.contextLayering?.maxHistoryChars) > 0 ? Number(st.contextLayering.maxHistoryChars) : 8000)}" /></div>
+    </div>
+    <div class="hint">关掉后完全按上面的响应档位条数（可能几千到几万字符）；开着时以这两个上限为准，字符上限还会被「过去状态最多字符数」再夹一次。Token 节省模式还会在此之上再夹一层。</div>
 
     <h3>所有模式 · 表情包</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-sticker" ${c.sticker.enabled ? 'checked' : ''} />
@@ -446,9 +509,14 @@ return `
           value="${normalizeStickerCollectMax(c.sticker?.maxCollectPerHour)}" aria-label="每小时最多收藏张数" />
       </div>
       <div class="hint">
-        拖动设置 1-60（默认 10 张/小时）。全局上限；每个会话另有 3 张/小时的上限。
+        拖动设置 1-60（默认 10 张/小时）。全局上限；每个会话另有独立上限（默认 3 张/小时）。
         控制台里手动添加表情不受这两项影响。
       </div>
+    </div>
+    <div class="field">
+      <label for="cfg-sticker-collect-max-perchat">每个会话每小时最多收藏（张）</label>
+      <input type="number" id="cfg-sticker-collect-max-perchat" min="1" max="60" value="${esc(Number(c.sticker?.maxCollectPerHourPerChat) > 0 ? Number(c.sticker.maxCollectPerHourPerChat) : 3)}" />
+      <div class="hint">防止单个群刷爆全局额度；默认 3。全局上限仍以上面那个滑条为准。</div>
     </div>
 
     <div class="field">
@@ -652,54 +720,140 @@ async function openChatRuntimeControl(chatKey) {
   });
 }
 
+function unknownAgeLabel(ageMs) {
+  if (!ageMs) return '刚刚';
+  const hours = Math.floor(ageMs / 3_600_000);
+  if (hours < 1) return '不到 1 小时';
+  if (hours < 24) return `${hours} 小时`;
+  return `${Math.floor(hours / 24)} 天`;
+}
+
 async function openUnknownOperations(chatKey) {
-  const data = await api(`/api/chats/${chatKey.replace(':', '_')}/unknown-operations`);
-  const operations = data.operations || [];
+  const base = `/api/chats/${chatKey.replace(':', '_')}/unknown-operations`;
+  let olderThanDays = 0;
+  let operations = [];
+  let summary = { total: 0, oldestAgeMs: 0 };
+
   const overlay = modelModalShell({
     head: `核对未知写入 · ${formatChatTitle(chatKey, chatNameOf(chatKey))}`,
-    body: operations.length
-      ? `<div class="control-key-list">${operations.map((operation) => `
-          <div class="control-key-row">
-            <span><strong>${esc(operation.payload?.type || '外部操作')}</strong>
-              <small>${esc(JSON.stringify(operation.payload || {}).slice(0, 180))}</small>
-              <small>${esc(operation.error || '结果未知')}</small></span>
-            <span class="settings-actions" style="margin:0">
-              <button type="button" class="btn btn-small" data-unknown-result="sent" data-operation-id="${esc(operation.id)}">确认已发送</button>
-              <button type="button" class="btn btn-small" data-unknown-result="failed" data-operation-id="${esc(operation.id)}">确认未发送</button>
-            </span>
-          </div>`).join('')}</div>`
-      : '<div class="empty-hint">没有待核对的外部写入</div>',
+    body: `<div class="chat-toolbar" style="margin:0 0 8px;flex-wrap:wrap">
+        <label class="muted">只看
+          <select data-unknown-age>
+            <option value="0">全部</option>
+            <option value="1">超过 1 天</option>
+            <option value="3">超过 3 天</option>
+            <option value="7">超过 7 天</option>
+            <option value="30">超过 30 天</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-small" data-unknown-select-all>全选</button>
+        <button type="button" class="btn btn-small" data-unknown-batch="sent">批量确认已发送</button>
+        <button type="button" class="btn btn-small" data-unknown-batch="failed">批量确认未发送</button>
+        <button type="button" class="btn btn-small" data-unknown-export>导出 JSON</button>
+        <span class="muted" data-unknown-summary></span>
+      </div>
+      <div data-unknown-list></div>`,
     foot: '<button type="button" class="btn" data-unknown-close>关闭</button>'
   });
-  overlay.querySelector('[data-unknown-close]').addEventListener('click', () =>
-    closeModelModal(overlay));
-  overlay.querySelectorAll('[data-unknown-result]').forEach((button) => {
+  const listBox = overlay.querySelector('[data-unknown-list]');
+  const summaryBox = overlay.querySelector('[data-unknown-summary]');
+  const ageSelect = overlay.querySelector('[data-unknown-age]');
+
+  const render = () => {
+    summaryBox.textContent = summary.total
+      ? `共 ${summary.total} 条待核对${summary.oldestAgeMs ? `，最老一条 ${unknownAgeLabel(summary.oldestAgeMs)}` : ''}`
+      : '';
+    if (!operations.length) {
+      listBox.innerHTML = '<div class="empty-hint">没有待核对的外部写入</div>';
+      return;
+    }
+    listBox.innerHTML = `<div class="control-key-list">${operations.map((operation) => `
+      <div class="control-key-row">
+        <span style="display:flex;gap:8px;align-items:flex-start">
+          <input type="checkbox" data-unknown-pick value="${esc(operation.id)}" aria-label="选择这条记录" />
+          <span><strong>${esc(operation.payload?.type || '外部操作')}</strong>
+            <small>${esc(JSON.stringify(operation.payload || {}).slice(0, 180))}</small>
+            <small>${esc(operation.error || '结果未知')} · ${esc(unknownAgeLabel(operation.ageMs))}前</small></span>
+        </span>
+        <span class="settings-actions" style="margin:0">
+          <button type="button" class="btn btn-small" data-unknown-result="sent" data-operation-id="${esc(operation.id)}">确认已发送</button>
+          <button type="button" class="btn btn-small" data-unknown-result="failed" data-operation-id="${esc(operation.id)}">确认未发送</button>
+        </span>
+      </div>`).join('')}</div>`;
+  };
+
+  const load = async () => {
+    const query = olderThanDays > 0 ? `?olderThanDays=${olderThanDays}&limit=500` : '?limit=500';
+    const data = await api(`${base}${query}`);
+    operations = data.operations || [];
+    summary = data.summary || { total: 0, oldestAgeMs: 0 };
+    render();
+  };
+
+  const reconcile = async (ids, result) => {
+    const sent = result === 'sent';
+    const count = ids.length;
+    if (!await askForConfirmation(sent
+      ? `确认这 ${count} 条操作都已在 QQ 中看到成功？确认后不会再次发送。`
+      : `确认这 ${count} 条操作都未成功？系统也不会自动重试。`)) return;
+    // 单条核对走原端点（审计里不带 batch 标记）；多条才走批量端点。
+    const path = ids.length === 1
+      ? `${base}/${encodeURIComponent(ids[0])}/reconcile`
+      : `${base}/reconcile`;
+    const body = ids.length === 1 ? { result, confirm: true } : { ids, result, confirm: true };
+    await api(path, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+    closeModelModal(overlay);
+    await loadChats();
+  };
+
+  overlay.querySelector('[data-unknown-close]').addEventListener('click', () => closeModelModal(overlay));
+  ageSelect.addEventListener('change', async () => {
+    olderThanDays = Number(ageSelect.value) || 0;
+    try { await load(); } catch (error) { alert(`读取失败：${error.message}`); }
+  });
+  overlay.querySelector('[data-unknown-select-all]').addEventListener('click', () => {
+    listBox.querySelectorAll('[data-unknown-pick]').forEach((box) => { box.checked = true; });
+  });
+  overlay.querySelectorAll('[data-unknown-batch]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const ids = [...listBox.querySelectorAll('[data-unknown-pick]:checked')].map((box) => box.value);
+      if (!ids.length) return alert('先勾选要核对的记录');
       try {
-        const sent = button.dataset.unknownResult === 'sent';
-        if (!await askForConfirmation(sent
-          ? '确认已在 QQ 中看到这次操作成功？不会再次发送。'
-          : '确认这次操作未成功？系统也不会自动重试。')) return;
         button.disabled = true;
-        await api(
-          `/api/chats/${chatKey.replace(':', '_')}/unknown-operations/${encodeURIComponent(button.dataset.operationId)}/reconcile`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              result: button.dataset.unknownResult,
-              confirm: true
-            })
-          }
-        );
-        closeModelModal(overlay);
-        await loadChats();
+        await reconcile(ids, button.dataset.unknownBatch);
       } catch (error) {
-        // 失败时保留弹窗（用户可以再试或关掉），并给出明确反馈
         button.disabled = false;
-        alert(`核对写入失败：${error.message}`);
+        alert(`批量核对失败：${error.message}`);
       }
     });
   });
+  overlay.querySelector('[data-unknown-export]').addEventListener('click', () => {
+    const payload = JSON.stringify({
+      chatKey, exportedAt: new Date().toISOString(), summary, operations
+    }, null, 2);
+    const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `unknown-${chatKey.replace(':', '_')}-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  });
+  listBox.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-unknown-result]');
+    if (!button) return;
+    try {
+      button.disabled = true;
+      await reconcile([button.dataset.operationId], button.dataset.unknownResult);
+    } catch (error) {
+      // 失败时保留弹窗（用户可以再试或关掉），并给出明确反馈
+      button.disabled = false;
+      alert(`核对写入失败：${error.message}`);
+    }
+  });
+  await load();
 }
 
 function renderChatList() {

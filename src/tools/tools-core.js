@@ -3268,7 +3268,10 @@ export function buildToolDefs() {
       },
       async execute(ctx, args) {
         try {
-          const result = await webSearch(String(args.query ?? ''), { meme: args.meme === true });
+          const result = await webSearch(String(args.query ?? ''), {
+            meme: args.meme === true,
+            signal: ctx?.signal
+          });
           if (!result.results.length) {
             return ok({ query: result.query, results: [], note: '没有搜到结果，试试换关键词或更具体的说法。' });
           }

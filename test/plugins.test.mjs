@@ -547,6 +547,10 @@ test('控制台接线：路由的守卫与设置页的分区都在（锚点）',
   assert.ok(page.includes('data-plugin-action="install-file"'), '文件安装的按钮要在');
   assert.ok(page.includes('id="plugins-file-install" data-plugin-action="install-file" disabled'), '没选文件时按钮要禁用');
   assert.ok(page.includes('compareVersion'), '版本比较要自己实现（不引依赖）');
+  // 手动安装（文件/URL）遇到同 id 升级：必须处理 409 + diff，带哈希重试，不能只显示错误
+  assert.ok(page.includes("error?.code === 'E_UPGRADE_CONFIRM'"), '要认出升级确认错误');
+  assert.ok(page.includes('postPluginInstall'), '文件/URL 安装要走二次确认封装');
+  assert.match(page, /expectedDiffHash:\s*diff\.diffHash/, '确认后要带服务端给的 diffHash 重试');
   const html = fs.readFileSync(path.join(process.cwd(), 'ui', 'index.html'), 'utf8');
   assert.ok(html.includes('/pages/plugins.js'), '新页面模块要在 index.html 里加载');
 });

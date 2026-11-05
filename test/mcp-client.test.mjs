@@ -139,3 +139,247 @@ it('总开关关闭时，已保存的 server 仍出现在状态里并标未启�
     manager.stop();
   }
 });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitFor(fn, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fn()) return true;
+    await sleep(25);
+  }
+  return false;
+}
+
+it('server 调用中崩溃后自动重启，工具重新挂载可用', async () => {
+  configWith({ env: { MCP_FAKE_EXIT_ON_CALL: '1' } });
+  const manager = new McpManager({ restartBaseMs: 50, restartMaxMs: 200 });
+  try {
+    await manager.start();
+    const def = manager.toolDefsFor().find((entry) => entry.name === 'mcp_fake_echo');
+    const crashed = await def.execute({}, { text: 'boom' });
+    assert.equal(crashed.isError, true, '崩溃中的调用必须报错而不是挂住');
+    assert.equal(await waitFor(() => manager.status()[0]?.ready), true, '崩溃后应自动重启并恢复就绪');
+    const row = manager.status()[0];
+    assert.deepEqual(row.tools, ['echo']);
+    assert.equal(row.restarting, false);
+    assert.ok(manager.toolDefsFor().some((entry) => entry.name === 'mcp_fake_echo'), '重启后工具要重新挂载');
+  } finally {
+    manager.stop();
+  }
+});
+
+it('启动失败会退避重试，超过上限后停止并给出可读错误', async () => {
+  configWith({ command: process.execPath, args: ['-e', 'process.exit(3)'] });
+  const manager = new McpManager({ restartBaseMs: 50, restartMaxMs: 50, maxRestarts: 2 });
+  try {
+    await manager.start();
+    assert.equal(await waitFor(() => /已停止重试/.test(manager.status()[0]?.error || '')), true);
+    const row = manager.status()[0];
+    assert.match(row.error, /连续 2 次自动重启未成功/);
+    assert.equal(row.restarting, false);
+    assert.equal(row.restartAttempts, 2);
+  } finally {
+    manager.stop();
+  }
+});
+
+it('主动 stop() 取消待执行的重启，不会把关闭当成崩溃', async () => {
+  configWith();
+  const manager = new McpManager({ restartBaseMs: 50 });
+  try {
+    await manager.start();
+    manager.clients.get('fake').client.proc.kill('SIGKILL');
+    assert.equal(await waitFor(() => Boolean(manager.clients.get('fake')?.restartTimer)), true);
+    manager.stop();
+    await sleep(200);
+    assert.equal(manager.clients.size, 0);
+  } finally {
+    manager.stop();
+  }
+});
+
+it('要求网络隔离但本机不支持时启动失败，不静默退化成可联网', async (t) => {
+  if (process.platform === 'linux') return t.skip('Linux 是否支持 netns 由内核决定，改在部署机验证');
+  const client = new McpStdioClient({
+    id: 'iso',
+    command: process.execPath,
+    args: ['-e', ''],
+    networkIsolation: true
+  });
+  await assert.rejects(() => client.start(), /网络隔离/);
+  client.stop();
+});
+
+it('permissionIsolation：以 Node 权限模型启动，只读入口目录且能正常列工具', async () => {
+  const client = new McpStdioClient({
+    id: 'isolated',
+    command: process.execPath,
+    args: [fixture],
+    permissionIsolation: true
+  });
+  try {
+    await client.start();
+    assert.equal(client.permissionActive, true);
+    assert.deepEqual(client.tools.map((tool) => tool.name), ['echo']);
+  } finally {
+    client.stop();
+  }
+});
+
+it('permissionIsolation：外壳命令与非 node 进程 fail-closed，不假装隔离', async () => {
+  const shell = new McpStdioClient({
+    id: 'shell', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'], permissionIsolation: true
+  });
+  await assert.rejects(() => shell.start(), (error) => error.code === 'E_MCP_ISOLATION' && /只支持直接用 node/.test(error.message));
+  shell.stop();
+});
+
+it('permissionIsolation：读取白名单不能覆盖数据目录', async () => {
+  const inside = path.join(dir, 'mcp-server.mjs');
+  fs.writeFileSync(inside, '');
+  const client = new McpStdioClient({
+    id: 'inside', command: process.execPath, args: [inside], permissionIsolation: true
+  });
+  await assert.rejects(() => client.start(), /数据目录/);
+  client.stop();
+});
+
+it('隔离模式剥掉能改写启动行为的注入变量，业务凭据保留', async () => {
+  const { stripIsolationEnv } = await import('../src/mcp/isolation.js');
+  assert.deepEqual(stripIsolationEnv({
+    NODE_OPTIONS: '--require ./evil.js',
+    NODE_PATH: '/tmp/modules',
+    LD_PRELOAD: '/tmp/evil.so',
+    LD_AUDIT: '/tmp/audit.so',
+    DYLD_INSERT_LIBRARIES: '/tmp/inject.dylib',
+    GITHUB_TOKEN: 'keep-me'
+  }), { GITHUB_TOKEN: 'keep-me' });
+});
+
+it('permissionIsolation：args 里夹带权限/加载器参数一律拒绝', async () => {
+  const { mcpPermissionSpec } = await import('../src/mcp/isolation.js');
+  const server = path.join(dir, 'mcp-server.mjs');
+  for (const flag of [
+    '--permission', '--experimental-permission', '--allow-fs-read=/', '--allow-fs-write=/tmp',
+    '--allow-child-process', '--max-old-space-size=64', '--require', '-r', '--import=x',
+    '--loader', '--experimental-loader=x', '-e', '--eval=1', '-p', '--print=x',
+    '--openssl-config=/tmp/x.cnf', '--icu-data-dir=/tmp', '--snapshot-blob=/tmp/x.blob'
+  ]) {
+    const spec = mcpPermissionSpec({ command: process.execPath, args: [flag, server] });
+    assert.equal(spec.ok, false, `${flag} 必须被拒绝，否则白名单可被追加参数绕过`);
+    assert.match(spec.error, /不允许在 args 里传权限\/加载器参数/);
+  }
+});
+
+it('permissionIsolation：读取目录取最后一个入口脚本，避开 -r 预加载脚本', async () => {
+  const { mcpReadDir } = await import('../src/mcp/isolation.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-mcp-args-'));
+  try {
+    const preload = path.join(base, 'preload.js');
+    const server = path.join(base, 'server.mjs');
+    fs.writeFileSync(preload, '');
+    fs.writeFileSync(server, '');
+    assert.equal(mcpReadDir({ args: ['-r', preload, server] }), base);
+    assert.equal(mcpReadDir({ args: [server, '--flag'] }), base);
+    assert.equal(mcpReadDir({ args: [], cwd: base }), base);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+it('网络隔离包装：内层命令保持 node 本身，不能拼成 unshare unshare', async () => {
+  const { wrapWithNetns } = await import('../src/mcp/isolation.js');
+  const spec = wrapWithNetns('/usr/bin/node', ['--permission', '/srv/mcp/server.mjs']);
+  assert.equal(spec.command, 'unshare');
+  assert.deepEqual(spec.args, [
+    '--user', '--map-root-user', '--net',
+    '/usr/bin/node', '--permission', '/srv/mcp/server.mjs'
+  ]);
+});
+
+it('networkIsolation：Linux 支持 netns 时真实启动，工具可用', async (t) => {
+  if (process.platform !== 'linux') return t.skip('只有 Linux 有 unshare/netns');
+  const { networkIsolationSupported } = await import('../src/plugins/isolation.js');
+  const probe = networkIsolationSupported();
+  if (!probe.ok) return t.skip(probe.error);
+  const client = new McpStdioClient({
+    id: 'netiso', command: process.execPath, args: [fixture],
+    networkIsolation: true, timeoutMs: 15000
+  });
+  try {
+    await client.start();
+    assert.deepEqual(client.tools.map((tool) => tool.name), ['echo']);
+  } finally {
+    client.stop();
+  }
+});
+
+it('networkIsolation + permissionIsolation：两层叠加仍能启动', async (t) => {
+  if (process.platform !== 'linux') return t.skip('只有 Linux 有 unshare/netns');
+  const { networkIsolationSupported } = await import('../src/plugins/isolation.js');
+  const probe = networkIsolationSupported();
+  if (!probe.ok) return t.skip(probe.error);
+  const client = new McpStdioClient({
+    id: 'bothiso', command: process.execPath, args: [fixture],
+    networkIsolation: true, permissionIsolation: true, timeoutMs: 15000
+  });
+  try {
+    await client.start();
+    assert.equal(client.permissionActive, true);
+    assert.deepEqual(client.tools.map((tool) => tool.name), ['echo']);
+  } finally {
+    client.stop();
+  }
+});
+
+it('permissionIsolation：允许目录里的软链指向数据目录时拒绝启动', async (t) => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-mcp-link-'));
+  try {
+    const allowed = path.join(base, 'allowed');
+    fs.mkdirSync(allowed);
+    fs.writeFileSync(path.join(allowed, 'mcp-server.mjs'), '');
+    try {
+      fs.symlinkSync(dir, path.join(allowed, 'leak'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      t.skip(`本机不允许创建软链：${error.code}`);
+      return;
+    }
+    const { mcpPermissionSpec } = await import('../src/mcp/isolation.js');
+    const spec = mcpPermissionSpec({
+      command: process.execPath,
+      args: [path.join(allowed, 'mcp-server.mjs')]
+    });
+    assert.equal(spec.ok, false);
+    assert.match(spec.error, /权限白名单不安全/);
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+it('管理器 close() 后不再拉起 MCP server，进程退出阶段不会复活子进程', async () => {
+  configWith();
+  const manager = new McpManager({ restartBaseMs: 50 });
+  await manager.start();
+  assert.equal(manager.status()[0].ready, true);
+  manager.close();
+  assert.equal(manager.clients.size, 0);
+  assert.deepEqual(await manager.start(), []);
+  await sleep(150);
+  assert.equal(manager.clients.size, 0);
+  assert.equal(manager.status()[0].ready, false);
+});
+
+it('管理器：permissionIsolation 生效并在状态里标明', async () => {
+  configWith({ permissionIsolation: true });
+  const manager = new McpManager();
+  try {
+    await manager.start();
+    const status = manager.status();
+    assert.equal(status[0].ready, true);
+    assert.equal(status[0].permissionIsolation, true);
+    assert.equal(status[0].permissionActive, true);
+  } finally {
+    manager.stop();
+  }
+});

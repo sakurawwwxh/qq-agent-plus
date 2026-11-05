@@ -476,3 +476,24 @@ test('Tavily：provider=tavily 真的走 Tavily（此前静默退回 Bing）', a
   assert.equal(calls[0].headers.authorization, 'Bearer tv-key', 'Key 要带上');
   assert.deepEqual(result.results, [{ title: '结果', url: 'https://example.com/a', snippet: '摘要' }]);
 });
+
+test('webSearch 把本轮 AbortSignal 传进 provider：取消后请求立刻停止', async () => {
+  setWebSearch({ provider: 'sogou' });
+  let seenSignal = null;
+  globalThis.fetch = (url, opts = {}) => new Promise((resolve, reject) => {
+    seenSignal = opts.signal;
+    if (opts.signal?.aborted) { reject(opts.signal.reason); return; }
+    opts.signal?.addEventListener('abort', () => reject(opts.signal.reason), { once: true });
+  });
+  const ac = new AbortController();
+  const { webSearch } = await import('../src/llm/web-search.js');
+  const pending = webSearch('测试查询', { signal: ac.signal });
+  setTimeout(() => ac.abort(new Error('stop-now')), 20);
+  const outcome = await Promise.race([
+    pending.then(() => ({ ok: true }), (error) => ({ error })),
+    new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 2000))
+  ]);
+  assert.equal(outcome.timeout, undefined, '取消后不能继续等 provider 超时');
+  assert.match(String(outcome.error?.message || ''), /stop-now/);
+  assert.ok(seenSignal instanceof AbortSignal, 'fetch 必须收到组合后的取消信号');
+});

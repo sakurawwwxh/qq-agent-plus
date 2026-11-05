@@ -1729,6 +1729,172 @@ try {
       + (ok ? '' : ` -> controls=${controlsOk} saved=${JSON.stringify(saved)} empty=${JSON.stringify(posted?.onebot)}`));
   }
 
+  // 2026-11-04：补齐的设置入口必须真的写进配置。这里逐段设置控件再保存，
+  // 既钉住"控件在哪个页面、patch 就在哪段构造"，也钉住新键没有被漏接。
+  {
+    const posts = [];
+    const errs = [];
+    const beforeFetch = sandbox.fetch;
+    sandbox.fetch = async (path, opts = {}) => {
+      if (String(path).includes('/api/config') && String(opts.method || '').toUpperCase() === 'POST') {
+        try { posts.push(JSON.parse(opts.body || '{}')); } catch { /* 忽略 */ }
+      }
+      const cfgNow = JSON.parse(vm.runInContext('JSON.stringify(state.config || {})', ctx));
+      return { ok: true, status: 200, json: async () => ({ ok: true, config: cfgNow }), text: async () => '{}' };
+    };
+    const setVal = (sel, value) => { document.querySelector(sel).value = value; };
+    const setChk = (sel, value) => { document.querySelector(sel).checked = value; };
+    const useCfg = (patch) => {
+      vm.runInContext(`state.config = ${JSON.stringify({ ...cfg, ...patch })};`, ctx);
+    };
+    const saveIn = async (sec) => {
+      vm.runInContext(`state.settingsSection = ${JSON.stringify(sec)};`, ctx);
+      posts.length = 0;
+      try { await ctx.saveConfig({ quiet: true }); } catch (error) { errs.push(`${sec}: ${error?.message || error}`); }
+      return posts[posts.length - 1] || {};
+    };
+    const checks = [];
+
+    // 0 是合法冷却值：渲染不能把它回显成默认 60/300/600/30 秒，否则再保存会覆盖用户设置。
+    const zeroCooldownHtml = ctx.renderChatSection({
+      ...cfg,
+      humanize: {
+        ...(cfg.humanize || {}),
+        actions: {
+          ...(cfg.humanize?.actions || {}),
+          stickerCooldownMs: 0, pokeCooldownMs: 0, voiceCooldownMs: 0, reactCooldownMs: 0
+        }
+      }
+    });
+    checks.push(['0 冷却回显', ['sticker', 'poke', 'voice', 'react'].every((kind) =>
+      new RegExp(`id="cfg-humanize-cooldown-${kind}"[^>]*value="0"`).test(zeroCooldownHtml)),
+    '冷却 0 被回显成默认值']);
+
+    // 手改 targetUins 成字符串时，页面要按空数组容错，不能整页抛错。
+    let targetRenderOk = false;
+    try {
+      const html = ctx.renderDailyMomentsSection({
+        ...cfg,
+        dailyMoments: { ...(cfg.dailyMoments || {}), visibility: 16, targetUins: '123456' }
+      });
+      // 坏形状要按空数组处理：控件在、且不能把字符串原样回显成名单。
+      targetRenderOk = html.includes('id="cfg-moments-target-uins" value=""');
+    } catch { /* 失败落到下面的断言 */ }
+    checks.push(['targetUins 坏形状', targetRenderOk, '非数组 targetUins 没有按空数组渲染']);
+
+    useCfg({ allow: { groups: ['1'], private: [] }, deny: { groups: ['2'], private: ['3'] } });
+    setVal('#cfg-allowgroups', '1');
+    setVal('#cfg-allowprivate', '');
+    setVal('#cfg-denygroups', '2,4');
+    setVal('#cfg-denyprivate', '3,5');
+    const allow = await saveIn('allow');
+    checks.push(['deny 名单', JSON.stringify(allow.deny) === '{"groups":["2","4"],"private":["3","5"]}', JSON.stringify(allow.deny)]);
+
+    useCfg({
+      failureNotice: { enabled: true, cooldownMinutes: 8 },
+      proactive: { ...(cfg.proactive || {}), followUpDelayMinutes: 10, followUpCooldownMinutes: 20 },
+      humanize: { ...(cfg.humanize || {}), personaState: { enabled: true, sleepStart: '00:00', sleepEnd: '07:00' }, shape: { maxBubbles: 3 }, actions: { maxPerRun: 4 } },
+      sticker: { ...(cfg.sticker || {}), maxCollectPerHourPerChat: 3 },
+      store: { ...(cfg.store || {}), contextLayering: { enabled: true, maxHistoryMessages: 24, maxHistoryChars: 8000 } }
+    });
+    setChk('#cfg-failure-notice', true);
+    setVal('#cfg-failure-notice-cooldown', '12');
+    setVal('#cfg-pro-followup-delay', '7');
+    setVal('#cfg-pro-followup-cooldown', '30');
+    setVal('#cfg-humanize-sleep-start', '01:00');
+    setVal('#cfg-humanize-sleep-end', '08:00');
+    setVal('#cfg-humanize-cap', '10');
+    setVal('#cfg-humanize-max-bubbles', '4');
+    setVal('#cfg-humanize-actions-max', '6');
+    setVal('#cfg-humanize-cooldown-sticker', '11');
+    setVal('#cfg-humanize-cooldown-poke', '22');
+    setVal('#cfg-humanize-cooldown-voice', '33');
+    setVal('#cfg-humanize-cooldown-react', '44');
+    setChk('#cfg-context-layering', true);
+    setVal('#cfg-context-layer-messages', '50');
+    setVal('#cfg-context-layer-chars', '12345');
+    setVal('#cfg-sticker-collect-max-perchat', '7');
+    setVal('#cfg-direct-wake-delay', '450');
+    setVal('#cfg-max-batch-wait', '15000');
+    const chat = await saveIn('chat');
+    checks.push(['失败兜底', chat.failureNotice?.enabled === true && chat.failureNotice?.cooldownMinutes === 12, JSON.stringify(chat.failureNotice)]);
+    checks.push(['补话节奏', chat.proactive?.followUpDelayMinutes === 7 && chat.proactive?.followUpCooldownMinutes === 30, JSON.stringify([chat.proactive?.followUpDelayMinutes, chat.proactive?.followUpCooldownMinutes])]);
+    checks.push(['拟人化作息', chat.humanize?.personaState?.sleepStart === '01:00' && chat.humanize?.personaState?.sleepEnd === '08:00', JSON.stringify(chat.humanize?.personaState)]);
+    checks.push(['拟人化等待封顶', chat.humanize?.replyDelay?.capMs === 10000, String(chat.humanize?.replyDelay?.capMs)]);
+    checks.push(['拟人化气泡/动作', chat.humanize?.shape?.maxBubbles === 4 && chat.humanize?.actions?.maxPerRun === 6
+      && chat.humanize?.actions?.stickerCooldownMs === 11000 && chat.humanize?.actions?.pokeCooldownMs === 22000
+      && chat.humanize?.actions?.voiceCooldownMs === 33000 && chat.humanize?.actions?.reactCooldownMs === 44000,
+      JSON.stringify({ shape: chat.humanize?.shape, actions: chat.humanize?.actions })]);
+    checks.push(['分层上下文', chat.store?.contextLayering?.enabled === true && chat.store?.contextLayering?.maxHistoryMessages === 50 && chat.store?.contextLayering?.maxHistoryChars === 12345, JSON.stringify(chat.store?.contextLayering)]);
+    checks.push(['每会话收藏上限', chat.sticker?.maxCollectPerHourPerChat === 7, String(chat.sticker?.maxCollectPerHourPerChat)]);
+    checks.push(['直接互动/攒批窗口', chat.directWakeDelayMs === 450 && chat.maxBatchWaitMs === 15000, JSON.stringify([chat.directWakeDelayMs, chat.maxBatchWaitMs])]);
+
+    useCfg({ api: { ...(cfg.api || {}), timeoutMs: 60000, runTimeoutMs: 180000 } });
+    setVal('#cfg-api-timeout', '75');
+    setVal('#cfg-run-timeout', '200');
+    const api = await saveIn('api');
+    checks.push(['请求/整轮超时', api.api?.timeoutMs === 75000 && api.api?.runTimeoutMs === 200000, JSON.stringify([api.api?.timeoutMs, api.api?.runTimeoutMs])]);
+
+    useCfg({ dailyMoments: { ...(cfg.dailyMoments || {}), visibility: 4, targetUins: [], maxPromptChars: 120000 } });
+    setVal('#cfg-moments-visibility', '16');
+    setVal('#cfg-moments-target-uins', '123456,987654');
+    setVal('#cfg-moments-max-prompt', '150000');
+    const moments = await saveIn('moments');
+    checks.push(['空间部分可见', moments.dailyMoments?.visibility === 16 && JSON.stringify(moments.dailyMoments?.targetUins) === '[123456,987654]', JSON.stringify([moments.dailyMoments?.visibility, moments.dailyMoments?.targetUins])]);
+    checks.push(['空间素材上限', moments.dailyMoments?.maxPromptChars === 150000, String(moments.dailyMoments?.maxPromptChars)]);
+
+    useCfg({ qzoneInteractions: { ...(cfg.qzoneInteractions || {}), maxDecisionRounds: 3 } });
+    setVal('#cfg-qzi-decision-rounds', '4');
+    const qzone = await saveIn('qzone-interactions');
+    checks.push(['空间互动决策轮数', qzone.qzoneInteractions?.maxDecisionRounds === 4, String(qzone.qzoneInteractions?.maxDecisionRounds)]);
+
+    useCfg({ onebot: { ...(cfg.onebot || {}), catchupHistoryCount: 100 } });
+    setVal('#cfg-catchup-count', '250');
+    const onebot = await saveIn('onebot');
+    checks.push(['补课拉取条数', onebot.onebot?.catchupHistoryCount === 250, String(onebot.onebot?.catchupHistoryCount)]);
+
+    useCfg({ messageTypes: { ...(cfg.messageTypes || {}), enrichTimeoutMs: 5000 } });
+    setVal('#cfg-mt-enrich-timeout', '7000');
+    const mt = await saveIn('messageTypes');
+    checks.push(['富化预算', mt.messageTypes?.enrichTimeoutMs === 7000, String(mt.messageTypes?.enrichTimeoutMs)]);
+    // 清空输入 = 保持原值，不能静默夹成最小值 200。
+    useCfg({ messageTypes: { ...(cfg.messageTypes || {}), enrichTimeoutMs: 5000 } });
+    setVal('#cfg-mt-enrich-timeout', '');
+    const mtEmpty = await saveIn('messageTypes');
+    checks.push(['富化清空保持', mtEmpty.messageTypes?.enrichTimeoutMs === 5000, String(mtEmpty.messageTypes?.enrichTimeoutMs)]);
+
+    useCfg({
+      asr: { ...(cfg.asr || {}), maxPerHourPerChat: 4 },
+      tts: { ...(cfg.tts || {}), maxPerHour: 30, maxPerHourPerChat: 6 },
+      imageGen: { ...(cfg.imageGen || {}), responseFormat: '', timeoutMs: 120000 }
+    });
+    setVal('#cfg-asr-mode', 'local');
+    setVal('#cfg-asr-max-perchat', '9');
+    setVal('#cfg-tts-max', '40');
+    setVal('#cfg-tts-max-perchat', '8');
+    setVal('#cfg-img-response-format', 'b64_json');
+    setVal('#cfg-img-timeout', '150');
+    const voice = await saveIn('asr');
+    checks.push(['每会话转写上限', voice.asr?.maxPerHourPerChat === 9, String(voice.asr?.maxPerHourPerChat)]);
+    checks.push(['TTS 双闸', voice.tts?.maxPerHour === 40 && voice.tts?.maxPerHourPerChat === 8, JSON.stringify([voice.tts?.maxPerHour, voice.tts?.maxPerHourPerChat])]);
+    checks.push(['生图格式/超时', voice.imageGen?.responseFormat === 'b64_json' && voice.imageGen?.timeoutMs === 150000, JSON.stringify([voice.imageGen?.responseFormat, voice.imageGen?.timeoutMs])]);
+
+    useCfg({ webSearch: { ...(cfg.webSearch || {}), maxResults: 6, deepseek: { needContent: false }, tavily: { searchDepth: 'basic' } } });
+    setVal('#cfg-searchprovider', 'bing');
+    setVal('#cfg-search-maxresults', '9');
+    setChk('#cfg-ds-needcontent', true);
+    setVal('#cfg-tavily-depth', 'advanced');
+    const search = await saveIn('search');
+    checks.push(['搜索展示/正文/深度', search.webSearch?.maxResults === 9 && search.webSearch?.deepseek?.needContent === true && search.webSearch?.tavily?.searchDepth === 'advanced',
+      JSON.stringify([search.webSearch?.maxResults, search.webSearch?.deepseek?.needContent, search.webSearch?.tavily?.searchDepth])]);
+
+    sandbox.fetch = beforeFetch;
+    const ok = checks.every(([, passIt]) => passIt) && errs.length === 0;
+    ok ? pass++ : fail++;
+    console.log('  ' + (ok ? 'OK   ' : 'FAIL ') + '设置页：新增入口的保存映射（deny/失败兜底/超时/分层/空间/分闸/搜索）'
+      + (ok ? '' : ` -> ${JSON.stringify(checks.filter(([, v]) => !v).map(([n, , v]) => `${n}=${v}`))}${errs.length ? `; ${errs.join('；')}` : ''}`));
+  }
+
   // 门槛两端都要收口：手输 9999 不能存进去（会把"发现新人"事实上永久关掉，或一次建出上百条印象）
   {
     let posted = null;
@@ -2327,14 +2493,15 @@ try {
     console.log('  FAIL  服务入口、更新部署或密钥控制视图缺失');
   }
 
-  // 保存白名单不能让屏蔽名单消失：界面里没有 deny 编辑控件，唯一正确的做法是不发这个字段
-  // （服务端 config.js 会按现状补 deny.private，而 deepMerge 对数组是整体替换）。
-  if (/patch\.deny\s*=/.test(code)) {
-    fail++;
-    console.log('  FAIL  保存白名单仍会覆盖屏蔽名单（不要发 patch.deny）');
-  } else {
+  // deny 现在有独立控件：保存时必须提交两份名单；控件缺失时（旧页面/渲染失败）
+  // 仍然不能发空数组 —— deepMerge 对数组整体替换，会把手改的屏蔽名单清空。
+  if (/id="cfg-denygroups"/.test(code) && /id="cfg-denyprivate"/.test(code)
+    && /patch\.deny\s*=/.test(code)) {
     pass++;
-    console.log('  OK    保存白名单不动屏蔽名单');
+    console.log('  OK    保存白名单同时提交 deny（控件缺失时由服务端保留原值）');
+  } else {
+    fail++;
+    console.log('  FAIL  白名单页缺少 deny 控件或保存字段');
   }
 
   // 旧架构服务（DSH / Bridge）不在本仓库的部署栈里：没配置端点时显示「未部署」（灰色）而不是
@@ -3715,7 +3882,7 @@ try {
       // 闲聊页（chat）是"控件最多的那页"：新加的收藏三件套就走这一段构造，
       // 列全它写出的键，顺手把"贴纸键从 chat 段写出去"钉住。
       ['chat', ['wakeDelayMinMs', 'wakeDelayMaxMs', 'wakeDelayMs', 'drainDelayMs', 'maxConcurrentRuns',
-        'conversation', 'send', 'proactive', 'sticker', 'store']]
+        'conversation', 'send', 'proactive', 'failureNotice', 'sticker', 'store']]
     ];
     const allKeys = [...new Set(cases.flatMap(([, keys]) => keys))];
     const results = [];

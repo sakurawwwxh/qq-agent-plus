@@ -1368,6 +1368,29 @@ async function post(path, body) {
   return api(path, { method: 'POST', body: JSON.stringify(body) });
 }
 
+// 手动安装（文件/URL）也可能撞上同 id 升级：服务端返回 409 + diff，控制台不能只显示错误。
+// 展示权限面变化，确认后带 diffHash 重试一次；取消则抛一个可识别的错误。
+async function postPluginInstall(path, body) {
+  try {
+    return await post(path, body);
+  } catch (error) {
+    const diff = error?.data?.diff;
+    const confirmCode = error?.code === 'E_UPGRADE_CONFIRM' || error?.code === 'E_UPGRADE_CONFIRM_STALE';
+    if (!confirmCode || !diff?.diffHash) throw error;
+    const lines = (diff.summary || []).join('\n') || '（权限面有变化）';
+    const ok = await askForConfirmation(
+      `这次安装会升级同 id 插件并改变权限：\n\n${lines}\n\n`
+      + '升级后相关写开关会自动关闭、对象级批准与待批会清空，需要重新授权。确认继续？'
+    );
+    if (!ok) {
+      const cancelled = new Error('已取消升级');
+      cancelled.cancelled = true;
+      throw cancelled;
+    }
+    return post(path, { ...body, expectedDiffHash: diff.diffHash });
+  }
+}
+
 let delegationBound = false;
 let popstateBound = false;
 /** 正在等 popstate 收尾（防止连点「返回目录」把两层历史一起退掉） */
@@ -1728,7 +1751,7 @@ function bindPluginsSection() {
           }
         } else {
           setStatus(`正在安装 ${id}…`, { busy: true });
-          await post('/api/plugins/install', { id });
+          await postPluginInstall('/api/plugins/install', { id });
         }
         setStatus(action === 'upgrade'
           ? `已升级 ${id}（旧版留在 plugins/.backup-* 里，确认没问题可以删）`
@@ -1740,7 +1763,7 @@ function bindPluginsSection() {
         setStatus(`正在读取 ${file.name}…`, { busy: true });
         const base64 = await fileToBase64(file);
         setStatus('正在校验并换入…', { busy: true });
-        const result = await post('/api/plugins/install-file', { fileName: file.name, base64 });
+        const result = await postPluginInstall('/api/plugins/install-file', { fileName: file.name, base64 });
         setStatus(`已装 ${result.id} v${result.version}（来源：本地文件：${result.fileName}）`
           + `｜包内容 sha256 ${String(result.sha256 || '').slice(0, 16)}…`, { tone: 'success' });
         // 装完直接问要不要启用：小白最容易卡在"装完了以为就好了"
@@ -1757,7 +1780,7 @@ function bindPluginsSection() {
         if (!/^https?:\/\//i.test(url)) { setStatus('地址要以 http:// 或 https:// 开头', { tone: 'error' }); button.disabled = false; return; }
         if (!/^[0-9a-f]{64}$/.test(sha256)) { setStatus('sha256 要填 64 位十六进制（打包脚本会打印）', { tone: 'error' }); button.disabled = false; return; }
         setStatus('正在下载并校验…', { busy: true });
-        const result = await post('/api/plugins/install', { url, sha256 });
+        const result = await postPluginInstall('/api/plugins/install', { url, sha256 });
         setStatus(`已安装 ${result?.id || ''} —— 还要点「启用」才会跑（装上 ≠ 授权）`, { tone: 'success' });
       } else if (action === 'enable' || action === 'disable') {
         await post('/api/plugins/toggle', { id, enabled: action === 'enable' });
@@ -1772,7 +1795,8 @@ function bindPluginsSection() {
         setStatus(`已重载 ${id}`, { tone: 'success' });
       }
     } catch (error) {
-      setStatus(`操作失败：${error?.message || error}`, { tone: 'error' });
+      setStatus(error?.cancelled ? '已取消升级' : `操作失败：${error?.message || error}`,
+        { tone: error?.cancelled ? 'info' : 'error' });
     } finally {
       // 「安装 / 装这个文件」是**静态骨架**里的按钮，不会被 refreshPlugins 重画 ——
       // 不复位的话，装完一次（或失败一次）就永久变灰，连重试都点不了。

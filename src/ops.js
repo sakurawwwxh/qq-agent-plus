@@ -33,14 +33,21 @@ import { isContainerRuntime, containerUpdateHint } from './core/runtime.js';
 import { idList } from './core/list.js';
 import { listSessionFiles, readSessionFile } from './core/session-files.js';
 import { EffectLedger } from './core/effects.js';
+import { reconcileEffectOutbox } from './core/effect-outbox.js';
 import { inspectInstanceLock } from './core/instance-lock.js';
 import { backupKeyFile, loadBackupKey } from './core/backup-key.js';
+import { runTarCreate } from './core/backup-tar.js';
+import { acquireMaintenanceLock, createSignalGuard } from './core/maintenance.js';
 import {
   storageBreakdown, sessionStorage, redactedConfig, pluginSummary, incidentSummary,
   effectSummary, logTail, buildDiagnoseEntries, writeDiagnoseArchive
 } from './core/diagnose.js';
 import { pruneAudit } from './core/audit-log.js';
 import { installPlugin, uninstallPlugin, readPluginInstallInfo, sha256Of } from './plugins/install.js';
+import { clearPluginGrants } from './plugins/grants.js';
+import { applyUpgradeSecurity } from './plugins/upgrade-security.js';
+import { clearPluginSecrets } from './plugins/secrets.js';
+import { removePluginFromConfig } from './plugins/config-file.js';
 import { resolveModelPrice, modelLabel, setRemotePrices, setChannelPrices } from './pricing/model-prices.js';
 
 const REPO_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -808,6 +815,7 @@ function loadConfigJson(dataDir) {
   }
 }
 
+
 function configToken(cfgJson) {
   const envToken = envStr('QQ_AGENT_CONSOLE_TOKEN');
   if (envToken) return { token: envToken, from: 'env' };
@@ -1184,40 +1192,6 @@ function cmdScan(args) {
 }
 
 // ─────────────────────────── backup 子命令（原 backup-qq-agent-data.sh） ───────────────────────────
-
-// GNU tar 会把 "C:/..." 当成远程主机（Windows 盘符），失败时退回不带 --force-local 的形式
-// （bsdtar 不认该选项，但它本身不解析远程归档，可以直接处理盘符路径）。
-function runTarCreate(outFile, dataDir, extra = null) {
-  // 数据目录可能是软链（数据盘单独挂载的受支持布局）。tar 默认不跟随软链，
-  // 直接归档链接本身会生成恢复侧明确拒绝的 symlink 条目，备份看似成功却不可恢复。
-  const sourceDir = fs.realpathSync(dataDir);
-  const parent = path.dirname(sourceDir);
-  const base = path.basename(sourceDir);
-  // 部署快照 / 更新缓存都是可重建的大目录；与 scripts/manage.mjs backup 的排除清单保持一致，
-  // 否则每周定时备份会把它们整套再打包一份（2026-10 审查 P3）。
-  const excludes = ['--exclude=deploy-backups', '--exclude=update-work', '--exclude=update-repository.git',
-    // 运行态锁/标记：备份/恢复跨主机时 pid/hostname 都是旧的，恢复后可能挡住新实例或永久误报
-    '--exclude=.server.lock', '--exclude=.auto-update.lock', '--exclude=.auto-update.lock.takeover',
-    '--exclude=.deploy.lock', '--exclude=.deploy.lock.takeover', '--exclude=.deploy-in-progress'];
-  const baseArgs = [...excludes, '-czf', outFile, '-C', parent, base];
-  // 可选：把部署凭据放在归档顶层 stack-credentials/ 下（恢复时不会自动写回，需人工取用）
-  if (extra?.dir && extra?.name) baseArgs.push('-C', extra.dir, extra.name);
-  const attempts = IS_WINDOWS
-    ? [['--force-local', ...baseArgs], [...baseArgs]]
-    : [[...baseArgs]];
-  let last = { ok: false, code: null, stderr: '' };
-  for (const tarArgs of attempts) {
-    // 有界超时：备份在 systemctl stop 之后跑，tar 卡住 = 机器人一直停着等人
-    //（2026-10-12 审查：这里原来是 timeout: 0 = 永不超时）。30 分钟对数据目录足够宽裕；
-    // 超时会连进程一起杀掉，失败路径会清掉半成品并照常拉起服务。
-    const result = run('tar', tarArgs, { timeout: 30 * 60 * 1000 });
-    if (result.ok) return result;
-    last = result;
-    try { fs.rmSync(outFile, { force: true }); } catch { /* 忽略 */ }
-  }
-  return last;
-}
-
 async function cmdBackup(args) {
   if (wantsHelp(args)) { say(HELP.backup); return 0; }
   const cfg = config({
@@ -1255,6 +1229,16 @@ async function cmdBackup(args) {
     ngLine(`数据目录不存在: ${cfg.dataDir}`);
     return 1;
   }
+  let backupLock;
+  try {
+    backupLock = acquireMaintenanceLock(cfg.dataDir, { kind: 'backup' });
+  } catch (error) {
+    ngLine(`无法开始备份：${error?.message || error}`);
+    return 1;
+  }
+  // 信号守卫只阻止“立刻退出”，让下面的 finally 有机会把服务拉起来；备份本身会跑完。
+  const backupGuard = createSignalGuard({ log: noteLine });
+  try {
   const tarProbe = run('tar', ['--version']);
   if (tarProbe.missing) {
     ngLine('本机缺少 tar 命令，无法备份');
@@ -1277,8 +1261,11 @@ async function cmdBackup(args) {
     }
   } catch { /* 目录读不了交由后面的 tar 报错 */ }
   const stamp = formatStamp();
-  const outFile = path.join(cfg.backupDir, `qq-agent-data-${stamp}.tar.gz${noEncrypt ? '' : '.enc'}`);
-  const plainFile = noEncrypt ? outFile : path.join(cfg.backupDir, `.qq-agent-data-${stamp}.tar.gz.plain`);
+  // 同一秒启动两个备份时，秒级时间戳会撞同名文件；加随机后缀保证各自独立，
+  // 交错写同一个 .enc 不会留下半个可用归档。
+  const nonce = crypto.randomBytes(3).toString('hex');
+  const outFile = path.join(cfg.backupDir, `qq-agent-data-${stamp}-${nonce}.tar.gz${noEncrypt ? '' : '.enc'}`);
+  const plainFile = noEncrypt ? outFile : path.join(cfg.backupDir, `.qq-agent-data-${stamp}-${nonce}.tar.gz.plain`);
   const du = run('du', ['-sh', cfg.dataDir]);
   if (!du.missing && du.ok) noteLine(`源大小: ${du.stdout.trim().split(/\s+/)[0]}`);
 
@@ -1354,7 +1341,13 @@ async function cmdBackup(args) {
       ngLine(`无法创建临时备份文件：${error?.message || error}，本次备份作废`);
       return 1;
     }
-    const tar = runTarCreate(plainFile, cfg.dataDir, credsExtra);
+    const tar = runTarCreate({
+      outFile: plainFile,
+      dataDir: cfg.dataDir,
+      extra: credsExtra,
+      run,
+      isWindows: IS_WINDOWS
+    });
     tarOk = tar.ok;
     if (!tarOk) ngLine(`tar 打包失败（返回码 ${tar.code}${tar.stderr ? `：${tar.stderr.trim().split('\n')[0]}` : ''}）`);
   } finally {
@@ -1427,7 +1420,18 @@ async function cmdBackup(args) {
     ngLine('备份文件已生成，但服务未能恢复运行：本次命令按失败返回，请检查服务状态');
     return 1;
   }
+  if (backupGuard.interrupted) {
+    ngLine(`收到 ${backupGuard.signal}：本次备份已完整生成，按中断返回`);
+    return 130;
+  }
   return 0;
+  } catch (error) {
+    ngLine(`备份失败：${error?.message || error}`);
+    return 1;
+  } finally {
+    backupGuard.dispose();
+    backupLock.release();
+  }
 }
 
 // ─────────────────────────── 备份加密 / 恢复 ───────────────────────────
@@ -1612,6 +1616,8 @@ async function cmdRestore(args) {
   const dryRun = hasFlag(args, '--dry-run');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-restore-'));
   const tarFile = path.join(temp, 'restore.tar.gz');
+  let restoreLock = null;
+  let restoreGuard = null;
   try {
     if (!noEncrypt && from.endsWith('.enc')) {
       await decryptBackupFile(from, tarFile, loadBackupKey({ keyFile }));
@@ -1636,11 +1642,24 @@ async function cmdRestore(args) {
       ngLine('恢复会覆盖数据目录：请加 --confirm（或 --dry-run 预览）');
       return 1;
     }
+    try {
+      restoreLock = acquireMaintenanceLock(cfg.dataDir, { kind: 'restore' });
+    } catch (error) {
+      ngLine(`无法开始恢复：${error?.message || error}`);
+      return 1;
+    }
+    restoreGuard = createSignalGuard({ log: noteLine });
     const extractDir = path.join(temp, 'extract');
     const extracted = runTarExtract(tarFile, extractDir);
     if (!extracted.ok) { ngLine(`解包失败：${(extracted.stderr || '').trim().split('\n')[0] || extracted.code}`); return 1; }
     const dataRoot = locateDataRoot(extractDir);
     if (!dataRoot) { ngLine('归档里没有 config.json，不像 QQ Agent 数据目录'); return 1; }
+    // 解包期间收到信号：还没停服务，直接放弃最安全；停服后的信号交给内层 finally
+    // 把服务拉起来，不在这里抛（否则会跳过服务恢复）。
+    if (restoreGuard.interrupted) {
+      ngLine(`收到 ${restoreGuard.signal}：已中止恢复（服务未停、数据未动）`);
+      return 130;
+    }
 
     const stamp = formatStamp();
     // 数据目录可能是软链：恢复要替换链接指向的真实目录，保留软链布局，
@@ -1683,7 +1702,7 @@ async function cmdRestore(args) {
       fs.cpSync(dataRoot, targetDir, { recursive: true, force: true });
       // 旧归档可能带着源主机的锁/中断标记（pid/hostname 都不属于本机）：恢复后必须清掉。
       for (const runtimeFile of ['.server.lock', '.auto-update.lock', '.auto-update.lock.takeover',
-        '.deploy.lock', '.deploy.lock.takeover', '.deploy-in-progress']) {
+        '.deploy.lock', '.deploy.lock.takeover', '.deploy-in-progress', '.maintenance.lock']) {
         try { fs.rmSync(path.join(targetDir, runtimeFile), { recursive: true, force: true }); } catch { /* 忽略 */ }
       }
       try { fs.chmodSync(targetDir, 0o700); } catch { /* 忽略 */ }
@@ -1727,10 +1746,16 @@ async function cmdRestore(args) {
         if (committed && (!start.ok || !active)) {
           ngLine('恢复后服务起不来：正在回滚到恢复前的数据');
           systemctlUser(['stop', cfg.service], { timeout: 60000 });
+          // 首次恢复到不存在的目录时没有 pre 快照：绝不能把唯一一份已恢复数据改名挪走，
+          // 否则服务会对着空目录启动。保留数据、保持停止，让管理员检查后手动启动。
+          if (!hadPrevious || !exists(pre)) {
+            ngLine('没有恢复前快照：保留已恢复的数据，服务保持停止；请检查日志后手动启动');
+            return 1;
+          }
           try {
             const failed = `${targetDir}.restore-failed-${stamp}`;
             if (exists(targetDir)) fs.renameSync(targetDir, failed);
-            if (exists(pre)) fs.renameSync(pre, targetDir);
+            fs.renameSync(pre, targetDir);
             systemctlUser(['start', cfg.service], { timeout: 60000 });
             ngLine(`已回滚；恢复失败的数据留在 ${failed}`);
           } catch (rollbackError) {
@@ -1742,11 +1767,17 @@ async function cmdRestore(args) {
     }
     okLine(`恢复完成: ${cfg.dataDir}`);
     if (exists(pre)) noteLine(`恢复前的数据已留档: ${pre}`);
+    if (restoreGuard?.interrupted) {
+      ngLine(`收到 ${restoreGuard.signal}：恢复已完成，按中断返回`);
+      return 130;
+    }
     return 0;
   } catch (error) {
     ngLine(`恢复失败：${error?.message || error}`);
     return 1;
   } finally {
+    restoreGuard?.dispose();
+    restoreLock?.release();
     try { fs.rmSync(temp, { recursive: true, force: true }); } catch { /* 忽略 */ }
   }
 }
@@ -2656,45 +2687,6 @@ async function cmdDoctor(args) {
 }
 
 /**
- * 账本改判后同步 outbox：日报/游戏终局的发送把 run_id 记成 effect id，
- * 只改 effects 表会让会话一直处于 held（2026-10-31 审查 P2）。
- * 语义与 console 的 unknown-operations/reconcile 保持一致。
- * @returns {number} 同步的 outbox 行数
- */
-function reconcileEffectOutbox(db, effectId, result) {
-  const rows = db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey FROM outbox
-    WHERE run_id=? AND state IN ('sending','unknown')`).all(String(effectId));
-  if (!rows.length) return 0;
-  const state = result === 'sent' ? 'reconciled_sent' : 'reconciled_failed';
-  const error = result === 'sent' ? '管理员确认已发送' : '管理员确认未发送';
-  let changed = 0;
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const update = db.prepare('UPDATE outbox SET state=?, error=? WHERE id=?');
-    for (const row of rows) changed += Number(update.run(state, error, row.id).changes) || 0;
-    const groups = new Map();
-    for (const row of rows) groups.set(`${row.chatKey}
-${row.runId}`, row);
-    for (const row of groups.values()) {
-      const remaining = Number(db.prepare(`SELECT COUNT(*) AS count FROM outbox
-        WHERE run_id=? AND state IN ('sending','unknown')`).get(row.runId).count) || 0;
-      if (remaining !== 0) continue;
-      db.prepare(`UPDATE messages SET state='acked', lease_id=NULL
-        WHERE chat_key=? AND state='held' AND lease_id=?`).run(row.chatKey, row.runId);
-      db.prepare(`UPDATE runs SET state='acked', error=? WHERE id=? AND state='held'`)
-        .run('管理员已核对全部未知写入', row.runId);
-      db.prepare(`DELETE FROM outbox WHERE run_id=? AND state IN ('reconciled_sent','reconciled_failed')`)
-        .run(row.runId);
-    }
-    db.exec('COMMIT');
-  } catch (error) {
-    try { db.exec('ROLLBACK'); } catch { /* 忽略 */ }
-    throw error;
-  }
-  return changed;
-}
-
-/**
  * 出站副作用账本的人工核对入口（list / resolve）。
  * 只读写 messages.sqlite 的 effects 表；不补发、不撤回任何消息。
  */
@@ -3036,9 +3028,15 @@ async function cmdPlugins(args) {
     }
     try {
       const result = uninstallPlugin({ id, dataDir: cfg.dataDir, purgeData });
+      // 与控制台卸载同口径：授权、凭据、enabledIds/开关都不能留给同 id 的下一个包
+      //（2026-11-05 复核 P2；之前 CLI 卸载会继承旧批准）。
+      clearPluginGrants(cfg.dataDir, id);
+      clearPluginSecrets(cfg.dataDir, id);
+      removePluginFromConfig(cfg.dataDir, id, { purgeData });
       okLine(`已卸载 ${result.id}`);
       noteLine(`代码移到了 ${result.removedDir}（只留最近一份，巡检会清理）`);
       noteLine(result.dataPurged ? '插件数据与凭据已删除' : `插件数据保留在 ${result.dataKept}`);
+      noteLine('授权与凭据已清理，并从 enabledIds / 动作开关中移除');
       return 0;
     } catch (error) {
       ngLine(`卸载失败：${error?.message ?? error}${error?.code ? `（${error.code}）` : ''}`);
@@ -3049,9 +3047,10 @@ async function cmdPlugins(args) {
   if (sub === 'install') {
     const diffFlag = args.indexOf('--expect-diff');
     const expectedDiffHash = diffFlag >= 0 ? String(args[diffFlag + 1] || '').trim() : '';
+    const force = args.includes('--force');
     const positional = args.filter((a, i) => !a.startsWith('-') && !(diffFlag >= 0 && i === diffFlag + 1));
     const file = positional[1] || '';
-    if (!file) { ngLine('要指定一个包文件：node src/ops.js plugins install <文件.tar.gz> [--expect-diff <hash>]'); return 2; }
+    if (!file) { ngLine('要指定一个包文件：node src/ops.js plugins install <文件.tar.gz> [--expect-diff <hash>] [--force]'); return 2; }
     const full = path.resolve(file);
     if (!fs.existsSync(full)) { ngLine(`找不到文件：${full}`); return 1; }
     const buffer = fs.readFileSync(full);
@@ -3060,10 +3059,13 @@ async function cmdPlugins(args) {
       const result = await installPlugin({
         tarball: buffer, dataDir: cfg.dataDir, log: noteLine,
         source: `本地文件：${path.basename(full)}`, hostVersion: readRepoVersion(),
-        expectedDiffHash
+        expectedDiffHash, force
       });
+      // CLI 没有配置单例，只清授权/待批；写开关需要管理员到控制台确认（升级后默认不继承）。
+      const security = applyUpgradeSecurity(cfg.dataDir, result, { log: noteLine });
       section('安装完成');
       okLine(`插件 ${result.id} v${result.version}${result.upgraded ? '（升级，旧版已备份）' : ''}`);
+      if (security?.reset) noteLine('升级改变了权限面：旧的对象级批准/待批已清空，请在控制台重新授权并检查写开关');
       noteLine(`包内容 sha256：${sha256Of(buffer)}`);
       noteLine('这一步只是"装上"。要让它跑，还得授权：控制台左侧「插件」页点启用，');
       noteLine('或者写进配置 plugins.enabledIds（并确保 plugins.enabled 为 true）。');
@@ -3150,7 +3152,7 @@ OneBot get_status、协议端版本、Docker 套接字可读写性、
 
   list                              列出已装插件（版本/能力/来源）与已授权清单
   install <文件.tar.gz>             从**本地文件**装一个插件（别人发你的包、或你自己打的包）
-  uninstall <id> [--purge-data]     卸载插件；默认保留数据与凭据，--purge-data 一并删除
+  uninstall <id> [--purge-data]     卸载插件；授权/凭据/开关总会清理，--purge-data 连数据与设置一起删
 
 本地文件安装不需要你提供 sha256 —— 装完会打印算出来的值供核对；来源记录里写"本地文件：<文件名>"。
 卸载会移走代码目录（留一份 .removed-* 便于巡检），必须加 --confirm；--dry-run 只预览。

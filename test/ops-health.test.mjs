@@ -85,6 +85,8 @@ const okFetch = async () => ({ ok: true, status: 200, json: async () => ({ statu
 const badFetch = async () => { throw new Error('ECONNREFUSED'); };
 const okStatfs = () => ({ bavail: 100, bsize: 1024 * 1024 * 1024 });          // 100GB
 const lowStatfs = () => ({ bavail: 0.2, bsize: 1024 * 1024 * 1024 });          // 0.2GB
+// 余量还有 5GB（过旧阈值），但已用 95%（40G 盘对应的真实盘满前形态）
+const fullStatfs = () => ({ bavail: 5, bfree: 5, blocks: 100, bsize: 1024 * 1024 * 1024 });
 
 test('docker-socket：主进程被 NNP 加固时报红并指向修法，不再拿巡检的 sudo 当证据', async (t) => {
   // 2026-10-09 审查：巡检 unit 没有 NNP，而控制台主 unit 有（标准部署）—— 旧逻辑会让
@@ -366,6 +368,15 @@ test('磁盘余量不足 → 失败', async () => {
   assert.equal(r.checks.find((c) => c.name === 'disk-space').ok, false);
 });
 
+test('磁盘余量还够但已用超过 85% → 也要失败（提前介入）', async () => {
+  const dir = makeDataDir();
+  const r = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: fullStatfs, notify: null });
+  const item = r.checks.find((c) => c.name === 'disk-space');
+  assert.equal(item.ok, false);
+  assert.match(item.detail, /已用 95%/);
+  assert.match(item.detail, /超过 85% 阈值/);
+});
+
 test('自动更新 failed 与部署中断标记 → 相应检查项失败', async () => {
   const dir = makeDataDir({ withUpdaterState: true, withMarker: true });
   const r = await runHealthCheck({ dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null });
@@ -637,4 +648,34 @@ test('控制台交互体检：persist=false 不写 health.json，integrityCheck=
   assert.equal(fs.existsSync(healthFile), false, '交互体检不能覆盖定时巡检的连击状态');
   assert.equal(r.checks.some((c) => c.name === 'sqlite-integrity'), false,
     '跳过全库 integrity_check，避免同步 DatabaseSync 卡住控制台事件循环');
+});
+
+test('systemd 定时器漂移：缺 backup-drill 时报红，补齐后转绿（不误伤 Docker/手动部署）', async (t) => {
+  const dataDir = makeDataDir({});
+  const unitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-health-units-'));
+  t.after(() => {
+    fs.rmSync(unitDir, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  for (const name of ['qq-agent-backup.timer', 'process-guard.timer', 'qq-agent-health.timer', 'qq-agent-audit-prune.timer']) {
+    fs.writeFileSync(path.join(unitDir, name), '');
+  }
+  const run = () => runHealthCheck({
+    dataDir, fetchImpl: okFetch, statfs: okStatfs, notify: null,
+    systemdDir: unitDir, containerRuntime: false, persist: false, integrityCheck: false
+  });
+  const before = (await run()).checks.find((c) => c.name === 'systemd-timers');
+  assert.ok(before, '用了 systemd 定时器就必须检查这一项');
+  assert.equal(before.ok, false, '缺 backup-drill 不能报绿（升级不会重跑 install-timers）');
+  assert.match(String(before.detail), /backup-drill/);
+
+  fs.writeFileSync(path.join(unitDir, 'qq-agent-backup-drill.timer'), '');
+  const afterFix = (await run()).checks.find((c) => c.name === 'systemd-timers');
+  assert.equal(afterFix.ok, true, afterFix.detail);
+
+  // 没有 backup.timer 的部署（Docker/手动）跳过，不制造永久告警
+  fs.rmSync(path.join(unitDir, 'qq-agent-backup.timer'));
+  const skipped = (await run()).checks.find((c) => c.name === 'systemd-timers');
+  assert.equal(skipped.ok, true);
+  assert.match(String(skipped.detail), /未使用 systemd/);
 });

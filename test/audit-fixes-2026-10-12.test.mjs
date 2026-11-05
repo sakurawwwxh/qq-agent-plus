@@ -334,8 +334,8 @@ test('P3 锚点：snowluma .env 原子写 / 备份 tar 有超时 / health 单元
   const su = src('src/core/snowluma-update.js');
   assert.equal((su.match(/writeEnvAtomic\(/g) || []).length, 3, '三处 .env 写入（写/还原/回滚）都要走原子写');
   const ops = src('src/ops.js');
-  const tarBody = ops.slice(ops.indexOf('function runTarCreate'), ops.indexOf('async function cmdBackup'));
-  assert.ok(tarBody.includes('{ timeout: 30 * 60 * 1000 }'), 'tar 打包要有界超时（原来是永不超时）');
+  const tar = src('src/core/backup-tar.js');
+  assert.ok(tar.includes('{ timeout: 30 * 60 * 1000 }'), 'tar 打包要有界超时（原来是永不超时）');
   assert.ok((ops.match(/Environment="QQ_AGENT_SERVICE=\$\{serviceName\}"/g) || []).length >= 2, 'health 单元也要带 QQ_AGENT_SERVICE');
   const cl = src('src/core/config-legacy.js');
   assert.equal((cl.match(/CONFIG_FILE\}\.\$\{process\.pid\}\.tmp/g) || []).length, 1,

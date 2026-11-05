@@ -3,6 +3,7 @@
 // 连续 3 次失败才通过 notify 通知 owner（抑制抖动），恢复时补发一次"已恢复"。
 // fetchImpl / statfs 可注入：测试不打真实网络。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { openDatabase } from './sqlite.js';
@@ -22,6 +23,7 @@ const STUCK_INBOUND_MS = 60 * 60 * 1000;        // 入站到期未处理的宽�
                                                 // 按设计可等 maxSilence（默认上限 45 分钟）才统一处理，
                                                 // 60 分钟覆盖它之后仍停在 pending 才是管道死了
 const DISK_MIN_BYTES = 1024 * 1024 * 1024;       // 磁盘余量：< 1GB 报警
+const DISK_MAX_USED_RATIO = 0.85;               // 已用 >85% 也报警：40G 盘约剩 6G，比 1G 余量更早介入
 // 待核对发送只看最近 7 天：更早的 held/unknown 属于历史遗留，不能让巡检永久按红。
 const SEND_REVIEW_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const NOTIFY_AFTER_STREAK = 3;                   // 连续失败到第 3 次才通知
@@ -186,6 +188,7 @@ export async function runHealthCheck(opts = {}) {
     noNewPrivsStatus = null,   // 可注入（测试）：null＝自动探测主服务进程
     sudoDockerProbe = null,    // 可注入（测试）：null＝走真实 probeSudoDocker()
     isolationProbe = isolationSummary, // 可注入（测试）：返回 isolationSummary() 的形状
+    systemdDir = '',           // 可注入（测试）：默认 ~/.config/systemd/user
     outboundStaleMs = OUTBOUND_STALE_MS,
     notify = null,
     fetchImpl = globalThis.fetch,
@@ -409,8 +412,15 @@ export async function runHealthCheck(opts = {}) {
       // 老库 created_at=0 的行没有可靠时间，按历史遗留处理，不纳入巡检红线。
       const uncertain = Number(db.prepare(`SELECT COUNT(DISTINCT COALESCE(run_id,id)) AS n
         FROM outbox WHERE state IN ('sending','unknown') AND created_at>=?`).get(cutoff)?.n) || 0;
+      // 最老 unknown 的年龄（老库 created_at=0 的行没有可靠时间，不参与年龄计算）。
+      // 只看最近的“批次数量”看不出一个会话已经被卡了多久，日报要能直接看到。
+      const oldest = Number(db.prepare(`SELECT MIN(created_at) AS at FROM outbox
+        WHERE state='unknown' AND created_at>0`).get()?.at) || 0;
+      const oldestDays = oldest ? Math.max(1, Math.floor((Date.now() - oldest) / 86_400_000)) : 0;
       if (held || uncertain) {
-        add('send-review', false, `有 ${held} 条 held 消息、${uncertain} 条发送结果未知（会影响对应会话回复），请在控制台核对`);
+        add('send-review', false, `有 ${held} 条 held 消息、${uncertain} 条发送结果未知`
+          + `${oldestDays ? `（最老一条已 ${oldestDays} 天）` : ''}`
+          + '（会影响对应会话回复），请在控制台核对');
       } else {
         add('send-review', true, '没有待核对的发送');
       }
@@ -428,7 +438,15 @@ export async function runHealthCheck(opts = {}) {
   try {
     const st = typeof statfs === 'function' ? statfs(dataDir) : fs.statfsSync(dataDir);
     const avail = Number(st.bavail) * Number(st.bsize);
-    add('disk-space', avail >= DISK_MIN_BYTES, `可用 ${(avail / 1024 / 1024 / 1024).toFixed(2)} GB`);
+    // 老测试桩只给 bavail/bsize；拿不到总量时退回“只看余量”，不能把 NaN 当 100% 已用。
+    const total = Number(st.blocks) * Number(st.bsize);
+    const free = Number(st.bfree) * Number(st.bsize);
+    const usedRatio = total > 0 && Number.isFinite(free) ? Math.min(1, Math.max(0, 1 - free / total)) : 0;
+    const tooFull = usedRatio > DISK_MAX_USED_RATIO;
+    add('disk-space', avail >= DISK_MIN_BYTES && !tooFull,
+      `可用 ${(avail / 1024 / 1024 / 1024).toFixed(2)} GB`
+      + (total > 0 ? `（已用 ${(usedRatio * 100).toFixed(0)}%）` : '')
+      + (tooFull ? `，超过 ${Math.round(DISK_MAX_USED_RATIO * 100)}% 阈值` : ''));
   } catch (error) {
     add('disk-space', false, `磁盘余量读不了: ${error?.message ?? error}`);
   }
@@ -520,6 +538,25 @@ export async function runHealthCheck(opts = {}) {
     }
   } catch (error) {
     add('plugins', false, error?.message ?? String(error));
+  }
+
+  // ⑩ systemd 定时器完整性：升级只换代码，不会重跑 install-timers —— 新增 timer
+  //（例如 0.9.14 的 backup-drill）在旧安装上会静默缺失，巡检以前完全看不到这类漂移。
+  // 只在"确实用 systemd 定时器"的部署上检查（backup.timer 存在）：Docker、手动部署、
+  // 或只想装部分 timer 的机器不报红。
+  if ((process.platform === 'linux' || systemdDir) && !container) {
+    const dir = systemdDir || path.join(os.homedir(), '.config', 'systemd', 'user');
+    const has = (name) => fs.existsSync(path.join(dir, name));
+    if (has('qq-agent-backup.timer')) {
+      const missing = ['qq-agent-backup-drill.timer', 'process-guard.timer', 'qq-agent-health.timer', 'qq-agent-audit-prune.timer']
+        .filter((name) => !has(name));
+      add('systemd-timers', missing.length === 0,
+        missing.length
+          ? `缺少 ${missing.join('、')}：升级后需执行 node src/ops.js install-timers --confirm`
+          : '5 个定时器齐全');
+    } else {
+      add('systemd-timers', true, '未使用 systemd 定时器（Docker/手动部署）');
+    }
   }
 
   const healthy = checks.every((c) => c.ok);

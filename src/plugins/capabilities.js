@@ -12,8 +12,8 @@ import { sanitizeUserText } from '../core/util.js';
 import { imageType } from '../core/image-type.js';
 import { safeFetchRequest, safeFetchBinary, isHostAllowed, assertPublicUrlLiteral } from '../llm/safe-fetch.js';
 import { readPluginSecrets, writePluginSecrets, secretFieldKeys } from './secrets.js';
-import { ffmpegToPcm, runProvider } from '../tools/audio-transcribe.js';
-import { asrAvailable } from '../core/config.js';
+import { consumeAsrQuota, ffmpegToPcm, runProvider } from '../tools/audio-transcribe.js';
+import { asrAvailable, getConfig } from '../core/config.js';
 import { visionEnabled } from '../llm/vision-scan.js';
 import { chatCompletion } from '../llm/llm.js';
 import { checkApproval, consumeQuota } from './grants.js';
@@ -139,6 +139,19 @@ export function createCapabilities({
       throw fail('E_DISK_QUOTA', `插件数据超过上限 ${Math.round(diskLimitKb / 1024)}MB（可在「插件宿主（高级）」里调整）`);
     }
   };
+  // 产物大小写前未知的媒体操作（merge/frames）：只能先写再核。超限就把刚写的文件
+  // 删掉并报错，不能因为"每个输入都小于单文件上限"就放过 —— 反复 merge/抽帧会把
+  // diskMb 撑爆（2026-11-04 复核 P2）。
+  const enforceDiskLimitAfterWrite = (files) => {
+    if (!diskLimitKb) return;
+    diskCache = { at: 0, kb: 0 };
+    if (pluginDirSizeKb() <= diskLimitKb) return;
+    for (const file of files) {
+      try { fs.unlinkSync(file); } catch { /* pruneMedia 下一轮还会再扫 */ }
+    }
+    diskCache = { at: 0, kb: 0 };
+    throw fail('E_DISK_QUOTA', `插件数据超过上限 ${Math.round(diskLimitKb / 1024)}MB（可在「插件宿主（高级）」里调整）`);
+  };
   let storage = null;
   const writeTimes = [];
   const incidentLogs = [];
@@ -153,6 +166,19 @@ export function createCapabilities({
       throw fail('E_RATE', `发送太频繁（每分钟上限 ${MAX_SENDS_PER_MIN} 条）`);
     }
     sendTimes.push(nowFn()); // 先记再发：失败也占额度，避免失败重试无限刷
+  };
+  // 视觉描述是按次付费的模型调用，插件又没有"会话"维度可套 ASR/生图的每会话配额，
+  // 这里按插件给一个保守上限（60 次/小时，约等于 10 段 6 帧视频）。抽帧本身仍受
+  // media 并发与文件数限制；没有这个桶，插件可以无限放大付费调用（2026-11-04 复核 P2）。
+  const MAX_DESCRIBE_PER_HOUR = 60;
+  const describeTimes = [];
+  const takeDescribeSlot = () => {
+    const cutoff = nowFn() - 3600_000;
+    while (describeTimes.length && describeTimes[0] < cutoff) describeTimes.shift();
+    if (describeTimes.length >= MAX_DESCRIBE_PER_HOUR) {
+      throw fail('E_RATE', `帧描述太频繁（每插件每小时上限 ${MAX_DESCRIBE_PER_HOUR} 次）`);
+    }
+    describeTimes.push(nowFn());
   };
   // manifest 决定白名单：凭据字段、可授权动作、配额、http 域名。没声明的一律不认（fail-closed）。
   const secretKeys = secretFieldKeys(pluginManifest?.settings);
@@ -430,7 +456,9 @@ export function createCapabilities({
       await runTool('ffmpeg', [
         '-y', '-i', videoPath, '-i', audioPath, '-c', 'copy', '-movflags', '+faststart', outPath
       ], 120000);
+      // 先剪枝再核配额：如果删掉旧媒体后正好回到上限内，这次写入应当成功。
       pruneMedia();
+      enforceDiskLimitAfterWrite([outPath]);
       return { file: fileName, bytes: fs.statSync(outPath).size };
     },
     // 抽帧：宿主 ffmpeg 固定参数（-ss 定位 + 单帧 jpg），插件不碰命令行。
@@ -457,8 +485,10 @@ export function createCapabilities({
         if (fs.existsSync(path.join(mediaDir, name))) frames.push({ file: name, atMs });
       }
       if (!frames.length) throw fail('E_MEDIA_TOOL', '一张帧都没抽到（时间点可能超出视频时长）');
-      // 抽帧同样住在 media 目录：不剪枝的话，换 prefix 反复抽帧可以无限写盘（2026-10-24 审查 P2）
+      // 抽帧同样住在 media 目录：不剪枝的话，换 prefix 反复抽帧可以无限写盘（2026-10-24 审查 P2）。
+      // 先剪枝再核配额：删掉旧帧后回到上限内时，这次抽帧应当成功。
       pruneMedia();
+      enforceDiskLimitAfterWrite(frames.map((frame) => path.join(mediaDir, frame.file)));
       return { frames };
     },
 
@@ -470,6 +500,7 @@ export function createCapabilities({
       if (!visionEnabled()) {
         throw fail('E_NO_VISION', '宿主没有可用的视觉模型（模型不支持或已关闭图片输入）：帧会照常抽出但无法转成文字');
       }
+      takeDescribeSlot();   // 先占额再调用：失败也占额度，避免重试无限放大付费调用
       const mime = /\.png$/i.test(source) ? 'png' : 'jpeg';
       const dataUrl = `data:image/${mime};base64,${fs.readFileSync(source).toString('base64')}`;
       const response = await chatCompletion({
@@ -498,6 +529,15 @@ export function createCapabilities({
       // 30 分钟封顶：再长就要求先出字幕，别让一次转写跑半小时
       if (pcm.length > 30 * 60 * 32000) {
         throw fail('E_TOO_BIG', '音频超过 30 分钟，转写太慢：这个视频请直接看字幕或换一个');
+      }
+      // 转写按次付费：复用宿主 ASR 配额，把"插件"当成一个独立会话计次
+      // （控制台「语音转文字」里的每会话上限同样约束插件；2026-11-04 复核 P2）。
+      // 放在转码之后、真正请求供应商之前：转码失败不白扣。
+      const quota = consumeAsrQuota(nowFn(), getConfig(), `plugin:${pluginId}`);
+      if (!quota.ok) {
+        throw fail('E_QUOTA', quota.scope === 'chat'
+          ? '插件本小时的语音转写次数已用完（每会话上限，可在控制台「语音转文字」里调整）'
+          : '本小时全局的语音转写次数已用完（可在控制台「语音转文字」里调整）');
       }
       const text = await runProvider(undefined, pcm);
       return { text: String(text || '').slice(0, 20000), seconds: Math.round(pcm.length / 32000) };

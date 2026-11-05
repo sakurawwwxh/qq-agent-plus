@@ -4,6 +4,13 @@ import crypto from 'node:crypto';
 import { openDatabase } from './sqlite.js';
 import { DATA_DIR } from './config.js';
 import { safeSlice } from './util.js';
+import {
+  listUnknownOperations as listUnknownRows,
+  reconcileUnknownRows as applyUnknownReconcile,
+  autoReleaseStaleUnknown as autoReleaseUnknown,
+  unknownSummary as unknownSummaryOf,
+  unknownSummaryAll as unknownSummaryAllOf
+} from './outbox-admin.js';
 
 function entry(row) {
   if (!row) return null;
@@ -756,6 +763,20 @@ export class ChatStore {
     }
   }
 
+  /**
+   * 每日低峰维护：把 WAL 截断回主库，并让 SQLite 更新查询计划统计。
+   * 长期只增不减的库如果从不 checkpoint，WAL 会一直占着磁盘；`optimize` 则避免
+   * 新增索引后老查询计划越走越偏。失败不抛：维护任务不能拖垮保留期调度。
+   * @returns {{checkpointed: boolean, optimized: boolean}}
+   */
+  maintain() {
+    let checkpointed = false;
+    let optimized = false;
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); checkpointed = true; } catch { /* busy/只读副本 */ }
+    try { this.db.exec('PRAGMA optimize'); optimized = true; } catch { /* 老 SQLite 没有 optimize 也继续 */ }
+    return { checkpointed, optimized };
+  }
+
   retryFailed(chatKey) {
     // Unknown/partially sent batches require operator review and are deliberately excluded.
     return this.db.prepare(`UPDATE messages SET state='pending',attempts=0,available_at=0
@@ -882,61 +903,34 @@ export class ChatStore {
     });
   }
 
-  listUnknownOperations(chatKey, limit = 100, { includeSending = false } = {}) {
-    // 默认只列真正的 unknown：sending 仍在发送队列里，核对接口会拒绝它，
-    // 列给控制台只会得到一排必然 404 的按钮。内部需要"在途证据"时显式 includeSending。
-    const states = includeSending ? "IN ('sending','unknown')" : "= 'unknown'";
-    return this.db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey,
-      state, payload, message_id AS messageId, error
-      FROM outbox WHERE chat_key=? AND state ${states}
-      ORDER BY rowid DESC LIMIT ?`).all(
-      String(chatKey || ''),
-      Math.min(500, Math.max(1, Number(limit) || 100))
-    ).map((row) => {
-      let payload = {};
-      try { payload = JSON.parse(row.payload || '{}'); } catch { payload = {}; }
-      return { ...row, payload };
-    });
+  listUnknownOperations(chatKey, limit = 100, options = {}) {
+    return listUnknownRows(this.db, chatKey, limit, options);
   }
 
-  reconcileUnknownOperation(operationId, result) {
-    if (!['sent', 'failed'].includes(result)) {
-      throw new Error('未知写入核对结果必须是 sent 或 failed');
-    }
-    return this.#transaction(() => {
-      // 只允许核对真正的 unknown：sending 仍在本进程发送队列里，提前改终态会让
-      // finishSend 找不到行、hasUncertainEffects 失去证据，最终可能重复发送。
-      const row = this.db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey
-        FROM outbox WHERE id=? AND state='unknown'`).get(String(operationId || ''));
-      if (!row) return null;
-      this.db.prepare(`UPDATE outbox SET state=?, error=? WHERE id=?`).run(
-        result === 'sent' ? 'reconciled_sent' : 'reconciled_failed',
-        result === 'sent' ? '管理员确认已发送' : '管理员确认未发送',
-        row.id
-      );
-      const remaining = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM outbox
-        WHERE run_id=? AND state IN ('sending','unknown')`).get(row.runId).count) || 0;
-      if (remaining === 0) {
-        // 按 run 释放 held：held 行的 lease_id 记的就是产生它的那个 run（见 failLease）。
-        // 此前按 error 文本匹配，而租约过期产生的 held 文本是 'Lease expired or process
-        // interrupted'，永远匹配不上 —— 于是逐条核对不会释放它，held 计数一直挂着，
-        // 开了 unknownWritesBlockChat 的群会一直卡住。
-        this.db.prepare(`UPDATE messages SET state='acked', lease_id=NULL
-          WHERE chat_key=? AND state='held' AND lease_id=?`).run(row.chatKey, row.runId);
-        this.db.prepare(`UPDATE runs SET state='acked', error=? WHERE id=? AND state='held'`)
-          .run('管理员已核对全部未知写入', row.runId);
-        // 这条路径不走 ackLease，已核对的终态行要在这里清掉，否则会长期累积。
-        this.db.prepare(`DELETE FROM outbox
-          WHERE run_id=? AND state IN ('reconciled_sent','reconciled_failed')`).run(row.runId);
-      }
-      return {
-        operationId: row.id,
-        runId: row.runId,
-        chatKey: row.chatKey,
-        result,
-        remaining
-      };
+  unknownSummary(chatKey) {
+    return unknownSummaryOf(this.db, chatKey);
+  }
+
+  reconcileUnknownOperation(operationId, result, chatKey = '') {
+    const out = applyUnknownReconcile(this.db, this.#transaction.bind(this), {
+      chatKey, ids: [operationId], result, limit: 1
     });
+    return out.operations[0] || null;
+  }
+
+  /** 控制台批量核对：ids 为空时按 chatKey + before 过滤全部 unknown。 */
+  reconcileUnknownRows(options) {
+    return applyUnknownReconcile(this.db, this.#transaction.bind(this), options);
+  }
+
+  /** 超期自动释放 unknown（默认关闭，由 config.outbox.unknownAutoReleaseDays 控制）。 */
+  autoReleaseStaleUnknown(days, now) {
+    return autoReleaseUnknown(this.db, this.#transaction.bind(this), days, { now });
+  }
+
+  /** 全站 unknown 条数与最老年龄（/api/metrics 与健康日报用）。 */
+  unknownSummaryAll() {
+    return unknownSummaryAllOf(this.db);
   }
 
   beginSend(chatKey, runId, payload) {
@@ -962,6 +956,24 @@ export class ChatStore {
     return this.db.prepare(`UPDATE outbox SET state='unknown',
       error=COALESCE(NULLIF(error,''), '进程重启，发送结果未知')
       WHERE state='sending'`).run().changes;
+  }
+
+  /**
+   * 运行期把卡住的 sending 收口成 unknown（2026-11-04 复核 P1）。
+   *
+   * `finishSend` 抛错时发送方故意把行留在 sending（消息可能已送达，不能改判失败），
+   * 但只有重启时的 markStaleSendingUnknown 会处理它。进程不重启，这行就一直算进
+   * getChatMeta().held，整个会话的入站、唤醒与 5 秒回收循环全部跳过 —— 表现为
+   * "这个群再也不回话"；控制台默认又只列 unknown，运维连可核对的行都看不到。
+   *
+   * 超过 maxAgeMs 的 sending 降级为 unknown：结果仍然"未知、不自动重发"，但会进入
+   * 人工核对清单，磁盘/锁恢复后下一轮 tick 就能收口，不必等重启。
+   */
+  ageStaleSending(maxAgeMs = 5 * 60_000) {
+    const cutoff = Date.now() - Math.max(60_000, Number(maxAgeMs) || 0);
+    return this.db.prepare(`UPDATE outbox SET state='unknown',
+      error=COALESCE(NULLIF(error,''), '发送结果未知：超过时限仍未记账')
+      WHERE state='sending' AND created_at < ?`).run(cutoff).changes;
   }
 
   expireConversationThreads(now = Date.now(), chatKey = '') {

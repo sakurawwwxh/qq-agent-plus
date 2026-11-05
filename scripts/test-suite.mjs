@@ -51,7 +51,16 @@ const SUITES = {
   local: [[process.execPath, ['test/local/run.mjs']]],
   // 覆盖率：与 unit 同一批文件，只是多一个 Node 内置覆盖率开关；
   // 走这里可以复用 TMPDIR 重定向与统一清理。
-  coverage: [[process.execPath, [`--test-concurrency=${TEST_CONCURRENCY}`, '--experimental-test-coverage', '--test', ...UNIT_FILES]]],
+  // 2026-11-05 基线：line 68.15% / branch 70.06% / funcs 73.58%，门槛各留约 1 个点余量。
+  // ratchet：每个 release 只许上调，不许下调；低于门槛 Node 直接以非 0 退出。
+  coverage: [[process.execPath, [
+    `--test-concurrency=${TEST_CONCURRENCY}`,
+    '--experimental-test-coverage',
+    '--test-coverage-lines=67',
+    '--test-coverage-branches=69',
+    '--test-coverage-functions=72',
+    '--test', ...UNIT_FILES
+  ]]],
 };
 // 默认集与改动前的 `npm test` 完全一致：只含 unit + regression，不含 local。
 SUITES.all = [...SUITES.unit, ...SUITES.regression];

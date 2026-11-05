@@ -125,8 +125,8 @@ jobs:
       - name: 提示词 / 渲染 / 滚动 / 用量端到端回归
         run: npm run test:regression
 
-  # 覆盖率基线（里程碑 1）：Node 内置 --experimental-test-coverage，零依赖；
-  # 先只把数字打进 CI 日志，不设硬门槛。M2 起按版本 ratchet。
+  # 覆盖率基线：Node 内置 --experimental-test-coverage，零依赖；
+  # 门槛在 scripts/test-suite.mjs（2026-11-05 起按版本 ratchet，低于门槛 CI 直接红）。
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -231,3 +231,8 @@ jobs:
 
       - name: ESLint（0 error）
         run: npm run lint
+
+      # 发版检查原来只在打 tag 时跑，版本/CHANGES/镜像 pin 的漂移要等到发版才暴露。
+      # main 上允许"未发布"段，其余检查（版本号、CHANGES、镜像 tag）与发版同口径。
+      - name: 发版元数据检查（main 允许未发布段）
+        run: node scripts/release-check.mjs --allow-unreleased

@@ -145,6 +145,37 @@ test('调用限频：超过每分钟上限的调用被拒（带 E_RATE_LIMIT，�
   assert.equal((await host.callTool('ping', {})).pong, true);
 });
 
+test('控制台无令牌且插件网络不可隔离 → 拒绝加载（loopback 免鉴权不能被插件利用）', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-plugin-token-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const registry = new PluginRegistry({
+    root, dataDir, log: () => {},
+    getConfig: () => ({
+      plugins: { enabled: true, enabledIds: [], requireIsolation: false, networkIsolation: false }
+    }),
+    getConsoleToken: () => ''
+  });
+  t.after(() => registry.stop());
+  const result = await registry.start();
+  assert.equal(result.started.length, 0);
+  assert.equal(result.skipped, 'console-token-required');
+});
+
+test('控制台有令牌时不触发空令牌保护', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-plugin-token-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const registry = new PluginRegistry({
+    root, dataDir, log: () => {},
+    getConfig: () => ({
+      plugins: { enabled: true, enabledIds: [], requireIsolation: false, networkIsolation: false }
+    }),
+    getConsoleToken: () => 'a'.repeat(32)
+  });
+  t.after(() => registry.stop());
+  const result = await registry.start();
+  assert.notEqual(result.skipped, 'console-token-required');
+});
+
 test('内存上限：超了就重启该插件进程（并留下计数），堆上限写在启动参数里', async (t) => {
   const spec = pluginLaunchSpec({ pluginDir: FIXTURES, memoryMb: 32, spawn: () => ({ status: 0 }) });
   assert.ok(spec.args.includes('--max-old-space-size=32'), 'V8 堆上限要在启动参数里');

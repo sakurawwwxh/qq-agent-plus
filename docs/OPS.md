@@ -89,7 +89,9 @@ npm run test:coverage                          # Node 内置覆盖率基线（�
 
 `release-check` 检查：`package.json` 与 `docs/CHANGES.md` 最新版本章节一致、compose/README/
 `docs/DOCKER.md` 的镜像 tag 一致、tag 指向的提交不带 `[skip ci]`（否则 Release/Docker 都不触发）。
-`test:coverage` 只输出数字，不设硬门槛；后续里程碑按版本 ratchet。
+`test:coverage` 输出 line/branch/funcs 三项，并在 `scripts/test-suite.mjs` 里设了门槛
+（2026-11-05 基线 68.15/70.06/73.58，门槛 67/69/72）；低于门槛直接非 0 退出。
+每个 release 只允许上调门槛，不许下调。
 
 ## 子命令一览
 
@@ -324,8 +326,8 @@ node src/ops.js install-timers --confirm
 
 - `qq-agent-backup.timer`：`OnCalendar=Sun *-*-* 04:10:00`、`Persistent=true`，
   调用 `node src/ops.js backup --confirm`；
-- `qq-agent-backup-drill.timer`：每月执行一次 `ops backup --drill --confirm`，验证备份可解密、
-  tar 与 SQLite 完整性；
+- `qq-agent-backup-drill.timer`：每月执行一次 `ops backup --drill`（演练不需要 `--confirm`），
+  验证备份可解密、tar 与 SQLite 完整性；
 - `process-guard.timer`：`OnBootSec=3min`、`OnUnitActiveSec=10min`，
   调用 `node src/ops.js guard --confirm`；
 - `qq-agent-health.timer`：`OnBootSec=5min`、`OnUnitActiveSec=5min`，
@@ -335,6 +337,11 @@ node src/ops.js install-timers --confirm
 
 生成的 ExecStart 使用当前 node 与 `src/ops.js` 的绝对路径。更换机器或部署目录后，重新执行
 `install-timers --confirm` 即可，也可直接修改 unit 中的路径。
+
+⚠️ `deploy.sh` / `deploy-all.sh` / 自动更新**不会**重跑 `install-timers`：升级只换代码，
+unit 文件保持原样。因此新增 timer（例如 0.9.14 的 `backup-drill`）后，已有安装必须手动
+执行一次 `install-timers --confirm`；否则像备份演练这样的任务会一直缺失，而且健康巡检
+不会报错。升级后可用 `systemctl --user list-timers --all 'qq-agent-*'` 对照本节清单。
 
 ## 远程执行
 

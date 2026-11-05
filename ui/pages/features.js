@@ -1499,6 +1499,7 @@ function renderIncidentFeaturePageImpl(c, status, incidents = [], options = {}) 
           <input type="hidden" id="cfg-incident-owner" data-global-admin-mirror="true" value="${esc(settings.ownerUin || '')}" /></div>
         <div class="field"><label>同类异常合并窗口（分钟）</label><input type="number" id="cfg-incident-window" min="1" max="1440" value="${esc(settings.duplicateWindowMinutes ?? 10)}" /></div>
         <div class="field"><label>已解决日志保留天数</label><input type="number" id="cfg-incident-retention" min="1" max="3650" value="${esc(settings.retentionDays ?? 90)}" /></div>
+        <div class="field"><label>未知写入自动释放（天，0=关闭）</label><input type="number" id="cfg-outbox-auto-release" min="0" max="90" value="${esc(state.config?.outbox?.unknownAutoReleaseDays ?? 0)}" /></div>
       </div>
       <div class="checkbox-row"><input type="checkbox" id="cfg-incident-warnings" ${settings.notifyWarnings !== false ? 'checked' : ''} />
         <label for="cfg-incident-warnings">警告级异常也通知管理员</label></div>
@@ -1620,6 +1621,11 @@ async function saveIncidentFeatureConfig() {
           unknownWritesBlockChat: $('#cfg-incident-unknown-block')?.checked === true,
           duplicateWindowMinutes: clampInt($('#cfg-incident-window')?.value, 1, 1440, 10),
           retentionDays: clampInt($('#cfg-incident-retention')?.value, 1, 3650, 90)
+        },
+        // 超期自动释放是独立配置段：默认 0（关闭），开启前要明确知道“未确认也按已发送留痕”。
+        outbox: {
+          ...(c.outbox || {}),
+          unknownAutoReleaseDays: clampInt($('#cfg-outbox-auto-release')?.value, 0, 90, 0)
         }
       })
     });
