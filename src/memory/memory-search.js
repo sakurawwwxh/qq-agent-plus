@@ -142,13 +142,27 @@ export class MemorySearchIndex {
     }
   }
 
-  #rows(queryTokens) {
+  #rows(queryTokens, { userId, chatKey, visibility }) {
     if (!queryTokens.length) return [];
     const ftsQuery = queryTokens.map((token) => `"${token.replace(/"/g, '""')}"`).join(' OR ');
+    // 先限定本次查询的范围，避免其他人物/不可见来源占满 240 个候选。
+    const where = ['memory_fts MATCH ?'];
+    const params = [ftsQuery];
+    if (userId) {
+      where.push('user_id = ?');
+      params.push(userId);
+    }
+    if (visibility?.mode === 'perChat') {
+      where.push('EXISTS (SELECT 1 FROM json_each(memory_fts.sources) WHERE CAST(value AS TEXT) = ?)');
+      params.push(String(chatKey || ''));
+    }
+    if (visibility?.hidePrivateInGroup && String(chatKey || '').startsWith('group:')) {
+      where.push("NOT EXISTS (SELECT 1 FROM json_each(memory_fts.sources) WHERE substr(CAST(value AS TEXT), 1, 8) = 'private:')");
+    }
     try {
       return this.db.prepare(`SELECT doc_id,user_id,name,content,kind,created_at,observed_at,origin,sources,tokens,
-        bm25(memory_fts) AS rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?`)
-        .all(ftsQuery, MAX_CANDIDATES);
+        bm25(memory_fts) AS rank FROM memory_fts WHERE ${where.join(' AND ')} ORDER BY rank LIMIT ?`)
+        .all(...params, MAX_CANDIDATES);
     } catch (error) {
       this.error = String(error?.message || error);
       return [];
@@ -156,8 +170,8 @@ export class MemorySearchIndex {
   }
 
   /**
-   * 检索。members 是当前可见的完整成员快照；visibility/chatKey 用于二次过滤，
-   * 索引本身不做权限判断（权限永远在读取侧按本次会话再算一次）。
+   * 检索。完整成员快照用于建索引；候选按本次人物/可见范围选取，
+   * 返回前仍逐条检查可见性，不依赖索引内容或上一次查询的范围。
    */
   search({ members, query, chatKey = '', visibility = null, userId = '', limit = 8 } = {}) {
     if (!this.#open()) return [];
@@ -167,7 +181,7 @@ export class MemorySearchIndex {
     if (!queryTokens.length) return [];
     if (!this.#ensureIndex(members)) return [];
     const wantedUser = String(userId || '').trim();
-    const rows = this.#rows(queryTokens);
+    const rows = this.#rows(queryTokens, { userId: wantedUser, chatKey, visibility });
     const qset = new Set(queryTokens);
     const now = Date.now();
     const scored = [];
