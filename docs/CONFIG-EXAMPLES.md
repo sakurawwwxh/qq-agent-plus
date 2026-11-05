@@ -342,6 +342,8 @@ URL 里不能内嵌 `user:pass@`（safe-fetch 一律拒绝凭据），需要鉴�
   （`count` 1–50，`needContent:true` 时额外取正文）；老配置里的 `/responses` 会被自动剥掉。
   只有新接口返回 404/405 或没有结果时，才回退到旧 Responses `web_search`（旧接口拿不到 URL，`model` 只给这个兜底用）。
 - `tavily`：tavily.com 的搜索 API（2026-09 时点的公开口径：免费档 1000 次/月，专为 LLM 设计），另有 `searchDepth`（默认 `basic`）。
+- B 站搜索的签名准备请求同样遵守本轮取消信号；取消后停止准备和后续搜索，
+  普通签名故障仍允许无签名降级，成功签名继续按原缓存规则复用。
 - `aggregate`（聚合搜索）：并发跑 `sources` 里的多个源，规范化 URL 去重、每条结果带
   `source` 标注；去重键保留可能决定页面身份的 query 参数，只忽略明确 tracking 参数与普通
   锚点（`#/`、`#!`、`#?` 等 hash 路由保留），返回给模型的仍是各来源原始链接。`sources`
