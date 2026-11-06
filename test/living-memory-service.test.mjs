@@ -126,6 +126,18 @@ test('living memory keeps structured reflection fields and immutable versions', 
   store.close();
 });
 
+test('memory versions keep only the latest 20 snapshots per card', () => {
+  const store = new LivingMemoryStore({ file: path.join(root, `version-cap-${Date.now()}-${Math.random()}.sqlite`) });
+  let saved = null;
+  for (let i = 0; i < 25; i += 1) {
+    saved = store.upsertMemory({
+      scopeKey: 'group:100', summary: `第 ${i} 版摘要`, content: `第 ${i} 版正文`
+    }, { id: saved?.id || '', reason: `edit-${i}` });
+  }
+  assert.equal(store.stats().versions, 20, '版本快照不能无界增长');
+  store.close();
+});
+
 test('embedding configuration stays in process environment and long-memory defaults stay disabled', () => {
   const config = normalizeLivingMemoryConfig({
     enabled: true,

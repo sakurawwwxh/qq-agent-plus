@@ -9,6 +9,8 @@ const MEMORY_TYPES = new Set(['episode', 'fact', 'profile', 'preference', 'commi
 const MEMORY_STATUSES = new Set(['active', 'archived', 'superseded']);
 const MAX_TURNS = 5000;
 const MAX_TURN_PAYLOAD_CHARS = 16000;
+// 版本快照每条最多 24KB；只留最近 N 版，避免长期运行把库撑到 GB 级。
+const MAX_VERSIONS_PER_MEMORY = 20;
 
 function jsonArray(value, limit = 64, itemMax = 160) {
   if (!Array.isArray(value)) return [];
@@ -152,12 +154,6 @@ export class LivingMemoryStore {
         PRIMARY KEY(memory_id, version)
       );
       CREATE INDEX IF NOT EXISTS idx_memory_versions_created ON memory_versions(memory_id, created_at DESC);
-      CREATE TABLE IF NOT EXISTS capture_state (
-        scope_key TEXT PRIMARY KEY,
-        last_seen_message_id TEXT NOT NULL DEFAULT '',
-        last_extracted_message_id TEXT NOT NULL DEFAULT '',
-        updated_at INTEGER NOT NULL
-      );
       -- 迁移脚本会导入旧外置服务留下的 operations；运行时暂不读写这张表。
       CREATE TABLE IF NOT EXISTS operations (
         id TEXT PRIMARY KEY,
@@ -254,6 +250,8 @@ export class LivingMemoryStore {
     const version = Number(this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM memory_versions WHERE memory_id = ?').get(saved.id)?.version || 0) + 1;
     this.db.prepare('INSERT INTO memory_versions(memory_id, version, reason, snapshot_json, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(saved.id, version, asText(reason, 120) || 'create-or-update', cappedJson(saved, 24000), time);
+    this.db.prepare('DELETE FROM memory_versions WHERE memory_id = ? AND version <= ?')
+      .run(saved.id, version - MAX_VERSIONS_PER_MEMORY);
     return saved;
   }
 
@@ -487,24 +485,6 @@ export class LivingMemoryStore {
     this.db.prepare('INSERT INTO turns (id, scope_key, session_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(row.id, row.scopeKey, row.sessionId, cappedJson(row.payload), row.createdAt);
     return { ...row };
-  }
-
-  captureState(scopeKey) {
-    const scope = asText(scopeKey, 80);
-    if (!scopeList([scope]).length) return null;
-    return this.db.prepare('SELECT scope_key AS scopeKey, last_seen_message_id AS lastSeenMessageId, last_extracted_message_id AS lastExtractedMessageId, updated_at AS updatedAt FROM capture_state WHERE scope_key = ?').get(scope) || null;
-  }
-
-  updateCaptureState(scopeKey, { lastSeenMessageId, lastExtractedMessageId } = {}) {
-    const scope = asText(scopeKey, 80);
-    if (!scopeList([scope]).length) throw new Error('capture state scope 无效');
-    const previous = this.captureState(scope) || {};
-    const nextSeen = asText(lastSeenMessageId ?? previous.lastSeenMessageId, 100);
-    const nextExtracted = asText(lastExtractedMessageId ?? previous.lastExtractedMessageId, 100);
-    const updatedAt = now();
-    this.db.prepare('INSERT INTO capture_state(scope_key, last_seen_message_id, last_extracted_message_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope_key) DO UPDATE SET last_seen_message_id=excluded.last_seen_message_id, last_extracted_message_id=excluded.last_extracted_message_id, updated_at=excluded.updated_at')
-      .run(scope, nextSeen, nextExtracted, updatedAt);
-    return this.captureState(scope);
   }
 
   pruneExpired() {
