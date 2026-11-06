@@ -218,6 +218,21 @@ export class SendQueue {
   }
 
   /**
+   * 自发图片/表情的媒体引用。以前 appendSelf 只写文本，群友引用机器人自己发的图时，
+   * get_message_images 查本地消息没有 media、协议端又可能已经取不到原消息，只能报
+   * “没有可查看的图片”（Issue #99）。这里存最小可回溯线索：
+   * - 表情库里的本地图存 stickerId（换电脑/重启后仍能按 id 找回文件）；
+   * - 网络图存 http(s) URL（可能过期，只作兜底）。
+   * 刻意不落 base64:// / data: URL：那是图片本体，写进消息库会把库撑大。
+   */
+  #imageMediaRef(image) {
+    const stickerId = image?.localFile ? String(image.id || '').trim() : '';
+    if (stickerId) return [{ kind: 'image', stickerId }];
+    const url = String(image?.url || '').trim();
+    return /^https?:\/\//i.test(url) ? [{ kind: 'image', url }] : [];
+  }
+
+  /**
    * 送达后记账要用的「被引用消息的作者」。**这一步已经在 send() 成功之后**，所以库读也必须
    * 自己兜住：findByMid 抛错（磁盘/库损坏这类不受 busy_timeout 管的错）会让整条 promise
    * reject → sendTextBatch 把这条记成 failed → 模型以为没发出去、重发 → 群里两条一样的消息。
@@ -647,6 +662,7 @@ export class SendQueue {
         ts,
         mid: data?.message_id ?? null,
         targetUserId,
+        media: this.#imageMediaRef(sticker),
         eventKind: 'message'
         });
       this.onSent?.({ chatKey, text: `[表情包]`, messageId: data?.message_id ?? null, sticker: sticker.id });
@@ -676,11 +692,12 @@ export class SendQueue {
       if (!targetUserId && kind === 'private') targetUserId = String(id);
       this.#afterSent(() => {
         this.store.appendSelf(chatKey, {
-          text: `[图片:${image.desc || image.localNote || image.id}]`,
-          ts,
-          mid: data?.message_id ?? null,
-          targetUserId,
-          eventKind: 'message'
+        text: `[图片:${image.desc || image.localNote || image.id}]`,
+        ts,
+        mid: data?.message_id ?? null,
+        targetUserId,
+        media: this.#imageMediaRef(image),
+        eventKind: 'message'
         });
         this.onSent?.({ chatKey, text: '[图片]', messageId: data?.message_id ?? null });
       });

@@ -1336,7 +1336,13 @@ function buildApp({
       const senderId = String(msg?.sender?.user_id ?? msg?.user_id ?? '');
       let text = '';
       if (Array.isArray(msg?.message)) {
-        text = msg.message.map((s) => (s.type === 'text' ? s.data?.text ?? '' : `[${s.type}]`)).join('').trim();
+        // 引用富化与正文共用同一套「消息段 → 文本」口径（Issue #99）：正文把 image 段
+        // 渲染成 [图片]，这里若继续用原始的 [image]，提示词教的 [图片] 触发词就命中不了，
+        // 模型会以为引用块里没有可看的图。includeReply:false 防止引用套引用递归解析。
+        text = await segmentsToText(msg.message, {
+          includeReply: false,
+          selfId: String(onebot.selfId || '')
+        });
       } else if (typeof msg?.message === 'string') {
         text = msg.message;
       }

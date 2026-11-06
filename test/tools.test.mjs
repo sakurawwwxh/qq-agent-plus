@@ -162,6 +162,29 @@ test('get_message_images refreshes an expired stored URL from the source message
   assert.equal(updates[0][2].appendMedia[0].url, `base64://${png}`);
 });
 
+test('get_message_images 用发送时记录的 stickerId 兜底（源消息过期也能看自发图，Issue #99）', async () => {
+  const png = Buffer.from('89504e470d0a1a0a00000000', 'hex').toString('base64');
+  const entry = {
+    mid: '88',
+    media: [{ kind: 'image', stickerId: 's1' }],
+    senderId: 'self',
+    self: true,
+    text: '[图片:猫]'
+  };
+  const f = context({
+    store: { findByMid: (_chatKey, mid) => String(mid) === '88' ? entry : null, updateByMid: () => {} },
+    onebot: { getMsg: async () => { throw new Error('message expired'); } },
+    stickers: {
+      findForSend: async (id) => (id === 's1' ? { id, url: `base64://${png}` } : null)
+    }
+  });
+
+  const result = await tool('get_message_images').execute(f.ctx, { messageId: '88' });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.content[1].type, 'image_url');
+  assert.match(result.content[1].image_url.url, /^data:image\/png;base64,/);
+});
+
 test('malformed tool JSON returns actionable correction guidance without execution', async () => {
   let executed = false;
   const result = await executeTool([{
