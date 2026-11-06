@@ -146,7 +146,7 @@ test('active recall wraps memory as untrusted data and neutralizes closing tags'
   };
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 2000 } }),
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 2000, autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }),
     service
   });
   const result = await runtime.recall({ chatKey: 'group:1', triggerEntries: [{ text: '规则' }] });
