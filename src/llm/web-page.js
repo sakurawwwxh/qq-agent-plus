@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { parse } from 'node-html-parser';
 import { safeSlice } from '../core/util.js';
 import { safeFetchRequest } from './safe-fetch.js';
@@ -7,9 +8,13 @@ const MAX_CONTENT_CHARS = 20000;
 
 function htmlText(body, url) {
   const doc = parse(body);
-  // 正文空白归一化前先保护代码；标记避开页面已有的解码文本。
-  let marker = '\u0000QQ_WEB_CODE_';
-  while (doc.text.includes(marker)) marker += '_';
+  // 正文空白归一化前先保护代码。用随机哨兵而不是页面文本推导：doc.text 是 getter，
+  // 逐字符扩展标记会让恶意页面把这里变成 O(n²)；随机值也无法被页面预置。
+  const docText = doc.text;
+  let marker = `\u0000QQ_WEB_CODE_${randomUUID()}_`;
+  for (let attempt = 0; attempt < 4 && docText.includes(marker); attempt += 1) {
+    marker = `\u0000QQ_WEB_CODE_${randomUUID()}_`;
+  }
   const code = [];
   // 不逐个替换 DOM 节点：大量同级链接下的数组查找/搬移会放大到平方级。
   function render(node) {
@@ -50,7 +55,10 @@ function htmlText(body, url) {
   }
   if (!text) {
     const articles = doc.querySelectorAll('article');
-    text = render(articles.length === 1 ? articles[0] : doc.querySelector('body') || doc).trim();
+    const article = articles.length === 1 ? articles[0] : null;
+    text = render(article || doc.querySelector('body') || doc).trim();
+    // 空的单篇文章（JS 壳/只剩被排除标签）不能遮住 body 里的静态正文。
+    if (!text && article) text = render(doc.querySelector('body') || doc).trim();
   }
   text = text.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n');
   const title = safeSlice(doc.querySelector('title')?.text.trim() || '', 300);
