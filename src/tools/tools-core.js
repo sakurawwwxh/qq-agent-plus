@@ -180,7 +180,8 @@ import { repairUnescapedStringQuotes } from '../core/json-repair.js';
 import { humanizeText } from '../llm/humanize.js';
 import { searchKnowledge } from '../knowledge/store.js';
 import { assertPublicUrlLiteral, validateImageUrl } from '../llm/safe-fetch.js';
-import { webSearch, webFetch } from '../llm/web-search.js';
+import { webSearch } from '../llm/web-search.js';
+import { fetchWebPage } from '../llm/web-page.js';
 import { expandForwardNodes, extractMediaFromSegments } from '../onebot/onebot.js';
 import { readForwardMessages, readForwardNodesById } from '../onebot/forward-reader.js';
 import { convertGifToStillStrip, convertVideoToFrameStrip, convertStillImageToJpeg, fetchOversizedImageAsJpeg } from './image-downsample.js';
@@ -3308,15 +3309,12 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       },
       async execute(ctx, args) {
         try {
-          const result = await webFetch(String(args.url ?? ''), { signal: ctx.signal });
-          const body = String(result.body || '');
+          const result = await fetchWebPage(String(args.url ?? ''), { signal: ctx.signal });
           return ok({
-            url: result.url,
-            statusCode: result.statusCode,
-            truncated: result.truncated || body.length > 20000,
+            ...result,
             // 正文整体进提示词：过段头弱化，别让网页里伪造的管理员/系统段头直达模型
             // （群消息/昵称/记忆/交接都过清洗，这是外部文本的最后一条漏网通道）
-            content: sanitizeUserText(body.slice(0, 20000))
+            content: sanitizeUserText(result.content)
           });
         } catch (error) {
           return err(`抓取失败：${error?.message ?? error}`);
