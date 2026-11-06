@@ -9,7 +9,7 @@ import { rmDirBestEffort } from './helpers/cleanup.mjs';
 
 const {
   admitWrite, settleWriteOp, recoverWriteOps, resolveWriteOp, listWriteOps,
-  grantApproval, checkApproval, requestPendingApproval, approvePendingApproval,
+  grantApproval, checkApproval, refundApproval, revokeApproval, requestPendingApproval, approvePendingApproval,
   clearPluginGrants, resetPluginGrants, listPendingApprovals
 } = await import('../src/plugins/grants.js');
 
@@ -169,6 +169,30 @@ test('卸载归档 unknown；重置授权保留 unknown 与配额', (t) => {
   assert.ok(fs.existsSync(archive), '卸载要把 unknown 归档而不是直接删');
   const saved = JSON.parse(fs.readFileSync(archive, 'utf8'));
   assert.equal(saved.writeOps[admitted.opId].state, 'unknown');
+});
+
+test('迟到退款按 grantId 定位：不能加到后来同键的新通行证上', (t) => {
+  const dir = makeDir(t);
+  const oldGrant = grantApproval(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', uses: 2, ttlMs: 60_000
+  });
+  const admitted = admitWrite(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', quotaLimit: 3, floorMs: 0
+  });
+  assert.equal(admitted.admitted, true);
+  const receipt = admitted.approvalReceipt;
+  assert.equal(receipt.grantId, oldGrant.grantId);
+
+  // 旧证被管理员撤销后，又批了一张 (动作,目标,预览) 完全相同的新证
+  revokeApproval(dir, 'p', 'write', 'A');
+  const newGrant = grantApproval(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', uses: 1, ttlMs: 60_000
+  });
+  assert.notEqual(newGrant.grantId, oldGrant.grantId);
+
+  assert.equal(refundApproval(dir, 'p', receipt), true, '退款请求本身成功');
+  const current = stateOf(dir).approvals.find((entry) => entry.grantId === newGrant.grantId);
+  assert.equal(current.usesLeft, 1, '旧证的迟到退款不能给新证加额度');
 });
 
 test('grants 文件损坏：准入 fail-closed，不生成通配批准', (t) => {

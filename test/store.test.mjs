@@ -330,6 +330,24 @@ describe('ChatStore', () => {
     assert.equal(store.drainUnread('group:1').length, 1);
   });
 
+  it('merges self-sent media into an existing message on duplicate append', (t) => {
+    const { store } = fixture(t);
+    const first = store.appendSelf('group:1', { mid: 'self-img', text: '[图片]' });
+    assert.deepEqual(first.media, []);
+    const merged = store.appendSelf('group:1', {
+      mid: 'self-img', text: '[图片]', media: [{ kind: 'image', stickerId: 'sticker-1' }]
+    });
+    assert.equal(merged.duplicate, true);
+    assert.equal(merged.media.length, 1);
+    assert.equal(merged.media[0].stickerId, 'sticker-1');
+    assert.equal(store.findByMid('group:1', 'self-img').media[0].stickerId, 'sticker-1', '合并后的 media 要落库');
+
+    const again = store.appendSelf('group:1', {
+      mid: 'self-img', text: '[图片]', media: [{ kind: 'image', stickerId: 'sticker-1' }]
+    });
+    assert.equal(again.media.length, 1, '同一个 stickerId 不能重复合并');
+  });
+
   it('persists conversation threads and append-only checkpoints', (t) => {
     const { store } = fixture(t);
     const first = store.upsertConversationThread('group:1', {

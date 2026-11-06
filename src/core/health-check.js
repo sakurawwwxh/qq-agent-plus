@@ -546,10 +546,16 @@ export async function runHealthCheck(opts = {}) {
   if (Array.isArray(mcpStatus)) {
     const enabled = mcpStatus.filter((row) => row?.enabled !== false);
     if (enabled.length) {
-      const bad = enabled.filter((row) => row.sandboxError || (row.unsandboxed && row.allowUnsandboxed !== true));
+      // 除了隔离问题，还要报“根本没起来”：spawn ENOENT/初始化超时/重启耗尽时
+      // sandboxError 是空的，以前这里会显示绿色。
+      const unavailable = (row) => !row?.ready && !row?.starting && !row?.restarting
+        && Boolean(row?.error || row?.stderr);
+      const bad = enabled.filter((row) => row.sandboxError
+        || (row.unsandboxed && row.allowUnsandboxed !== true)
+        || unavailable(row));
       const trusted = enabled.filter((row) => row.unsandboxed && row.allowUnsandboxed === true);
       const detail = bad.length
-        ? `有 ${bad.length} 个 server 未按配置隔离：${bad.map((row) => row.id).join(', ')}`
+        ? `有 ${bad.length} 个 server 不可用或未按配置隔离：${bad.map((row) => row.id).join(', ')}`
         : `已配置 ${enabled.length} 个 server`
           + `${trusted.length ? `，其中 ${trusted.length} 个显式未沙箱` : ''}`;
       add('mcp-isolation', bad.length === 0, detail);

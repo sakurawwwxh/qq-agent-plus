@@ -214,6 +214,8 @@ export class LivingMemoryStore {
       vectorError: previousVector ? '正在重新向量化，暂时沿用旧向量' : '',
       vectorBlob: previousVector?.blob ?? null,
       vectorDimensions: previousVector?.dimensions ?? 0,
+      // 控制台编辑不一定回传 embeddingModel；旧向量仍按原模型可召回，不能把模型名清空。
+      embeddingModel: memory.embeddingModel || previous?.embeddingModel || '',
       createdAt,
       updatedAt: time,
       archivedAt,
@@ -428,6 +430,8 @@ export class LivingMemoryStore {
     this.db.exec('SAVEPOINT living_memory_remove');
     try {
       this.db.prepare('DELETE FROM memories WHERE id = ?').run(memory.id);
+      // 版本快照含完整正文，删卡不删快照等于“彻底删除”没做到；同一事务内一起清。
+      this.db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(memory.id);
       if (turnIds.length) {
         this.db.prepare(`
           DELETE FROM turns
@@ -467,8 +471,11 @@ export class LivingMemoryStore {
   unarchiveMemory(id) {
     const memory = this.getMemory(id);
     if (!memory) return null;
-    this.db.prepare("UPDATE memories SET status = 'active', archived_at = 0, updated_at = ? WHERE id = ?")
-      .run(now(), memory.id);
+    // 过期自动归档的卡恢复后必须清掉过期时间，否则召回仍排除它、下次 prune 又归档。
+    const time = now();
+    const expiresAt = memory.expiresAt > 0 && memory.expiresAt <= time ? 0 : memory.expiresAt;
+    this.db.prepare('UPDATE memories SET status = ?, archived_at = 0, expires_at = ?, updated_at = ? WHERE id = ?')
+      .run('active', expiresAt, time, memory.id);
     return this.getMemory(memory.id);
   }
 

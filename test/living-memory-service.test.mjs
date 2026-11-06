@@ -138,6 +138,62 @@ test('memory versions keep only the latest 20 snapshots per card', () => {
   store.close();
 });
 
+test('removing a card also removes its version snapshots', async () => {
+  const service = fakeService();
+  const first = await service.upsertMemory({
+    scopeKey: 'group:100', summary: '初版', content: '第一版正文'
+  });
+  await service.upsertMemory({
+    id: first.id, scopeKey: 'group:100', summary: '二版', content: '第二版正文'
+  });
+  assert.equal(service.store.stats().versions, 2);
+  service.removeMemory(first.id);
+  assert.equal(service.store.stats().versions, 0, '删卡必须连版本快照一起删，否则正文仍可读');
+  service.close();
+});
+
+test('unarchiving an expired card clears its expiry so recall can see it again', () => {
+  const store = new LivingMemoryStore({ file: path.join(root, `unarchive-${Date.now()}-${Math.random()}.sqlite`) });
+  const expired = store.upsertMemory({
+    scopeKey: 'group:100', summary: '过期卡片', content: '过期正文'
+  });
+  store.db.prepare("UPDATE memories SET status='archived', archived_at=?, expires_at=? WHERE id=?")
+    .run(Date.now(), Date.now() - 1000, expired.id);
+  const restored = store.unarchiveMemory(expired.id);
+  assert.equal(restored.status, 'active');
+  assert.equal(restored.expiresAt, 0, '已过期卡恢复后要清掉过期时间');
+  assert.equal(restored.archivedAt, 0);
+
+  const future = store.upsertMemory({
+    scopeKey: 'group:100', summary: '未过期卡片', content: '未过期正文', expiresAt: Date.now() + 86400000
+  });
+  store.archiveMemory(future.id);
+  const kept = store.unarchiveMemory(future.id);
+  assert.ok(kept.expiresAt > Date.now(), '未过期卡的过期时间要保留');
+  store.close();
+});
+
+test('redaction covers structured fields, not just summary/content', async () => {
+  const service = fakeService();
+  await assert.rejects(
+    service.upsertMemory({
+      scopeKey: 'group:100', summary: '群内约定', content: '正常正文',
+      keyFacts: ['管理员密码是 abc123']
+    }),
+    /拒绝保存/,
+    'keyFacts 里的凭据同样不能入库'
+  );
+  await assert.rejects(
+    service.upsertMemory({
+      scopeKey: 'group:100', summary: '群内约定', content: '正常正文',
+      participants: ['身份证 110101199001011234']
+    }),
+    /拒绝保存/,
+    'participants 里的证件号同样不能入库'
+  );
+  service.close();
+});
+
 test('embedding configuration stays in process environment and long-memory defaults stay disabled', () => {
   const config = normalizeLivingMemoryConfig({
     enabled: true,

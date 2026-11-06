@@ -59,7 +59,13 @@ export class LivingMemoryService {
     const redactionText = [
       raw?.summary || '', raw?.content || '',
       ...(Array.isArray(raw?.tags) ? raw.tags : []),
-      ...(Array.isArray(raw?.entities) ? raw.entities : [])
+      ...(Array.isArray(raw?.topics) ? raw.topics : []),
+      ...(Array.isArray(raw?.keyFacts) ? raw.keyFacts : []),
+      ...(Array.isArray(raw?.participants) ? raw.participants : []),
+      ...(Array.isArray(raw?.entities) ? raw.entities : []),
+      ...(Array.isArray(raw?.relations)
+        ? raw.relations.flatMap((item) => [item?.source, item?.predicate, item?.target])
+        : [])
     ].join('\n');
     const rejected = redactionReason(redactionText);
     if (rejected) throw new Error(`拒绝保存：${rejected}`);
@@ -181,7 +187,11 @@ export class LivingMemoryService {
     if (recentCount) {
       const existing = new Set(entries.map((item) => item.id));
       const recent = this.store.listMemories({ scopeKeys, status: 'active', limit: recentCount * 4 }).entries
-        .filter((item) => now() - item.updatedAt <= 72 * 3600000 && !existing.has(item.id)).slice(0, recentCount);
+        .filter((item) => now() - item.updatedAt <= 72 * 3600000
+          && !existing.has(item.id)
+          // 已过期但还没被每日 prune 扫到的卡不能再当“近期记忆”注入。
+          && (!item.expiresAt || item.expiresAt > now()))
+        .slice(0, recentCount);
       entries.push(...recent.map((item) => ({ ...item, retrieval: { score: 0, semantic: 0, lexical: 0, rrf: 0, recency: 1, recentFallback: true } })));
     }
     return { entries: entries.slice(0, maxItems + recentCount), vectorError, mode };
@@ -192,7 +202,7 @@ export class LivingMemoryService {
    * It is used by the external-service migration and is deliberately opt-in:
    * normal startup never turns an Embedding provider into an unbounded job.
    */
-  async reindexVectors({ limit = 100000, batchSize = 8, timeoutMs = 0, force = false, fn = null } = {}) {
+  async reindexVectors({ limit = 100000, batchSize = 8, timeoutMs = 0, force = false, onProgress = null } = {}) {
     const report = { configured: this.embedder.ready(), candidates: 0, attempted: 0, ready: 0, failed: 0 };
     if (!this.embedder.ready()) return { ...report, reason: 'Embedding 未配置' };
     const items = this.store.vectorWork({ model: this.embeddingConfig.model, limit, force });
@@ -200,7 +210,7 @@ export class LivingMemoryService {
     const size = clampInt(batchSize, 1, 64, 8);
     const effectiveTimeoutMs = clampInt(timeoutMs, 0, 120000, 0);
     const notify = () => {
-      if (typeof fn === 'function') fn({ ...report });
+      if (typeof onProgress === 'function') onProgress({ ...report });
     };
     const saveReady = (memory, vector) => {
       this.store.setVectorState(memory.id, {
