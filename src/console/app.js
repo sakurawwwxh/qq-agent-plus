@@ -1454,8 +1454,9 @@ function buildApp({
    * finalize 只在延迟路径传入：命令拦截时也放行（保持原有"不叫醒模型"语义）。
    */
   async function dispatchStoredIncoming(options) {
-    const { chatKey, kind, id, stored, isSelf } = options;
+    const { chatKey, kind, id, stored, isSelf, recordOnly = false } = options;
     const finalize = options.finalize || null;
+    if (!isSelf && !recordOnly) livingMemory.captureIncoming?.({ chatKey, message: stored });
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
     if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
     // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
@@ -1608,7 +1609,7 @@ function buildApp({
     emit('chat-update', chatKey);
 
     if (!deferred) {
-      await dispatchStoredIncoming({ chatKey, kind, id, stored, isSelf });
+      await dispatchStoredIncoming({ chatKey, kind, id, stored, isSelf, recordOnly });
       return;
     }
 
@@ -1639,7 +1640,7 @@ function buildApp({
       const current = store.getMessage(chatKey, stored.id);
       if (!current) return;
       await dispatchStoredIncoming({
-        chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
+        chatKey, kind, id, stored: current, isSelf: false, recordOnly, finalize: finalizeDeferred
       });
     };
     // recordOnly（静默段/重连补课）走单独队列：不能让一大批历史富化把实时消息的
@@ -1682,7 +1683,7 @@ function buildApp({
         const current = store.getMessage(chatKey, stored.id);
         if (!current) return;
         await dispatchStoredIncoming({
-          chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
+          chatKey, kind, id, stored: current, isSelf: false, recordOnly, finalize: finalizeDeferred
         });
       },
       fallback: finishWithFallback

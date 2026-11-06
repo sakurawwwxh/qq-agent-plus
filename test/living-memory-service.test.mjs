@@ -107,6 +107,25 @@ test('living memory rejects sensitive cards and removes the local vector with it
   service.close();
 });
 
+test('living memory keeps structured reflection fields and immutable versions', () => {
+  const store = new LivingMemoryStore({ file: path.join(root, `versions-${Date.now()}-${Math.random()}.sqlite`), turnRetentionDays: 0 });
+  const first = store.upsertMemory({
+    scopeKey: 'group:100', summary: '群内决定周五复盘', content: '张三提议周五进行项目复盘，机器人确认记录。',
+    topics: ['项目复盘'], keyFacts: ['周五进行项目复盘'], participants: ['张三', '机器人'], sentiment: 'positive',
+    source: { turnIds: ['turn-1'] }, reason: 'window-reflection'
+  });
+  const second = store.upsertMemory({
+    ...first, summary: '群内确认周五复盘', reason: 'manual-correction'
+  }, { id: first.id, reason: 'manual-correction' });
+  assert.deepEqual(second.topics, ['项目复盘']);
+  assert.equal(second.sentiment, 'positive');
+  assert.equal(store.stats().versions, 2);
+  store.recordTurn({ scopeKey: 'group:100', payload: { lines: [{ text: '永久来源' }] } });
+  store.pruneExpired();
+  assert.equal(store.stats().turns, 1, '0 天保留期表示永久保存来源回合');
+  store.close();
+});
+
 test('embedding configuration stays in process environment and long-memory defaults stay disabled', () => {
   const config = normalizeLivingMemoryConfig({
     enabled: true,
@@ -122,6 +141,7 @@ test('embedding configuration stays in process environment and long-memory defau
   assert.equal(config.maxInjectChars, 300);
   assert.deepEqual(config.groups, ['1', '3']);
   assert.equal('serviceUrl' in config, false);
+  assert.equal(normalizeLivingMemoryConfig({ turnRetentionDays: 0 }).turnRetentionDays, 0);
   assert.equal(normalizeLivingMemoryConfig({}).recallTimeoutMs, 1800);
   const embedding = readLivingMemoryEmbeddingConfig({
     LIVING_MEMORY_EMBEDDING_BASE_URL: 'https://embed.example.com/v1/',

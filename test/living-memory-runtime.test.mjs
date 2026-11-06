@@ -36,7 +36,7 @@ test('shadow mode audits semantic recall without injecting it into the prompt', 
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow' } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow', autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: '之前的向量记忆方案是什么？' }] });
   assert.equal(result.text, '');
@@ -49,13 +49,44 @@ test('active mode injects only current scope memories and keeps private chat opt
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false, autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const group = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.match(group.text, /长期语义记忆/);
   const privateResult = await runtime.recall({ chatKey: 'private:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.equal(privateResult.mode, 'disabled');
   assert.equal(service.recalls.length, 1);
+  runtime.stop();
+});
+
+test('passive capture queues incoming messages without a bot reply', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, captureAllMessages: true, captureMinMessages: 60, captureIdleMs: 600000 } }), service
+  });
+  runtime.captureIncoming({
+    chatKey: 'group:100',
+    message: { text: '下周讨论向量记忆的迁移方案', senderName: '测试用户', senderId: '10001', ts: Date.now() }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.recorded.scopeKey, 'group:100');
+  assert.match(JSON.stringify(service.recorded.payload), /下周讨论向量记忆/);
+  runtime.stop();
+});
+
+test('关闭自动提炼后，完整消息捕获不再写入来源回合或安排提炼', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, autoCapture: false, captureAllMessages: true } }), service
+  });
+  runtime.captureIncoming({
+    chatKey: 'group:100',
+    message: { text: '这条完整捕获模式下也不应入库', senderName: '测试用户', senderId: '10001', ts: Date.now() }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.recorded, undefined);
   runtime.stop();
 });
 

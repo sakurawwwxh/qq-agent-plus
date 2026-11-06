@@ -40,6 +40,10 @@ function rowToMemory(row) {
     importance: Number(row.importance) || 0,
     confidence: Number(row.confidence) || 0,
     tags: parseJson(row.tags_json, []),
+    topics: parseJson(row.topics_json, []),
+    keyFacts: parseJson(row.key_facts_json, []),
+    participants: parseJson(row.participants_json, []),
+    sentiment: row.sentiment || 'neutral',
     source: parseJson(row.source_json, {}),
     entities: parseJson(row.entities_json, []),
     relations: parseJson(row.relations_json, []),
@@ -84,7 +88,9 @@ export class LivingMemoryStore {
   constructor({ file, turnRetentionDays = 7 } = {}) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     this.file = file;
-    this.turnRetentionDays = Math.max(1, Math.min(365, Math.round(Number(turnRetentionDays) || 7)));
+    const requestedRetention = Number(turnRetentionDays);
+    this.turnRetentionDays = Number.isFinite(requestedRetention) && requestedRetention === 0
+      ? 0 : Math.max(1, Math.min(3650, Math.round(requestedRetention || 7)));
     // 统一走 src/core/sqlite.js：缺 node:sqlite 时由它在真正打开时给人话错误，
     // 而不是让整个进程在模块加载期抛裸栈。
     this.db = openDatabase(file);
@@ -104,6 +110,10 @@ export class LivingMemoryStore {
         importance REAL NOT NULL,
         confidence REAL NOT NULL,
         tags_json TEXT NOT NULL,
+        topics_json TEXT NOT NULL DEFAULT '[]',
+        key_facts_json TEXT NOT NULL DEFAULT '[]',
+        participants_json TEXT NOT NULL DEFAULT '[]',
+        sentiment TEXT NOT NULL DEFAULT 'neutral',
         source_json TEXT NOT NULL,
         entities_json TEXT NOT NULL,
         relations_json TEXT NOT NULL,
@@ -133,6 +143,21 @@ export class LivingMemoryStore {
       );
       CREATE INDEX IF NOT EXISTS idx_turns_scope_created ON turns(scope_key, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_turns_created ON turns(created_at);
+      CREATE TABLE IF NOT EXISTS memory_versions (
+        memory_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        reason TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(memory_id, version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_versions_created ON memory_versions(memory_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS capture_state (
+        scope_key TEXT PRIMARY KEY,
+        last_seen_message_id TEXT NOT NULL DEFAULT '',
+        last_extracted_message_id TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      );
       -- 迁移脚本会导入旧外置服务留下的 operations；运行时暂不读写这张表。
       CREATE TABLE IF NOT EXISTS operations (
         id TEXT PRIMARY KEY,
@@ -148,13 +173,17 @@ export class LivingMemoryStore {
     const columns = new Set(this.db.prepare('PRAGMA table_info(memories)').all().map((row) => String(row.name || '')));
     if (!columns.has('vector_blob')) this.db.exec('ALTER TABLE memories ADD COLUMN vector_blob BLOB');
     if (!columns.has('vector_dimensions')) this.db.exec('ALTER TABLE memories ADD COLUMN vector_dimensions INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('topics_json')) this.db.exec("ALTER TABLE memories ADD COLUMN topics_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has('key_facts_json')) this.db.exec("ALTER TABLE memories ADD COLUMN key_facts_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has('participants_json')) this.db.exec("ALTER TABLE memories ADD COLUMN participants_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has('sentiment')) this.db.exec("ALTER TABLE memories ADD COLUMN sentiment TEXT NOT NULL DEFAULT 'neutral'");
   }
 
   close() {
     this.db.close();
   }
 
-  upsertMemory(raw, { id = '' } = {}) {
+  upsertMemory(raw, { id = '', reason = 'create-or-update' } = {}) {
     const time = now();
     const memory = {
       id: asText(id || raw?.id, 100) || uuid(),
@@ -166,6 +195,10 @@ export class LivingMemoryStore {
       importance: clamp(raw?.importance, 0, 10, 3),
       confidence: clamp(raw?.confidence, 0, 1, 0.7),
       tags: jsonArray(raw?.tags, 16, 64),
+      topics: jsonArray(raw?.topics, 8, 80),
+      keyFacts: jsonArray(raw?.keyFacts, 12, 300),
+      participants: jsonArray(raw?.participants, 24, 120),
+      sentiment: ['positive', 'neutral', 'negative', 'mixed'].includes(raw?.sentiment) ? raw.sentiment : 'neutral',
       source: jsonObject(raw?.source),
       entities: jsonArray(raw?.entities, 32, 80),
       relations: Array.isArray(raw?.relations) ? raw.relations.slice(0, 64) : [],
@@ -193,14 +226,17 @@ export class LivingMemoryStore {
     this.db.prepare(`
       INSERT INTO memories (
         id, scope_key, type, status, summary, content, importance, confidence,
-        tags_json, source_json, entities_json, relations_json, search_text,
+        tags_json, topics_json, key_facts_json, participants_json, sentiment,
+        source_json, entities_json, relations_json, search_text,
         vector_status, vector_error, embedding_model, vector_blob, vector_dimensions,
         created_at, updated_at, expires_at, archived_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         scope_key=excluded.scope_key, type=excluded.type, status=excluded.status,
         summary=excluded.summary, content=excluded.content, importance=excluded.importance,
-        confidence=excluded.confidence, tags_json=excluded.tags_json, source_json=excluded.source_json,
+        confidence=excluded.confidence, tags_json=excluded.tags_json, topics_json=excluded.topics_json,
+        key_facts_json=excluded.key_facts_json, participants_json=excluded.participants_json, sentiment=excluded.sentiment,
+        source_json=excluded.source_json,
         entities_json=excluded.entities_json, relations_json=excluded.relations_json, search_text=excluded.search_text,
         vector_status=excluded.vector_status, vector_error=excluded.vector_error,
         embedding_model=excluded.embedding_model, vector_blob=excluded.vector_blob,
@@ -208,12 +244,17 @@ export class LivingMemoryStore {
         expires_at=excluded.expires_at, archived_at=excluded.archived_at
     `).run(
       data.id, data.scopeKey, data.type, data.status, data.summary, data.content,
-      data.importance, data.confidence, stableJson(data.tags), stableJson(data.source),
+      data.importance, data.confidence, stableJson(data.tags), stableJson(data.topics), stableJson(data.keyFacts), stableJson(data.participants), data.sentiment,
+      stableJson(data.source),
       stableJson(data.entities), stableJson(data.relations), data.searchText,
       data.vectorStatus, data.vectorError, data.embeddingModel, data.vectorBlob, data.vectorDimensions, data.createdAt,
       data.updatedAt, data.expiresAt, data.archivedAt
     );
-    return this.getMemory(data.id);
+    const saved = this.getMemory(data.id);
+    const version = Number(this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM memory_versions WHERE memory_id = ?').get(saved.id)?.version || 0) + 1;
+    this.db.prepare('INSERT INTO memory_versions(memory_id, version, reason, snapshot_json, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(saved.id, version, asText(reason, 120) || 'create-or-update', cappedJson(saved, 24000), time);
+    return saved;
   }
 
   getMemory(id) {
@@ -448,15 +489,35 @@ export class LivingMemoryStore {
     return { ...row };
   }
 
+  captureState(scopeKey) {
+    const scope = asText(scopeKey, 80);
+    if (!scopeList([scope]).length) return null;
+    return this.db.prepare('SELECT scope_key AS scopeKey, last_seen_message_id AS lastSeenMessageId, last_extracted_message_id AS lastExtractedMessageId, updated_at AS updatedAt FROM capture_state WHERE scope_key = ?').get(scope) || null;
+  }
+
+  updateCaptureState(scopeKey, { lastSeenMessageId, lastExtractedMessageId } = {}) {
+    const scope = asText(scopeKey, 80);
+    if (!scopeList([scope]).length) throw new Error('capture state scope 无效');
+    const previous = this.captureState(scope) || {};
+    const nextSeen = asText(lastSeenMessageId ?? previous.lastSeenMessageId, 100);
+    const nextExtracted = asText(lastExtractedMessageId ?? previous.lastExtractedMessageId, 100);
+    const updatedAt = now();
+    this.db.prepare('INSERT INTO capture_state(scope_key, last_seen_message_id, last_extracted_message_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(scope_key) DO UPDATE SET last_seen_message_id=excluded.last_seen_message_id, last_extracted_message_id=excluded.last_extracted_message_id, updated_at=excluded.updated_at')
+      .run(scope, nextSeen, nextExtracted, updatedAt);
+    return this.captureState(scope);
+  }
+
   pruneExpired() {
     const time = now();
     const rows = this.db.prepare("SELECT id FROM memories WHERE expires_at > 0 AND expires_at <= ? AND status = 'active'").all(time);
     this.db.prepare("UPDATE memories SET status = 'archived', archived_at = ?, updated_at = ? WHERE expires_at > 0 AND expires_at <= ? AND status = 'active'")
       .run(time, time, time);
     const cutoff = time - this.turnRetentionDays * 86400000;
-    let turnsRemoved = Number(this.db.prepare('DELETE FROM turns WHERE created_at < ?').run(cutoff).changes) || 0;
+    let turnsRemoved = this.turnRetentionDays > 0
+      ? Number(this.db.prepare('DELETE FROM turns WHERE created_at < ?').run(cutoff).changes) || 0
+      : 0;
     const totalTurns = Number(this.db.prepare('SELECT COUNT(*) AS count FROM turns').get()?.count) || 0;
-    if (totalTurns > MAX_TURNS) {
+    if (this.turnRetentionDays > 0 && totalTurns > MAX_TURNS) {
       turnsRemoved += Number(this.db.prepare(`
         DELETE FROM turns WHERE id IN (
           SELECT id FROM turns ORDER BY created_at ASC LIMIT ?
@@ -504,6 +565,7 @@ export class LivingMemoryStore {
     const turns = Number(this.db.prepare('SELECT COUNT(*) AS count FROM turns').get()?.count) || 0;
     const scopes = this.db.prepare('SELECT scope_key AS scopeKey, COUNT(*) AS count FROM memories GROUP BY scope_key ORDER BY count DESC LIMIT 100')
       .all().map((row) => ({ scopeKey: row.scopeKey, count: Number(row.count) || 0 }));
-    return { total, active, vectorReady, turns, scopes, scopeCount: scopes.length, turnRetentionDays: this.turnRetentionDays };
+    const versions = Number(this.db.prepare('SELECT COUNT(*) AS count FROM memory_versions').get()?.count) || 0;
+    return { total, active, vectorReady, turns, versions, scopes, scopeCount: scopes.length, turnRetentionDays: this.turnRetentionDays };
   }
 }
