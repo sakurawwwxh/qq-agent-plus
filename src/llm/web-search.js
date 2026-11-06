@@ -33,17 +33,19 @@ let biliMixinCache = { mix: '', at: 0 };
 
 const biliEnc = (value) => encodeURIComponent(String(value)).replace(/[!'()*]/g, '');
 
-async function biliMixinKey() {
+async function biliMixinKey(signal) {
+  signal?.throwIfAborted();
   if (biliMixinCache.mix && Date.now() - biliMixinCache.at < 30 * 60 * 1000) return biliMixinCache.mix;
   const res = await fetch('https://api.bilibili.com/x/web-interface/nav', {
     headers: {
       'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
       referer: 'https://www.bilibili.com/'
     },
-    signal: AbortSignal.timeout(10000)
+    signal: searchSignal(signal, 10000)
   });
   if (!res.ok) throw new Error(`B 站 wbi key HTTP ${res.status}`);
   const data = await readSearchJson(res, 'B 站 wbi key 返回了无法解析的 JSON');
+  signal?.throwIfAborted();
   const img = String(data?.data?.wbi_img?.img_url || '').split('/').pop().split('.')[0];
   const sub = String(data?.data?.wbi_img?.sub_url || '').split('/').pop().split('.')[0];
   if (!img || !sub) throw new Error('B 站 wbi key 缺失');
@@ -492,7 +494,12 @@ export async function bilibiliSearch(query, { signal } = {}) {
   const endpoint = new URL(String(cfg.bilibili?.searchUrl || 'https://api.bilibili.com/x/web-interface/wbi/search/type'));
   endpoint.search = '';
   // nav 取不到签名 key 时不阻塞：退回无签名请求，拿不到 result 会按空结果报错并走下一源。
-  const mix = await biliMixinKey().catch(() => '');
+  const mix = await biliMixinKey(signal).catch(() => {
+    // 本轮取消不能当作签名服务故障继续降级。
+    signal?.throwIfAborted();
+    return '';
+  });
+  signal?.throwIfAborted();
   const params = { search_type: 'video', keyword: query, wts: Math.floor(Date.now() / 1000) };
   const url = `${endpoint.toString()}?${biliSignedQuery(params, mix)}`;
   const res = await fetch(url, {
