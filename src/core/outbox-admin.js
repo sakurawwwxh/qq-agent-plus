@@ -12,7 +12,7 @@ function normalizeReason(result, fallback) {
 function reconcileOne(db, operationId, result, reason) {
   // 只允许核对真正的 unknown：sending 仍在本进程发送队列里，提前改终态会让
   // finishSend 找不到行、hasUncertainEffects 失去证据，最终可能重复发送。
-  const row = db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey
+  const row = db.prepare(`SELECT id, run_id AS runId, chat_key AS chatKey, message_id AS messageId
     FROM outbox WHERE id=? AND state='unknown'`).get(String(operationId || ''));
   if (!row) return null;
   db.prepare('UPDATE outbox SET state=?, error=? WHERE id=?').run(
@@ -39,6 +39,7 @@ function reconcileOne(db, operationId, result, reason) {
     operationId: row.id,
     runId: row.runId,
     chatKey: row.chatKey,
+    messageId: row.messageId,
     result,
     remaining
   };

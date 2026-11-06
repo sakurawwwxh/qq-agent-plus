@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { registerOutboxRoutes } from '../src/console/routes/outbox.js';
+import { clearAdminServices, setAdminServices } from '../src/admin/index.js';
 
 function harness(body, { singleResult = null } = {}) {
   const routes = [];
@@ -61,6 +62,19 @@ test('批量核对：按选中 id 执行，逐条写审计并同步 effect 账�
   assert.equal(calls.audit[0][0], 'outbox.reconcile');
   assert.equal(calls.audit[0][2].after.batch, true);
   assert.deepEqual(calls.emit[0], ['chat-update', 'group:1']);
+});
+
+test('批量核对：同步回写管理员发送动作的目标结果', async () => {
+  const seen = [];
+  setAdminServices({ reconcileEffect: (input) => { seen.push(input); return true; } });
+  try {
+    const { invoke } = harness({ result: 'sent', confirm: true, ids: ['op1'] });
+    const res = await invoke('POST', '/api/chats/group_1/unknown-operations/reconcile');
+    assert.equal(res.status, 200);
+    assert.deepEqual(seen, [{ runId: 'run1', result: 'sent', messageId: undefined, chatKey: 'group:1' }]);
+  } finally {
+    clearAdminServices();
+  }
 });
 
 test('列表：olderThanDays 转成毫秒过滤，并返回会话摘要', async () => {

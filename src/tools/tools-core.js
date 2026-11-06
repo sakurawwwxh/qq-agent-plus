@@ -18,6 +18,7 @@ import { createQuota } from '../core/quota.js';
 import { lookupMemes, rememberMeme } from '../memes/store.js';
 import { getSkillRegistry } from '../skills/registry.js';
 import { preparePrivateTextFile, privateTextFileError } from '../onebot/private-text-file.js';
+import { adminToolDefs } from '../admin/tools.js';
 
 // 生图闸门（按张计费，全局；#9 那套双闸在这里只用全局侧 —— 一张图的钱与"哪个群要的"无关，
 // 但额度按会话记账便于排查，且 perChat 不设限）
@@ -633,8 +634,9 @@ function memoryQueryDescription() {
   return `${base}全局共享：不分当前会话，汇总自所有群聊与私聊的观察。印象是跨会话的隐私：不得向群友转述他人的印象、来源或原话。`;
 }
 
-export function buildToolDefs() {
+export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}) {
   const defs = [
+    ...adminToolDefs({ kind, chatId, cfg }),
     {
       name: 'send_message',
       description: '发送消息到当前聊天（本工具只能发到本次会话对应的群/私聊）。messages 传字符串=发一条；传字符串数组=分多条发送（推荐）。只有需要明确"我回的是哪条"时才传 replyToMessageId 引用；需要点名某人才传 atUserId。不要在字符串内部用空格分句。',
