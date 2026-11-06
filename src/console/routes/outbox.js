@@ -1,5 +1,6 @@
 // 会话 unknown 外发的查看 / 单条核对 / 批量核对路由（从 console/app.js 拆出）。
 // 批量核对按行写审计：管理员一次操作可以清很多条，但每条都要能追溯到操作者与结果。
+import { getAdminServices } from '../../admin/index.js';
 export function registerOutboxRoutes(router, deps = {}) {
   const json = deps.json;
   const readBody = deps.readBody;
@@ -26,7 +27,18 @@ export function registerOutboxRoutes(router, deps = {}) {
   // 只在该 run 的所有未知行都核对完、且确认"已发送"时同步账本：
   // 标 sent 是保守方向（宁可不去重发，也不重复发）；标 failed 交给日报的显式重试路径。
   const settleEffect = (operation, result) => {
-    if (!operation.runId || operation.remaining !== 0 || result !== 'sent') return;
+    if (!operation.runId || operation.remaining !== 0) return;
+    // 管理员跨群发送的动作状态也要跟着核对结果走，否则动作永远停在 unknown，
+    // 撤回会跳过已经人工确认发送的目标。
+    try {
+      getAdminServices()?.reconcileEffect?.({
+        runId: String(operation.runId),
+        result,
+        messageId: operation.messageId,
+        chatKey: operation.chatKey
+      });
+    } catch { /* 联动失败不影响 outbox 核对 */ }
+    if (result !== 'sent') return;
     try {
       // 账本可能停在 planned（发送后、结算前崩溃且 15 分钟内重启）或 unknown；
       // settle 处理 planned，resolve 处理 unknown，两者互补才能覆盖全部非终态。

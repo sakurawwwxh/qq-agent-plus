@@ -2405,3 +2405,14 @@ QQ 语音音色）与**协议端 SnowLuma v1.14.22 的能力接入**（表情回
 - **MCP 网络隔离启动参数**：`src/mcp/isolation.js`、`src/mcp/client.js`。此前 `command = 'unshare'` 后还拿新值拼参数，实际启动成 `unshare … unshare <脚本>`，Linux 上必现 126 退出（配置了 `networkIsolation` 的 server 全起不来）；抽成 `wrapWithNetns()` 并补纯参数断言与 Linux 真启动用例。
 - **观测与恢复**：Prometheus `qqagent_outbox_pending` 改取 `byState.sending`（原字段不存在，指标恒 0）；恢复后启动失败仅在确有旧数据时回滚，否则保留已恢复数据并明确提示；提醒发送检测把 `sending` 也算作未决，避免急停后误判“没发出去”。
 - **验证**：本地 `node --test` 2754 条（2697 pass / 0 fail / 57 skip）、回归 38、Playwright 31、覆盖率 68.19/70.10/73.61（门槛 67/69/72）、ESLint、`ops scan --strict`、`release-check` 全通过；部署机 Linux Node 22.23.2 跑同一套 2754 条（2695 pass / 57 skip），仅 2 条因部署目录里遗留的 `docker-compose.yml` 还是 0.9.12 而失败——临时换上仓库版本后这 2 条 7/7 通过，确认是环境残留而非代码问题。新增 20 条针对上述边界的回归用例。
+
+## 28. 2026-11-05 管理员私聊能力
+
+- **跨群发送**：新增 `src/admin/*`。全局管理员私聊可用固定命令 `发到群 <群号|群名>：内容`、引用消息后 `转发到群`，也可由模型调用 `admin_send` 生成计划。计划先回复 6 位确认码，管理员回复 `确认 <码>` 才执行；支持文字、链接、图片、聊天记录卡片、文件、语音/AI 语音。目标只允许 `allow.groups` 白名单内的群，白名单只有一个群时可省略目标。
+- **发送可靠性**：每个目标独立 `EffectLedger`，`runId` 使用 effect id，不复用当前私聊 lease；支持部分成功、unknown 不自动重试、目标 held 跳过；动作落盘 `data/admin-actions.json`，进程重启把 `executing` 转 `unknown`。发送完成后可按动作 ID 或 `刚才` 撤回，撤回要求本地留档证明消息属于机器人。
+- **统一审批收件箱**：`待批` 聚合插件待批、入站好友申请、待确认发送动作；插件/好友使用 6 位短码 `同意`/`拒绝`，原有 `同意 ap_...` 兼容；发送动作用创建时的确认码。短码 10 分钟过期、一次性，决策写审计。
+- **只读状态**：`状态`/`健康`/`未知发送`/`失败发送`，以及 `admin_inbox`/`admin_status` 工具；健康检查复用 `runHealthCheck({persist:false, integrityCheck:false, notify:null})`，不阻塞主流程。
+- **控制台核对联动**：outbox unknown 核对为已发送后，同步回写 `admin-actions.json` 的目标结果并补 messageId；核对后的消息可按动作 ID 撤回。
+- **安全**：仅 owner 私聊可见/可调用；固定命令只认真实消息、忽略 `message_sent` 回显；模型只能创建待确认动作，不能直接发送；媒体只接受已有消息或公网 URL，拒绝本地路径；发送/撤回/审批全部写审计。
+- **文档**：新增 `docs/ADMIN.md`。
+- **验证**：本地全量 2807 条（2750 pass / 0 fail / 57 skip）、回归 38、Playwright 31、覆盖率 68.39/69.76/73.78（门槛 67/69/72）、ESLint、`ops scan --strict`、`release-check` 全通过。

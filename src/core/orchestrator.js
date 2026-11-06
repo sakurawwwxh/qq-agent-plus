@@ -2246,7 +2246,7 @@ export class Orchestrator {
     const humanShare = manual && !paced;
     const lifeFeedUsable = cfg.lifeFeed?.enabled === true
       && (humanShare || (lifeFeed?.shareMode?.() !== 'manual' && lifeFeed?.isShareTarget?.(chatKey) !== false));
-    const toolDefs = buildToolDefs().filter((d) => {
+    const toolDefs = buildToolDefs({ kind, chatId, cfg }).filter((d) => {
       if (!viewMessageImages && d.name === 'get_message_images') return false;
       if (!viewLibraryStickers && d.name === 'get_sticker_image') return false;
       // 表情包总开关关掉：发送/列表/看图/收藏四个工具一并摘掉。原先只撤了提示词里的清单，

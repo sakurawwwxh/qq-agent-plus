@@ -36,6 +36,7 @@ import { LifeFeedManager } from '../features/life-feed.js';
 import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { AdminBriefingManager } from '../features/admin-briefing.js';
+import { createAdminServices } from '../admin/bootstrap.js';
 import { GroupGameManager } from '../features/group-game.js';
 import { ReminderStore } from '../core/reminders.js';
 import { PluginRegistry } from '../plugins/registry.js';
@@ -805,6 +806,11 @@ function buildApp({
   if (getConfig().mcp?.enabled === true) {
     void mcpManager.start().catch((error) => moduleLog('mcp')('启动失败:', error));
   }
+  // 管理员私聊能力：跨群发送/统一审批/只读状态。仅 owner 私聊可见，模型只能创建待确认动作。
+  const adminServices = createAdminServices({
+    dataDir: DATA_DIR, store, sender, onebot, effects, pluginRegistry,
+    getIdentityPilot: () => identityPilot, getMcp: () => mcpManager, getConfig, log
+  });
   // 生活层：宿主侧的觅食与候选队列。禁用时不建状态文件、不起定时器。
   const lifeFeed = new LifeFeedManager({
     dataDir: DATA_DIR,
@@ -2002,6 +2008,7 @@ function buildApp({
         // 只认**真实收到的消息**：message_sent 是机器人自己发出的回显，user_id 恰好是接收方
         //（管理员），机器人发一句"同意"就会被当成 owner 批准（2026-10-24 审查 P2）。
         if (event.post_type === 'message') {
+          if (await adminServices.handlePrivateMessage(event)) return;
           const approval = pluginRegistry?.handleOwnerApprovalText?.(String(event.raw_message || ''), String(event.user_id));
           if (approval?.handled) {
             if (approval.reply) {

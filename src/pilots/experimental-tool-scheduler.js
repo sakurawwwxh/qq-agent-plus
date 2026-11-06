@@ -23,7 +23,9 @@ export const EXPERIMENTAL_READ_ONLY_TOOLS = new Set([
   'get_user_info',          // 陌生人资料（只读）
   'translate_text',         // 翻译（只读）
   'knowledge_search',       // 本地知识库只读检索
-  'meme_lookup'             // 本地梗库只读检索
+  'meme_lookup',            // 本地梗库只读检索
+  'admin_inbox',            // 管理员收件箱只读聚合
+  'admin_status'            // 管理员只读状态
 ]);
 
 // 这些也是“读取/观察”类工具，但当前不做并发预启动：
@@ -44,7 +46,8 @@ export const EXPERIMENTAL_ORDERED_READ_TOOLS = new Set([
   'generate_image',          // 按张计费的生成：串行 + 结果决定下一步
   'read_image_text',         // OCR：与 get_message_images/get_message_audio 同类的观察动作，不并发
   'life_feed_next',          // 生活层取候选：会标记 offered / 占当日额度，串行
-  'life_feed_feedback'       // 生活层回写：改本地队列状态，串行
+  'life_feed_feedback',       // 生活层回写：改本地队列状态，串行
+  'admin_send'               // 管理员发送：返回值（确认码）决定下一步回复，不能同轮 finish
 ]);
 
 export const EXPERIMENTAL_TERMINAL_TOOL = 'finish';

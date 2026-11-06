@@ -158,6 +158,13 @@ export class EffectLedger {
     return { ...row, detail: parseJson(row.detail) };
   }
 
+  /** 按 effect id 查（outbox 核对联动管理员动作时使用）。 */
+  getById(id) {
+    const row = this.#byId(id);
+    if (!row) return null;
+    return { ...row, detail: parseJson(row.detail) };
+  }
+
   /** 列表（控制台/ops 排障用）：默认最近 50 条，可按状态过滤。 */
   list({ state = '', limit = 50 } = {}) {
     const n = Math.min(200, Math.max(1, Number(limit) || 50));
