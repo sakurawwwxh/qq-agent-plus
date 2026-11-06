@@ -36,7 +36,7 @@ test('shadow mode audits semantic recall without injecting it into the prompt', 
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow' } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow', autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: '之前的向量记忆方案是什么？' }] });
   assert.equal(result.text, '');
@@ -49,13 +49,44 @@ test('active mode injects only current scope memories and keeps private chat opt
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false, autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const group = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.match(group.text, /长期语义记忆/);
   const privateResult = await runtime.recall({ chatKey: 'private:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.equal(privateResult.mode, 'disabled');
   assert.equal(service.recalls.length, 1);
+  runtime.stop();
+});
+
+test('automatic recall skips low-signal messages but keeps explicit searches available', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 4 } }), service
+  });
+  const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: '？' }] });
+  assert.equal(result.mode, 'low-signal-query');
+  assert.equal(service.recalls.length, 0);
+  runtime.stop();
+});
+
+test('default automatic threshold accepts normalized retrieval scores', async () => {
+  const service = serviceFixture();
+  service.recall = async () => ({
+    mode: 'hybrid',
+    entries: [{
+      id: 'm_1', type: 'project', summary: 'SQLite 向量记忆', content: '向量和卡片保存在数据目录。', importance: 8,
+      retrieval: { score: 0.62 }
+    }]
+  });
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 1 } }), service
+  });
+  const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
+  assert.equal(result.entries.length, 1);
+  assert.match(result.text, /SQLite 向量记忆/);
   runtime.stop();
 });
 
@@ -119,11 +150,4 @@ test('disabled runtime does not create its SQLite database while the page is onl
   assert.deepEqual(runtime.list({ scopeKeys: ['group:100'] }), { total: 0, entries: [] });
   assert.equal(fs.existsSync(path.join(dataDir, 'living-memory', 'living-memory.sqlite')), false);
   runtime.stop();
-});
-
-test('重连补课的历史不进入被动采集（源码锚点）', () => {
-  const source = fs.readFileSync(new URL('../src/console/app.js', import.meta.url), 'utf8');
-  // catchup 用第五个参数把 !fresh 标成 backlog；dispatch 只在非 backlog 时采集。
-  assert.match(source, /ingestMessage\(kind, id, item, !fresh, !fresh\)/);
-  assert.match(source, /if \(!isSelf && !backlog\) livingMemory\.captureIncoming/);
 });

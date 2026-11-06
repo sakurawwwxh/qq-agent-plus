@@ -95,7 +95,7 @@ function modeLabel(cfg) {
 
 function modeHint(cfg) {
   if (cfg.enabled !== true) return '不写入、不召回';
-  return cfg.mode === 'active' ? '回复前自动召回' : '只记录召回结果';
+  return cfg.mode === 'active' ? '每次回复前自动召回并注入提示词' : '只记录召回结果，不会进入提示词';
 }
 
 function pageErrorHtml() {
@@ -374,6 +374,7 @@ function settingCheck(id, checked, title, hint) {
 
 function settingsHtml() {
   const cfg = config();
+  const injecting = cfg.enabled === true && cfg.mode === 'active';
   return `<section class="lm-card">
     <div class="lm-card-head"><div><span class="lm-section-kicker">生命周期</span><h3>运行、隐私与模式</h3><p>关闭后不写入、不召回；影子模式先记录召回结果，确认质量后再注入回复。</p></div></div>
     <div class="lm-option-grid">
@@ -386,14 +387,20 @@ function settingsHtml() {
     </div>
     <div class="lm-form-grid">
       <label class="lm-field">运行模式<select id="lm-mode">
-        <option value="shadow" ${cfg.mode !== 'active' ? 'selected' : ''}>影子：只记录，不注入</option>
-        <option value="active" ${cfg.mode === 'active' ? 'selected' : ''}>注入：回复前召回</option>
+        <option value="shadow" ${cfg.mode !== 'active' ? 'selected' : ''}>影子：记录召回，但不注入聊天</option>
+        <option value="active" ${cfg.mode === 'active' ? 'selected' : ''}>主动注入：每次回复前自动召回</option>
       </select></label>
       <label class="lm-field">每轮最多召回<input id="lm-max-items" type="number" min="1" max="16" value="${num(cfg.maxRecallItems) || 6}" /></label>
       <label class="lm-field">注入上限（字符）<input id="lm-max-chars" type="number" min="300" max="8000" value="${num(cfg.maxInjectChars) || 2400}" /></label>
+      <label class="lm-field">自动注入最多几条<input id="lm-auto-inject-items" type="number" min="1" max="8" value="${num(cfg.autoInjectMaxItems) || 3}" /></label>
+      <label class="lm-field">自动注入最低相关度<input id="lm-auto-inject-score" type="number" min="0" max="1" step="0.05" value="${Number(cfg.autoInjectMinScore ?? 0.3)}" /></label>
+      <label class="lm-field">相似记忆去重阈值<input id="lm-auto-inject-diversity" type="number" min="0.2" max="0.95" step="0.05" value="${Number(cfg.autoInjectDiversity ?? 0.68)}" /></label>
+      <label class="lm-field">短消息自动注入门槛（字）<input id="lm-auto-inject-min-query" type="number" min="1" max="80" value="${num(cfg.autoInjectMinQueryChars) || 4}" /></label>
       <label class="lm-field">检索融合系数（RRF）<input id="lm-rrf-k" type="number" min="10" max="200" value="${num(cfg.rrfK) || 60}" /><small>值越大越平滑地融合关键词与向量排序</small></label>
       <label class="lm-field">近期记忆保留（条）<input id="lm-recent-memory-count" type="number" min="0" max="4" value="${num(cfg.recentMemoryCount)}" /><small>检索不命中时补入近期活跃记忆；填 0 关闭</small></label>
     </div>
+    <div class="lm-injection-banner ${injecting ? 'is-active' : 'is-shadow'}"><strong>${injecting ? '主动注入已开启' : '当前不会注入聊天提示词'}</strong><span>${injecting ? '每次聊天运行会在模型调用前自动召回本会话的长期记忆；这不是由模型自行决定是否调用工具。' : '影子模式仍会生成记忆卡片和记录召回结果，但运行时刻意返回空文本。切换为「主动注入」并保存后才会出现在会话提示词中。'}</span></div>
+    ${settingCheck('lm-auto-inject-recent-context', cfg.autoInjectRecentContext !== false, '用最近几句对话扩展自动召回查询', '避免只根据“？”、“上次呢”之类短消息召回无关旧记忆；仅用于检索，不会额外注入这几句。')}
   </section>
   <section class="lm-card">
     <div class="lm-card-head"><div><span class="lm-section-kicker">性能与范围</span><h3>提炼节奏与保留</h3><p>这些参数只在启用后生效；改完点下方保存。</p></div></div>
@@ -561,6 +568,11 @@ async function saveConfig(button) {
       turnRetentionDays: Math.max(0, Math.min(3650, intValue('#lm-turn-retention', retentionFallback))),
       maxInjectChars: Math.max(300, Math.min(8000, intValue('#lm-max-chars', num(cfg.maxInjectChars) || 2400))),
       maxRecallItems: Math.max(1, Math.min(16, intValue('#lm-max-items', num(cfg.maxRecallItems) || 6))),
+      autoInjectMaxItems: Math.max(1, Math.min(8, intValue('#lm-auto-inject-items', num(cfg.autoInjectMaxItems) || 3))),
+      autoInjectMinScore: Math.max(0, Math.min(1, intValue('#lm-auto-inject-score', Number(cfg.autoInjectMinScore) || 0.3))),
+      autoInjectDiversity: Math.max(0.2, Math.min(0.95, intValue('#lm-auto-inject-diversity', Number(cfg.autoInjectDiversity) || 0.68))),
+      autoInjectMinQueryChars: Math.max(1, Math.min(80, intValue('#lm-auto-inject-min-query', num(cfg.autoInjectMinQueryChars) || 4))),
+      autoInjectRecentContext: checkedValue('#lm-auto-inject-recent-context', cfg.autoInjectRecentContext !== false),
       rrfK: Math.max(10, Math.min(200, intValue('#lm-rrf-k', num(cfg.rrfK) || 60))),
       recentMemoryCount: Math.max(0, Math.min(4, intValue('#lm-recent-memory-count', num(cfg.recentMemoryCount)))),
       recallTimeoutMs: Math.max(300, Math.min(5000, intValue('#lm-recall-timeout', num(cfg.recallTimeoutMs) || 1800))),

@@ -33,6 +33,23 @@ function boundedDeadlineMs(value) {
   return Math.max(200, Math.min(15000, Math.round(parsed)));
 }
 
+function contentTokenSet(value) {
+  const text = asText(value, 3000).toLowerCase();
+  const words = text.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1);
+  if (words.length >= 3) return new Set(words);
+  const compact = text.replace(/\s+/g, '');
+  return new Set(Array.from({ length: Math.max(0, compact.length - 1) }, (_, index) => compact.slice(index, index + 2)));
+}
+
+function textSimilarity(left, right) {
+  const a = contentTokenSet(left);
+  const b = contentTokenSet(right);
+  if (!a.size || !b.size) return 0;
+  let common = 0;
+  for (const token of a) if (b.has(token)) common += 1;
+  return common / Math.max(a.size + b.size - common, 1);
+}
+
 export class LivingMemoryService {
   constructor({ file, embeddingConfig = null, store = null, embedder = null, log = console, turnRetentionDays = 7 } = {}) {
     this.embeddingConfig = embeddingConfig || readLivingMemoryEmbeddingConfig();
@@ -54,6 +71,21 @@ export class LivingMemoryService {
     };
   }
 
+  #findNearDuplicate(raw) {
+    const scopeKey = asText(raw?.scopeKey, 80);
+    if (!scopeKey) return null;
+    const type = asText(raw?.type, 32) || 'episode';
+    const target = `${raw?.summary || ''}\n${raw?.content || ''}`;
+    if (!target.trim()) return null;
+    if (typeof this.store.listMemories !== 'function') return null;
+    const candidates = this.store.listMemories({ scopeKeys: [scopeKey], status: 'active', type, limit: 80 }).entries;
+    for (const candidate of candidates) {
+      const similarity = textSimilarity(target, `${candidate.summary || ''}\n${candidate.content || ''}`);
+      if (similarity >= 0.82) return candidate;
+    }
+    return null;
+  }
+
   async upsertMemory(raw) {
     // 服务层自己始终做敏感信息检查；allowSensitive 只用于内部迁移，不能从控制台传进来。
     const redactionText = [
@@ -68,8 +100,11 @@ export class LivingMemoryService {
       type: raw?.type,
       summary: raw?.summary,
       content: raw?.content
-    });
-    const memory = this.store.upsertMemory(raw, { id: raw?.id || duplicate?.id || '' });
+    }) || this.#findNearDuplicate(raw);
+    const normalized = duplicate && !raw?.id
+      ? { ...raw, id: duplicate.id, importance: Math.max(Number(raw?.importance) || 0, Number(duplicate.importance) || 0) }
+      : raw;
+    const memory = this.store.upsertMemory(normalized, { id: normalized?.id || '' });
     if (!this.embedder.ready()) {
       // 没有配置 Embedding 时标成“仅关键词”；编辑已有向量记忆则保留旧向量。
       if (memory.vectorStatus === 'ready' && memory.vectorDimensions > 0) return memory;
@@ -158,13 +193,18 @@ export class LivingMemoryService {
     const entries = [...ranked.values()].map((item) => {
       const rrf = (item.lexicalRank ? 1 / (fusionK + item.lexicalRank) : 0)
         + (item.semanticRank ? 1 / (fusionK + item.semanticRank) : 0);
-      const dualRouteBonus = item.lexicalRank && item.semanticRank ? 0.002 : 0;
-      const score = rrf + dualRouteBonus
-        + (Number(item.memory.importance) || 0) / 10 * 0.09 + recencyScore(item.memory) * 0.04;
+      const semanticEvidence = Math.max(0, Math.min(1, (item.semantic - 0.28) / 0.42));
+      const lexicalEvidence = Math.max(0, Math.min(1, item.lexical / 4));
+      const evidence = Math.max(semanticEvidence, lexicalEvidence);
+      const rankScore = Math.max(0, Math.min(1, rrf / 0.033));
+      const score = evidence > 0
+        ? Math.min(1, evidence * 0.82 + rankScore * 0.1 + (Number(item.memory.importance) || 0) / 10 * 0.05 + recencyScore(item.memory) * 0.03)
+        : 0;
       return {
         ...item.memory,
         retrieval: {
           score: Math.round(score * 1000) / 1000,
+          evidence: Math.round(evidence * 1000) / 1000,
           semantic: Math.round(item.semantic * 1000) / 1000,
           lexical: item.lexical, rrf: Math.round(rrf * 100000) / 100000,
           recency: Math.round(recencyScore(item.memory) * 1000) / 1000
