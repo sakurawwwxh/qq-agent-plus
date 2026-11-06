@@ -591,11 +591,16 @@ async function currentMessageImageUrls(ctx, entry) {
       // Stored URLs remain a best-effort fallback when the source message expired.
     }
   }
-  return media
-    .filter((item) => item.kind === 'image' || item.kind === 'video')
-    .map((item) => ({ kind: item.kind, url: String(item.url || item.file || '').trim() }))
-    .filter((item) => item.url)
-    .slice(0, 4);
+  const viewable = [];
+  for (const item of media) {
+    if (item?.kind !== 'image' && item?.kind !== 'video') continue;
+    let url = String(item.url || item.file || '').trim();   // 自发图只存 stickerId（Issue #99）
+    if (!url && item.stickerId && typeof ctx.stickers?.findForSend === 'function') {
+      try { url = String((await ctx.stickers.findForSend(item.stickerId))?.url || '').trim(); } catch { /* 无图 */ }
+    }
+    if (url && viewable.push({ kind: item.kind, url }) >= 4) break;
+  }
+  return viewable;
 }
 
 function imageParts(text, dataUrls) {

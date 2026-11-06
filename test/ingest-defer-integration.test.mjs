@@ -130,6 +130,30 @@ test('引用消息 id 属于别的群：不把别群原文带进当前群历史'
   assert.doesNotMatch(row.text, /别群的原文/);
 });
 
+test('引用带图消息：占位符用中文 [图片]，与提示词的看图触发词一致（Issue #99）', async () => {
+  app.onebot.getMsg = async () => ({
+    group_id: 1,
+    message_type: 'group',
+    sender: { card: '甲', user_id: 43 },
+    message: [
+      { type: 'image', data: { url: 'https://example.com/cat.png' } },
+      { type: 'text', data: { text: '看图' } }
+    ]
+  });
+  wakeCalls.length = 0;
+  const event = groupEvent([
+    { type: 'reply', data: { id: '9200' } },
+    { type: 'text', data: { text: '这张图是什么' } }
+  ]);
+  await app.onebot.onEvent(event);
+  await waitFor(() => rowByMid(event.message_id)?.state === 'pending');
+  const row = rowByMid(event.message_id);
+  // 正文链路把 image 段渲染成 [图片]；引用富化必须同口径，否则模型按提示词认不出这里有图。
+  assert.match(row.text, /\[引用#9200·甲：\[图片\]看图\]/, row.text);
+  assert.doesNotMatch(row.text, /\[image\]/);
+  assert.equal(wakeCalls.length, 1);
+});
+
 test('富化后的正文命中黑名单：丢弃且不唤醒', async () => {
   const storeCfg = getConfig().store;
   updateConfig({ store: { ...storeCfg, blacklistKeywords: ['广告'] } });

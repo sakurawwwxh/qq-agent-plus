@@ -1336,7 +1336,8 @@ function buildApp({
       const senderId = String(msg?.sender?.user_id ?? msg?.user_id ?? '');
       let text = '';
       if (Array.isArray(msg?.message)) {
-        text = msg.message.map((s) => (s.type === 'text' ? s.data?.text ?? '' : `[${s.type}]`)).join('').trim();
+        // 引用富化与正文同口径（Issue #99）：[图片] 才能命中提示词的看图触发词；includeReply:false 防递归。
+        text = await segmentsToText(msg.message, { includeReply: false, selfId: String(onebot.selfId || '') });
       } else if (typeof msg?.message === 'string') {
         text = msg.message;
       }
