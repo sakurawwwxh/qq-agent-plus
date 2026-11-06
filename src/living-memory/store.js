@@ -379,12 +379,40 @@ export class LivingMemoryStore {
   removeMemory(id) {
     const memory = this.getMemory(id);
     if (!memory) return null;
-    this.db.prepare('DELETE FROM memories WHERE id = ?').run(memory.id);
-    // 来源回合是这条记忆的原始聊天文本；记忆删了就不该继续留在库里。
-    const turnIds = Array.isArray(memory.source?.turnIds) ? memory.source.turnIds : [];
-    const valid = turnIds.map((item) => asText(item, 100)).filter(Boolean);
-    if (valid.length) {
-      this.db.prepare(`DELETE FROM turns WHERE id IN (${valid.map(() => '?').join(', ')})`).run(...valid);
+    // 来源回合可能被同一批次的其它卡片共同引用；只删「已无任何 memory 引用」的 turn。
+    // 用 SAVEPOINT 包住，删卡与清 turn 要么一起成功，要么都不落盘。
+    const turnIds = [...new Set(
+      (Array.isArray(memory.source?.turnIds) ? memory.source.turnIds : [])
+        .map((item) => asText(item, 100))
+        .filter(Boolean)
+    )];
+    this.db.exec('SAVEPOINT living_memory_remove');
+    try {
+      this.db.prepare('DELETE FROM memories WHERE id = ?').run(memory.id);
+      if (turnIds.length) {
+        this.db.prepare(`
+          DELETE FROM turns
+          WHERE id IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+            AND NOT EXISTS (
+              SELECT 1
+              FROM memories AS m, json_each(
+                CASE
+                  WHEN json_valid(m.source_json) THEN
+                    CASE WHEN json_type(m.source_json, '$.turnIds') = 'array'
+                      THEN m.source_json ELSE '{}' END
+                  ELSE '{}'
+                END,
+                '$.turnIds'
+              ) AS ref
+              WHERE CAST(ref.value AS TEXT) = turns.id
+            )
+        `).run(JSON.stringify(turnIds));
+      }
+      this.db.exec('RELEASE living_memory_remove');
+    } catch (error) {
+      try { this.db.exec('ROLLBACK TO living_memory_remove'); } catch { /* 已自动回滚 */ }
+      try { this.db.exec('RELEASE living_memory_remove'); } catch { /* 已释放 */ }
+      throw error;
     }
     return memory;
   }

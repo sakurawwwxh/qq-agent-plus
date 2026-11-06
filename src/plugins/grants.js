@@ -21,6 +21,7 @@ const MAX_TTL_MS = 24 * 3600 * 1000;
 const MAX_USES = 1000;
 const PENDING_TTL_MS = 10 * 60_000;   // 待批请求本身的寿命：超时自动消失
 const MAX_WRITES_KEPT = 100;          // 每个插件保留的写审计条数（控制台"日志"页签用）
+const MAX_WRITE_OPS_KEPT = 200;       // 每个插件的写 journal 上限（unknown 不占 writes 的 100 条）
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
 
@@ -118,7 +119,7 @@ function cleanGrants(state, now) {
  * @param {object} options { uses, ttlMs, target, preview, now } —— target 为空 = 动作级（兼容旧路径）；
  *   preview 非空时通行证只对**同一段预览内容**有效（评论/弹幕不能批了 A 文案再发 B 文案）。
  */
-export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 * 60_000, target = '', preview = '', previewKey: providedPreviewKey, manifestHash = '', now = Date.now() } = {}) {
+export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 * 60_000, target = '', preview = '', previewKey: providedPreviewKey, manifestHash = '', sourcePendingId = '', now = Date.now() } = {}) {
   const key = assertAction(action);
   const count = Math.max(1, Math.min(MAX_USES, Math.floor(Number(uses) || 1)));
   const ttl = Math.max(60_000, Math.min(MAX_TTL_MS, Math.floor(Number(ttlMs) || 10 * 60_000)));
@@ -139,6 +140,7 @@ export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 
     // 授权绑定**当时那份 manifest**：升级后权限面一变，旧通行证就不再匹配。
     // 这是重置逻辑之外的兜底 —— 即使调用方忘了清批准，新代码也拿不到旧授权。
     ...(manifestHash ? { manifestHash: String(manifestHash) } : {}),
+    ...(sourcePendingId ? { sourcePendingId: String(sourcePendingId) } : {}),
     expiresAt: Math.max(Number(previous?.expiresAt) || 0, now + ttl),
     usesLeft: (Number(previous?.usesLeft) || 0) + count,
     grantedAt: now
@@ -249,6 +251,20 @@ export function revokeApproval(dataDir, pluginId, action, target = '') {
  * 重装同 id 的另一个包不能继承它们（2026-10 审查 P1）。
  */
 export function clearPluginGrants(dataDir, pluginId) {
+  // 卸载不能把"结果未知"的写操作一起抹掉：先归档到同名 .unknown.json，
+  // 管理员事后仍可核对/退款（journal 里的 receipts 是唯一的退款凭据）。
+  try {
+    const state = load(dataDir, pluginId);
+    const ops = Object.fromEntries(
+      Object.entries(state.writeOps || {}).filter(([, op]) => ['admitted', 'unknown'].includes(op?.state))
+    );
+    if (Object.keys(ops).length) {
+      const archive = `${grantsFile(dataDir, pluginId)}.unknown.json`;
+      fs.writeFileSync(archive, JSON.stringify({
+        pluginId, archivedAt: Date.now(), writeOps: ops
+      }), { mode: 0o600 });
+    }
+  } catch { /* 归档失败不阻塞卸载 */ }
   try { fs.rmSync(grantsFile(dataDir, pluginId), { force: true }); } catch { /* 本来就不存在 */ }
   const pending = loadPending(dataDir);
   const kept = pending.filter((item) => item.pluginId !== pluginId);
@@ -333,11 +349,22 @@ export function approvePendingApproval(dataDir, id, { uses = 1, ttlMs = 10 * 60_
   }
   // 先写通行证、再从待批队列移除：反过来的话两步之间崩溃会让管理员"批准了但没生效"
   //（2026-10-24 审查 P2）。失败时待批仍在，可以重试。
-  const grant = grantApproval(dataDir, hit.pluginId, hit.action, {
-    uses, ttlMs, target: hit.target, previewKey: hit.previewKey, manifestHash: hit.manifestHash || manifestHash, now
+  // 崩溃落在"通行证已写、待批未删"之间：重试时按 sourcePendingId 找回同一张通行证，
+  // 不能重复 grant（否则一次批准变成两次额度）。
+  const existingGrantState = load(dataDir, hit.pluginId);
+  const existing = (Array.isArray(existingGrantState.approvals) ? existingGrantState.approvals : [])
+    .find((entry) => entry.sourcePendingId === hit.id);
+  const grant = existing || grantApproval(dataDir, hit.pluginId, hit.action, {
+    uses,
+    ttlMs,
+    target: hit.target,
+    previewKey: hit.previewKey,
+    manifestHash: hit.manifestHash || manifestHash,
+    sourcePendingId: hit.id,
+    now
   });
   savePending(dataDir, list.filter((item) => item !== hit));
-  return { pending: hit, grant };
+  return { pending: hit, grant, ...(existing ? { duplicate: true } : {}) };
 }
 
 export function rejectPendingApproval(dataDir, id) {
@@ -458,6 +485,313 @@ export function refundQuota(dataDir, pluginId, receipt) {
   }
   receipt.refunded = true;
   return true;
+}
+
+// ── 写操作 journal（2026-11-06）─────────────────────────────────────────
+// 旧流程是"先扣批准、再扣配额、再调用、最后结算"，kill -9 落在扣费与结算之间时退款收据
+// 只在内存里，重启后既退不了也留不下审计。现在把一次写做成持久化的 op：
+//   admitWrite 一次 load/save 内完成 floor/批准/配额检查与扣减，并写 writeOps[opId]=admitted；
+//   settleWriteOp 一次 load/save 内完成退款/审计/终态；
+//   recoverWriteOps 启动时把崩溃前仍在 admitted 的 op 标成 unknown（保守：不退款、不重试）。
+// 所有函数都只做一次落盘，避免"扣了 A 没扣 B"的半截状态。
+
+function appendWrite(state, entry) {
+  const writes = Array.isArray(state.writes) ? state.writes : [];
+  writes.unshift(entry);
+  // unknown 不能被 100 条普通审计挤掉（否则崩溃留下的凭据会消失）。
+  const kept = [];
+  let normal = 0;
+  let unknown = 0;
+  for (const item of writes) {
+    if (item?.outcome === 'unknown') {
+      if (unknown >= MAX_WRITE_OPS_KEPT) continue;
+      unknown += 1;
+      kept.push(item);
+    } else if (normal < MAX_WRITES_KEPT) {
+      normal += 1;
+      kept.push(item);
+    }
+  }
+  state.writes = kept;
+}
+
+function refundApprovalState(state, receipt, now) {
+  if (!receipt || receipt.refunded === true || !receipt.action) return false;
+  const grants = cleanGrants(state, now);
+  const hit = grants.find((entry) => entry.action === receipt.action
+    && String(entry.target || '') === String(receipt.target || '')
+    && String(entry.previewKey || '') === String(receipt.previewKey || ''));
+  if (hit) hit.usesLeft = Number(hit.usesLeft) + 1;
+  state.approvals = grants;
+  receipt.refunded = true;
+  return Boolean(hit);
+}
+
+/** @returns {'refunded'|'day-changed'|'none'} */
+function refundQuotaState(state, receipt) {
+  if (!receipt || receipt.refunded === true || !receipt.action || !receipt.day) return 'none';
+  receipt.refunded = true;
+  if (state.quota?.day !== receipt.day) return 'day-changed';
+  const counts = state.quota.counts || {};
+  counts[receipt.action] = Math.max(0, (Number(counts[receipt.action]) || 0) - (Number(receipt.amount) || 1));
+  state.quota.counts = counts;
+  return 'refunded';
+}
+
+function trimWriteOps(state) {
+  const entries = Object.entries(state.writeOps || {});
+  if (entries.length <= MAX_WRITE_OPS_KEPT) return;
+  entries.sort((a, b) => (Number(a[1]?.startedAt) || 0) - (Number(b[1]?.startedAt) || 0));
+  for (const [id] of entries.slice(0, entries.length - MAX_WRITE_OPS_KEPT)) delete state.writeOps[id];
+}
+
+/**
+ * 写操作准入：floor → 对象级批准 → 当天配额，全部通过才同时扣减并落 journal。
+ * 任一项不通过都不扣任何东西（旧实现先扣批准、配额不够再退，崩溃就有半截状态）。
+ */
+export function admitWrite(dataDir, pluginId, action, {
+  target = '',
+  preview = '',
+  manifestHash = '',
+  quotaLimit = 0,
+  floorMs = 60_000,
+  lastWriteAt: lastWriteAtOverride,
+  now = Date.now()
+} = {}) {
+  const key = assertAction(action);
+  const wanted = normalizeTarget(target);
+  if (wanted === null) {
+    return { admitted: false, reason: '写操作目标含非法字符，已拒绝（这次不会生成通配批准）' };
+  }
+  const keyPreview = previewKey(preview);
+  const state = load(dataDir, pluginId);
+  const grants = cleanGrants(state, now);
+  // 调用方（注册表）持有进程内的 lastWriteAt；测试/重载能把它拨回去。
+  // 未提供时用持久化值，这样重启后 floor 仍然生效。
+  const last = lastWriteAtOverride === undefined
+    ? (Number(state.lastWriteAt) || 0)
+    : (Number(lastWriteAtOverride) || 0);
+  if (Number(floorMs) > 0 && now - last < Number(floorMs)) {
+    return {
+      admitted: false,
+      rateLimited: true,
+      reason: `同一插件的写操作至少间隔 ${Math.round(Number(floorMs) / 1000)} 秒，请稍后再试`
+    };
+  }
+  const hit = grants.find((entry) => entry.action === key
+    && Number(entry.usesLeft) > 0
+    && (String(entry.target || '') === '' || String(entry.target) === wanted)
+    && String(entry.previewKey || '') === keyPreview
+    && (!manifestHash || !entry.manifestHash || String(entry.manifestHash) === String(manifestHash)));
+  if (!hit) {
+    const contentMismatch = grants.some((entry) => entry.action === key
+      && String(entry.target || '') === wanted
+      && String(entry.previewKey || '') !== keyPreview);
+    const exactTarget = grants.some((entry) => entry.action === key
+      && (String(entry.target || '') === '' || String(entry.target) === wanted));
+    return {
+      admitted: false,
+      needsApproval: true,
+      contentMismatch,
+      reason: contentMismatch
+        ? '批准针对的是另一段内容（评论/弹幕的批准绑定正文，改了内容要重新批准）'
+        : exactTarget
+          ? `没有针对目标 ${wanted || '(空)'} 的批准（一次批准只对一个目标有效）`
+          : '还没有批准过这个动作'
+    };
+  }
+  const max = Math.floor(Number(quotaLimit) || 0);
+  const day = dayKey(now);
+  const quota = state.quota && state.quota.day === day ? state.quota : { day, counts: {} };
+  quota.counts = quota.counts && typeof quota.counts === 'object' ? quota.counts : {};
+  const used = Number(quota.counts[key]) || 0;
+  if (max <= 0) {
+    return {
+      admitted: false,
+      quotaExceeded: true,
+      reason: '这个动作没有配置配额（不能在未声明配额的情况下调用）'
+    };
+  }
+  if (used + 1 > max) {
+    return {
+      admitted: false,
+      quotaExceeded: true,
+      reason: `今天的配额已用完（${used}/${max}）`
+    };
+  }
+  // 全部通过：同一份 state 里扣批准、加配额、抬 floor、写 op，然后只落一次盘。
+  hit.usesLeft = Number(hit.usesLeft) - 1;
+  quota.counts[key] = used + 1;
+  state.approvals = grants;
+  state.quota = quota;
+  state.lastWriteAt = now;
+  const opId = `wo_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+  const approvalReceipt = {
+    action: key,
+    target: String(hit.target || ''),
+    previewKey: String(hit.previewKey || ''),
+    refunded: false
+  };
+  const quotaReceipt = { pluginId, action: key, day, amount: 1, refunded: false };
+  state.writeOps = state.writeOps && typeof state.writeOps === 'object' ? state.writeOps : {};
+  state.writeOps[opId] = {
+    state: 'admitted',
+    action: key,
+    target: wanted,
+    previewKey: keyPreview,
+    manifestHash: String(manifestHash || ''),
+    day,
+    startedAt: now,
+    approval: { consumed: true, receipt: approvalReceipt },
+    quota: { consumed: true, receipt: quotaReceipt },
+    outcome: '',
+    note: '',
+    resolvedAt: 0,
+    resolvedBy: ''
+  };
+  trimWriteOps(state);
+  save(dataDir, pluginId, state);
+  return {
+    admitted: true,
+    opId,
+    action: key,
+    target: wanted,
+    day,
+    approvalReceipt,
+    quotaReceipt,
+    remaining: Math.max(0, max - used - 1)
+  };
+}
+
+/**
+ * 结算一次写：success/verified → 成功；failed/skipped → 原子退款 + 审计；
+ * unknown → 保持已消费、不退款、不重试。重复结算幂等。
+ */
+export function settleWriteOp(dataDir, pluginId, opId, {
+  outcome = 'ok', note = '', now = Date.now()
+} = {}) {
+  const state = load(dataDir, pluginId);
+  const op = state.writeOps?.[String(opId || '')];
+  if (!op) return false;
+  if (op.state !== 'admitted') return false;
+  const verdict = ['ok', 'verified', 'failed', 'skipped', 'unknown'].includes(outcome) ? outcome : 'unknown';
+  if (verdict === 'unknown') {
+    op.state = 'unknown';
+    op.outcome = 'unknown';
+    op.note = String(note || '结果未知：请求可能已经到达对方，批准与配额保持已消费').slice(0, 300);
+    appendWrite(state, {
+      at: now, action: op.action, target: op.target, outcome: 'unknown', note: op.note.slice(0, 200)
+    });
+  } else if (verdict === 'failed' || verdict === 'skipped') {
+    refundApprovalState(state, op.approval?.receipt, now);
+    const quotaResult = refundQuotaState(state, op.quota?.receipt);
+    op.state = 'settled-refunded';
+    op.outcome = verdict;
+    op.note = String(
+      quotaResult === 'day-changed'
+        ? `${note || verdict}（跨天，配额无法退回）`
+        : (note || verdict)
+    ).slice(0, 300);
+    appendWrite(state, {
+      at: now,
+      action: op.action,
+      target: op.target,
+      outcome: 'failed',
+      note: (verdict === 'skipped' ? `幂等跳过：${note || ''}` : op.note).slice(0, 200)
+    });
+  } else {
+    op.state = 'settled-ok';
+    op.outcome = verdict;
+    op.note = String(note || '').slice(0, 300);
+    appendWrite(state, {
+      at: now, action: op.action, target: op.target, outcome: 'ok', note: op.note.slice(0, 200)
+    });
+  }
+  op.resolvedAt = now;
+  save(dataDir, pluginId, state);
+  return true;
+}
+
+/**
+ * 启动恢复：把 bootAt 之前仍在 admitted 的 op 标成 unknown（服务在确认结果前重启）。
+ * 不自动退款/重试；幂等，跑多次也只有第一次改状态。
+ */
+export function recoverWriteOps(dataDir, bootAt = Date.now(), { now = Date.now() } = {}) {
+  const dir = grantsDir(dataDir);
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((file) =>
+      file.endsWith('.json') && file !== 'pending.json' && !file.endsWith('.unknown.json'));
+  } catch {
+    return 0;
+  }
+  let recovered = 0;
+  for (const file of files) {
+    const pluginId = file.slice(0, -5);
+    const state = load(dataDir, pluginId);
+    let changed = false;
+    for (const [opId, op] of Object.entries(state.writeOps || {})) {
+      if (op?.state !== 'admitted' || Number(op.startedAt) >= Number(bootAt)) continue;
+      op.state = 'unknown';
+      op.outcome = 'unknown';
+      op.note = '服务在写操作确认前重启：请求可能已经到达对方，未自动退款/重试';
+      op.resolvedAt = now;
+      state.lastWriteAt = Math.max(Number(state.lastWriteAt) || 0, Number(op.startedAt) || 0);
+      appendWrite(state, {
+        at: now, action: op.action, target: op.target, outcome: 'unknown', note: `崩溃恢复：${opId}`
+      });
+      recovered += 1;
+      changed = true;
+    }
+    if (changed) save(dataDir, pluginId, state);
+  }
+  return recovered;
+}
+
+/** 人工核对 unknown：executed=true → 不退款；false → 退批准与当天配额。 */
+export function resolveWriteOp(dataDir, pluginId, opId, {
+  executed = false, by = '', now = Date.now()
+} = {}) {
+  const state = load(dataDir, pluginId);
+  const op = state.writeOps?.[String(opId || '')];
+  if (!op) throw fail('E_NOT_FOUND', '写操作不存在');
+  if (op.state !== 'unknown') throw fail('E_STATE', `只有结果未知的写操作需要人工核对（当前 ${op.state}）`);
+  const didExecute = executed === true;
+  let quotaResult = 'none';
+  if (didExecute) {
+    op.state = 'resolved-executed';
+    op.outcome = 'executed';
+    op.note = '人工确认已执行';
+  } else {
+    refundApprovalState(state, op.approval?.receipt, now);
+    quotaResult = refundQuotaState(state, op.quota?.receipt);
+    op.state = 'resolved-refunded';
+    op.outcome = 'not-executed';
+    op.note = quotaResult === 'day-changed'
+      ? '人工确认未执行；跨天配额无法退回'
+      : '人工确认未执行，已退还批准与配额';
+  }
+  op.resolvedAt = now;
+  op.resolvedBy = String(by || '').slice(0, 80);
+  appendWrite(state, {
+    at: now,
+    action: op.action,
+    target: op.target,
+    outcome: didExecute ? 'ok' : 'failed',
+    note: `人工核对：${op.note}`
+  });
+  save(dataDir, pluginId, state);
+  return { ...op, quotaRefund: quotaResult };
+}
+
+export function listWriteOps(dataDir, pluginId, { state = '', limit = 50 } = {}) {
+  const ops = load(dataDir, pluginId).writeOps || {};
+  const want = String(state || '');
+  return Object.entries(ops)
+    .filter(([, op]) => !want || op?.state === want)
+    .sort((a, b) => (Number(b[1]?.startedAt) || 0) - (Number(a[1]?.startedAt) || 0))
+    .slice(0, Math.max(1, Math.min(200, Number(limit) || 50)))
+    .map(([id, op]) => ({ id, ...op }));
 }
 
 /** 控制台展示：当前授权（含目标）、待批不走这里（全局队列）、今日配额。 */

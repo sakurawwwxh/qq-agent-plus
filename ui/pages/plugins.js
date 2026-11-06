@@ -25,7 +25,7 @@ import { formatMinimalMarkdown } from '../core/format.js';
 import {
   hasPluginSettings, hydratePluginSettings, savePluginSettings,
   toggleWriteSwitch, decidePendingApproval, clearPluginSecretField, probePlugin,
-  startQrLogin, pollQrOnce, setSettingsStatus, stopQrPoll
+  startQrLogin, pollQrOnce, setSettingsStatus, stopQrPoll, resolveUnknownWriteOp
 } from './plugin-settings.js';
 import { loadPendingBanner } from './plugin-pending.js';
 
@@ -1546,6 +1546,17 @@ function bindPluginsSection() {
           pendingBtn.getAttribute('data-pd-approve-pending') || '',
           pendingBtn.getAttribute('data-pd-decision') === 'reject' ? 'reject' : 'approve',
           Number(pendingBtn.getAttribute('data-pd-uses')) || 1
+        );
+        return;
+      }
+      const resolveOp = event.target?.closest?.('[data-pd-resolve-op]');
+      if (resolveOp) {
+        event.preventDefault();
+        const block = resolveOp.closest?.('[data-pd-settings]');
+        await resolveUnknownWriteOp(
+          block?.getAttribute?.('data-pd-settings') || '',
+          resolveOp.getAttribute('data-pd-resolve-op') || '',
+          resolveOp.getAttribute('data-pd-executed') === '1'
         );
         return;
       }

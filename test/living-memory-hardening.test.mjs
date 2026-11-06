@@ -72,6 +72,39 @@ test('sensitive tags are rejected and delete removes the source turns', () => {
   store.close();
 });
 
+test('删除一条记忆不会删掉其他卡片仍引用的来源回合', () => {
+  const store = new LivingMemoryStore({ file: tempFile(), turnRetentionDays: 7 });
+  const shared = store.recordTurn({ scopeKey: 'group:1', sessionId: 's1', payload: { lines: [{ role: 'user', text: '共享原文' }] } });
+  const unique = store.recordTurn({ scopeKey: 'group:1', sessionId: 's1', payload: { lines: [{ role: 'user', text: '独有原文' }] } });
+  const a = store.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '卡片 A', content: 'A',
+    source: { turnIds: [shared.id, unique.id], turnCount: 2 }
+  });
+  const b = store.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '卡片 B', content: 'B',
+    source: { turnIds: [shared.id], turnCount: 1 }
+  });
+  assert.equal(store.stats().turns, 2);
+
+  store.removeMemory(a.id);
+  assert.equal(store.stats().turns, 1, '共享 turn 必须保留');
+  assert.deepEqual(store.getMemory(b.id).source.turnIds, [shared.id]);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM turns WHERE id = ?').get(unique.id).n, 0, '只被 A 引用的 turn 要删掉');
+
+  // 归档卡片仍算引用：删除普通卡片不能把归档卡片还要用的原文删了。
+  store.archiveMemory(b.id);
+  const c = store.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '卡片 C', content: 'C',
+    source: { turnIds: [shared.id], turnCount: 1 }
+  });
+  store.removeMemory(c.id);
+  assert.equal(store.stats().turns, 1, '归档卡片仍引用共享 turn');
+
+  store.removeMemory(b.id);
+  assert.equal(store.stats().turns, 0, '最后一个引用者删除后才清 turn');
+  store.close();
+});
+
 test('turn retention prunes old rows and caps the table', () => {
   const store = new LivingMemoryStore({ file: tempFile(), turnRetentionDays: 7 });
   const old = store.recordTurn({ scopeKey: 'group:1', payload: { lines: [] } });

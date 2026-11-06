@@ -63,7 +63,12 @@ export class McpManager {
   /** 只用于宿主退出：设置后任何 start()/reload() 都不再拉起子进程。 */
   close() {
     this.closed = true;
+    const starting = this.starting;
+    // 先同步 stop 一次保持既有语义（测试/调用方不 await 时也要立刻生效）；
+    // 若启动中的那轮在 stop 之后才 spawn，等它收尾后再 stop 一次。
     this.stop();
+    if (!starting) return Promise.resolve();
+    return starting.catch(() => {}).then(() => { this.stop(); });
   }
 
   async start() {
@@ -117,6 +122,8 @@ export class McpManager {
         networkIsolation: server.networkIsolation === true,
         permissionIsolation: server.permissionIsolation === true,
         memoryMb: server.memoryMb,
+        sandbox: server.sandbox,
+        allowUnsandboxed: server.allowUnsandboxed === true,
         log: this.log,
         onExit: () => this.#scheduleRestart(id, gen)
       });
@@ -198,6 +205,8 @@ export class McpManager {
       networkIsolation: entry.config.networkIsolation === true,
       permissionIsolation: entry.config.permissionIsolation === true,
       memoryMb: entry.config.memoryMb,
+      sandbox: entry.config.sandbox,
+      allowUnsandboxed: entry.config.allowUnsandboxed === true,
       log: this.log,
       onExit: () => this.#scheduleRestart(id, gen)
     });
@@ -342,13 +351,21 @@ export class McpManager {
       enabled: entry.config.enabled !== false && getConfig().mcp?.enabled === true,
       globalEnabled: getConfig().mcp?.enabled === true,
       error: redactText(entry.error || entry.client.lastError || '', 400),
+      sandboxError: /E_MCP_ISOLATION|隔离/.test(String(entry.error || entry.client.lastError || ''))
+        ? redactText(entry.error || entry.client.lastError || '', 400)
+        : '',
       stderr: redactText(entry.client.stderrTail || '', 400),
       tools: entry.tools.map((tool) => String(tool.name || '')).filter(Boolean),
       command: redactText(entry.config.command, 120),
       argsCount: Array.isArray(entry.config.args) ? entry.config.args.length : 0,
       networkIsolation: entry.config.networkIsolation === true,
       permissionIsolation: entry.config.permissionIsolation === true,
-      permissionActive: entry.client.permissionActive === true
+      permissionActive: entry.client.permissionActive === true,
+      sandboxKind: entry.client.sandboxKind || 'none',
+      netIsolated: entry.client.netIsolated === true,
+      fsIsolated: entry.client.fsIsolated === true,
+      unsandboxed: entry.client.unsandboxed === true,
+      allowUnsandboxed: entry.config.allowUnsandboxed === true
     }));
     const seen = new Set(rows.map((row) => row.id));
     for (const server of Array.isArray(getConfig().mcp?.servers) ? getConfig().mcp.servers : []) {
@@ -363,13 +380,19 @@ export class McpManager {
         enabled: server.enabled !== false && getConfig().mcp?.enabled === true,
         globalEnabled: getConfig().mcp?.enabled === true,
         error: '',
+        sandboxError: '',
         stderr: '',
         tools: [],
         command: redactText(server.command || '', 120),
         argsCount: Array.isArray(server.args) ? server.args.length : 0,
         networkIsolation: server.networkIsolation === true,
         permissionIsolation: server.permissionIsolation === true,
-        permissionActive: false
+        permissionActive: false,
+        sandboxKind: 'none',
+        netIsolated: false,
+        fsIsolated: false,
+        unsandboxed: false,
+        allowUnsandboxed: server.allowUnsandboxed === true
       });
     }
     return rows;

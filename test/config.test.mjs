@@ -457,3 +457,17 @@ test('unknown 自动释放策略：默认关闭，越界值收敛到 0–90 天'
     reloadConfig();
   }
 });
+
+test('配置代次：成功替换/重载后自增，校验失败保持不变', async () => {
+  const { updateConfig, reloadConfig, getConfigGeneration } = await import('../src/core/config.js');
+  const before = getConfigGeneration();
+  updateConfig({ runtime: { paused: false } });
+  const afterUpdate = getConfigGeneration();
+  assert.ok(afterUpdate > before, '成功保存必须换代');
+
+  assert.throws(() => updateConfig({ admin: { ownerUin: 'not-a-uin' } }));
+  assert.equal(getConfigGeneration(), afterUpdate, '校验失败不能换代');
+
+  reloadConfig();
+  assert.ok(getConfigGeneration() > afterUpdate, '重载磁盘配置也要换代');
+});

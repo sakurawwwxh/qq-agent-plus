@@ -188,6 +188,7 @@ export async function runHealthCheck(opts = {}) {
     noNewPrivsStatus = null,   // 可注入（测试）：null＝自动探测主服务进程
     sudoDockerProbe = null,    // 可注入（测试）：null＝走真实 probeSudoDocker()
     isolationProbe = isolationSummary, // 可注入（测试）：返回 isolationSummary() 的形状
+    mcpStatus = null,          // 可注入（测试/控制台）：McpManager.status() 的行；ops 巡检没有运行时状态
     systemdDir = '',           // 可注入（测试）：默认 ~/.config/systemd/user
     outboundStaleMs = OUTBOUND_STALE_MS,
     notify = null,
@@ -538,6 +539,21 @@ export async function runHealthCheck(opts = {}) {
     }
   } catch (error) {
     add('plugins', false, error?.message ?? String(error));
+  }
+
+  // ⑨b MCP 隔离：配置要求隔离却没起来 / 未沙箱又没显式信任 → 报红；
+  // 显式信任的未沙箱 server 只做说明（管理员已经拍过板）。
+  if (Array.isArray(mcpStatus)) {
+    const enabled = mcpStatus.filter((row) => row?.enabled !== false);
+    if (enabled.length) {
+      const bad = enabled.filter((row) => row.sandboxError || (row.unsandboxed && row.allowUnsandboxed !== true));
+      const trusted = enabled.filter((row) => row.unsandboxed && row.allowUnsandboxed === true);
+      const detail = bad.length
+        ? `有 ${bad.length} 个 server 未按配置隔离：${bad.map((row) => row.id).join(', ')}`
+        : `已配置 ${enabled.length} 个 server`
+          + `${trusted.length ? `，其中 ${trusted.length} 个显式未沙箱` : ''}`;
+      add('mcp-isolation', bad.length === 0, detail);
+    }
   }
 
   // ⑩ systemd 定时器完整性：升级只换代码，不会重跑 install-timers —— 新增 timer

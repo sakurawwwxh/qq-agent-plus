@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { displayNameOf } from '../core/display-name.js';
-import { sanitizeUserText, ZONE_OFFSET_MS } from '../core/util.js';
+import { sanitizeUserText, ZONE_OFFSET_MS, settleWithDeadline } from '../core/util.js';
 import * as numberBomb from './games/number-bomb.js';
 import * as undercover from './games/undercover.js';
 import * as werewolf from './games/werewolf.js';
@@ -17,6 +17,11 @@ const PLUGINS = new Map([[numberBomb.meta.id, numberBomb], [undercover.meta.id, 
 const dayIndex = (ts) => Math.floor((Number(ts) + ZONE_OFFSET_MS) / 86400000);
 // 可开局游戏的白名单默认值（与 DEFAULT_CONFIG.groupGame.games 同口径）
 const DEFAULT_GAMES = ['number-bomb', 'undercover'];
+// 阶段播报投递队列：public 失败可重试，private 只记账不重发（避免重复发词/身份）。
+const BROADCAST_TTL_MS = 15 * 60 * 1000;
+const BROADCAST_MAX_PER_CHAT = 50;
+const BROADCAST_RETRY_BASE_MS = 20000;
+const BROADCAST_RETRY_MAX_MS = 10 * 60 * 1000;
 // 报名信号（设计稿 §3.1 的 recruiting）：明确表达"想玩"才算，避免把只是插句话的围观者拉进局
 const JOIN_RE = /(我玩|我要玩|我也玩|我来|我报名|报名|加我|带我|算我|拉我|我也来|参与|参加)|^\s*(\+1|＋1|1|11|111)\s*[!！。.~～…]?\s*$/;
 // 否定/劝阻语境的直接跳过："别带我""不参与""我玩不动"都不是报名（子串匹配会误判，2026-09-29 审查 P1）
@@ -42,7 +47,11 @@ export class GroupGameManager {
     this.wake = wake;
     this.games = new Map();     // chatKey -> { gameId, state, startedAt, lastSeenId, deadlineAt }
     this.daily = new Map();     // chatKey -> { dayKey, count }
+    // 未送达的阶段播报（public 才进队列；private 只记效果账本，不自动重发）
+    this.pendingBroadcasts = [];
     this.timer = null;
+    this.tickTask = null;
+    this.stopped = false;
     // 兜底扫描窗口内"入口路径已喂过引擎"的消息 id（防双喂的精确判据，见 #collectPrivateActions）：
     // 只在扫描进行时生效，不进任何落盘状态。
     this._privateScanActive = false;
@@ -94,10 +103,24 @@ export class GroupGameManager {
       }
       return;
     }
+    let backfilled = false;
     for (const [chatKey, item] of Object.entries(raw?.games || {})) {
-      if (item && item.gameId && item.state) this.games.set(chatKey, item);
+      if (item && item.gameId && item.state) {
+        // 旧存档可能没有 instanceId；补一个并立刻落盘，避免重试时幂等键每次重启都变。
+        if (!item.instanceId) {
+          item.instanceId = crypto.randomUUID();
+          backfilled = true;
+        }
+        this.games.set(chatKey, item);
+      }
     }
     for (const [chatKey, d] of Object.entries(raw?.daily || {})) this.daily.set(chatKey, d);
+    for (const item of (Array.isArray(raw?.pendingBroadcasts) ? raw.pendingBroadcasts : [])) {
+      if (!item?.deliveryId || !item?.chatKey || !item?.effect?.text) continue;
+      this.pendingBroadcasts.push(item);
+    }
+    // 补过 instanceId 的旧存档要马上写回；否则下一次崩溃前又会被重新分配。
+    if (backfilled) this.#save();
   }
 
   #save() {
@@ -105,7 +128,8 @@ export class GroupGameManager {
       fs.mkdirSync(path.dirname(FILE), { recursive: true });
       const body = JSON.stringify({
         games: Object.fromEntries(this.games),
-        daily: Object.fromEntries(this.daily)
+        daily: Object.fromEntries(this.daily),
+        pendingBroadcasts: this.pendingBroadcasts
       }, null, 2);
       // 原子写：先写 .tmp 再 rename。tick 现在每 20 秒就可能写一次，中途被杀/断电留下
       // 半截 JSON 的话，#load 的 catch 会当成"首次运行"静默丢掉所有进行中的局（2026-09-29 审查）
@@ -127,14 +151,22 @@ export class GroupGameManager {
   /** 启动推进循环（注意：与开局方法 start() 区分命名，JS 类里重名会互相覆盖）。 */
   startLoop() {
     if (this.timer) return;
+    this.stopped = false;
     this.timer = setInterval(() => { this.tick().catch((e) => this.log('[group-game] tick 出错:', e?.message ?? e)); }, 20000);
     if (this.timer.unref) this.timer.unref();
     if (this.games.size) this.log(`[group-game] 已从磁盘恢复 ${this.games.size} 局进行中的游戏`);
   }
 
   stopLoop() {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+  }
+
+  /** 停机收尾：等在途 tick（可能正在发送阶段播报）结束，最多 5 秒。 */
+  async drain(timeoutMs = 5000) {
+    this.stopped = true;
+    await settleWithDeadline([this.tickTask], timeoutMs);
   }
 
   reconfigure() { /* 配置变更随时生效（每次读 getConfig），无需重启循环 */ }
@@ -666,26 +698,44 @@ export class GroupGameManager {
   async tick() {
     // 重入锁：tick 内部会 await 发送（协议端慢时单次能超过 20 秒的定时间隔），
     // 两个 tick 交错进同一局会重复发"来晚了一步"、甚至双份发牌（2026-09-29 审查 P2）
-    if (this.#ticking) return;
+    if (this.#ticking || this.stopped) return;
     this.#ticking = true;
+    const task = (async () => {
+      try {
+        await this.#tickOnce();
+      } finally {
+        this.#ticking = false;
+      }
+    })();
+    this.tickTask = task;
     try {
-      await this.#tickOnce();
+      await task;
     } finally {
-      this.#ticking = false;
+      if (this.tickTask === task) this.tickTask = null;
     }
   }
 
   async #tickOnce() {
     const cfg = this.#cfg();
     if (!cfg.enabled) {
+      let dirty = false;
       if (this.games.size) {
         const dropped = this.games.size;
         this.games.clear();
-        this.#save();
+        dirty = true;
         this.log(`[group-game] 群游戏已关闭：清掉 ${dropped} 局进行中的游戏`);
       }
+      if (this.pendingBroadcasts.length) {
+        const dropped = this.pendingBroadcasts.length;
+        for (const item of [...this.pendingBroadcasts]) this.#dropBroadcast(item.deliveryId, 'disabled');
+        dirty = true;
+        this.log(`[group-game] 群游戏已关闭：放弃 ${dropped} 条待重试播报`);
+      }
+      if (dirty) this.#save();
       return;
     }
+    // 先补发上一轮失败的阶段播报，再推进状态机；同群保持入队顺序。
+    await this.#flushDeliveries();
     for (const [chatKey, g] of [...this.games.entries()]) {
       try {
         if (g.recruiting) { await this.#collectRecruiting(chatKey); continue; }
@@ -817,30 +867,22 @@ export class GroupGameManager {
       try {
         if (!effect) continue;
         if (effect.type === 'public' && effect.text) {
-          await this.sender.sendTextBatch(chatKey, [String(effect.text).slice(0, 500)], {});
+          await this.#enqueueAndDeliverPublic(chatKey, effect);
         } else if (effect.type === 'private' && effect.text) {
-          const uid = String(effect.userId || '');
-          if (!cfg.allowPrivateInvite) {
+          const result = await this.#deliverPrivateEffect(chatKey, effect, cfg);
+          if (result.ok) {
+            privateOk += 1;
+            privateUsers.add(result.userId);
+          } else {
             privateFailed += 1;
-            this.log('[group-game] 跳过私聊消息（未开启「允许私聊发身份」）');
-            continue;
           }
-          // 游戏期间豁免（开关开启时）：只对**本局在册玩家**放宽私聊白名单；不在册一律不发，
-          // 免得一次提示注入就把词/身份发给任意 QQ（把关放在这里，而不是只靠插件自觉）
-          const roster = new Set((this.games.get(chatKey)?.state?.roles || []).map((r) => String(r.userId)));
-          const gameScoped = cfg.allowGamePrivateDm && roster.has(uid);
-          const res = await this.sender.sendTextBatch(`private:${uid}`, [String(effect.text).slice(0, 500)], {
-            ...(gameScoped ? { gameScoped: true } : {}),
-            // 身份/查验结果/行动回执：从落库那一刻就标成 game-secret（不进模型上下文）
-            eventKind: 'game-secret'
-          });
-          // 登记这条私聊的 message id → 落库时标成 game-secret，不进模型上下文
-          for (const s of (res?.sent || [])) this.#noteSecretMid(`private:${uid}`, s?.messageId);
-          privateOk += 1;
-          privateUsers.add(uid);
         } else if (effect.type === 'wake' && this.wake) {
           this.wake(chatKey, Number(effect.delayMs) || 60000, String(effect.note || ''), { kind: 'game' });
         } else if (effect.type === 'end') {
+          // 终局前最后尝试一次排队的阶段播报；终局后它们已过期，不再跨局补发。
+          await this.#flushDeliveries({ chatKey, force: true });
+          this.#dropBroadcastsForChat(chatKey, 'game-ended');
+          this.#save();
           const g = this.games.get(chatKey);
           const name = PLUGINS.get(g?.gameId)?.meta.name || '游戏';
           // 没有 g 的孤儿 end 用随机键（只留痕，不参与去重）；正常路径一定带 instanceId
@@ -879,17 +921,15 @@ export class GroupGameManager {
               [`${name}结束：${String(effect.result || '')}`.slice(0, 500)],
               { runId: effectId }
             );
-            if (effectId) this.effects.settle(effectId, 'sent');
+            if (effectId) this.#settleEffect(effectId, 'sent');
             if (g) delete g.pendingEnd;
           } catch (error) {
             // 终局播报发不出去不能把局就地删掉 —— 挂起 pendingEnd 下个 tick 重试（2026-10-10 审查 C1）
             // 但"结果未知"不再重发：账本记 unknown，重试分支看到 review 就收尾。
             const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : true;
-            if (effectId) {
-              this.effects.settle(effectId, uncertain ? 'unknown' : 'failed', {
-                error: String(error?.message ?? error).slice(0, 200)
-              });
-            }
+            this.#settleEffect(effectId, uncertain ? 'unknown' : 'failed', {
+              error: String(error?.message ?? error).slice(0, 200)
+            });
             if (g) g.pendingEnd = String(effect.result || '');
             throw error;
           }
@@ -900,5 +940,216 @@ export class GroupGameManager {
       }
     }
     return { privateFailed, privateOk, privatePeople: privateUsers.size };
+  }
+
+  /** 统一 settle：发送已成功时账本写失败不能让调用方误判成"没发出去"而重试。 */
+  #settleEffect(effectId, state, detail = {}) {
+    if (!effectId || !this.effects) return;
+    try {
+      this.effects.settle(effectId, state, detail);
+    } catch (error) {
+      this.log('[group-game] 效果账本结算失败（不影响已发送结果）:', error?.message ?? error);
+    }
+  }
+
+  #removeBroadcast(deliveryId) {
+    const before = this.pendingBroadcasts.length;
+    this.pendingBroadcasts = this.pendingBroadcasts.filter((item) => item.deliveryId !== deliveryId);
+    return this.pendingBroadcasts.length < before;
+  }
+
+  /** 放弃一条排队播报；若账本仍是 planned，记 failed 留痕。 */
+  #dropBroadcast(deliveryId, reason) {
+    const item = this.pendingBroadcasts.find((x) => x.deliveryId === deliveryId);
+    if (!item) return null;
+    this.#removeBroadcast(deliveryId);
+    this.#settleEffect(item.effectId, 'failed', { reason });
+    return item;
+  }
+
+  #dropBroadcastsForChat(chatKey, reason) {
+    for (const item of [...this.pendingBroadcasts]) {
+      if (item.chatKey === chatKey) this.#dropBroadcast(item.deliveryId, reason);
+    }
+  }
+
+  #pruneBroadcasts(now) {
+    for (const item of [...this.pendingBroadcasts]) {
+      if (Number(item.createdAt) + BROADCAST_TTL_MS <= now) {
+        this.#dropBroadcast(item.deliveryId, 'ttl-expired');
+        this.log(`[group-game] ${item.chatKey} 阶段播报排队超过 15 分钟，已放弃`);
+      }
+    }
+  }
+
+  /** public 阶段播报：先落盘再发送；失败进入重试队列，unknown 绝不重发。 */
+  async #enqueueAndDeliverPublic(chatKey, effect) {
+    const g = this.games.get(chatKey);
+    const now = this.now();
+    this.#pruneBroadcasts(now);
+    const sameChat = this.pendingBroadcasts.filter((item) => item.chatKey === chatKey);
+    while (sameChat.length >= BROADCAST_MAX_PER_CHAT) {
+      const oldest = sameChat.shift();
+      this.#dropBroadcast(oldest.deliveryId, 'queue-overflow');
+      this.log(`[group-game] ${chatKey} 阶段播报积压超过 ${BROADCAST_MAX_PER_CHAT} 条，放弃最早一条`);
+    }
+    const item = {
+      deliveryId: crypto.randomUUID(),
+      chatKey,
+      gameId: g?.gameId || '',
+      instanceId: g?.instanceId || '',
+      requiresGameInstance: false,
+      effect: { type: 'public', text: String(effect.text).slice(0, 500) },
+      attempts: 0,
+      retryAt: 0,
+      createdAt: now
+    };
+    this.pendingBroadcasts.push(item);
+    this.#save();
+    await this.#deliverPendingBroadcast(item);
+  }
+
+  /** 投递一条 public 队列项；返回 sent/failed/unknown/in-flight/dropped。 */
+  async #deliverPendingBroadcast(item) {
+    if (!this.pendingBroadcasts.some((x) => x.deliveryId === item.deliveryId)) return 'dropped';
+    const now = this.now();
+    if (Number(item.createdAt) + BROADCAST_TTL_MS <= now) {
+      this.#dropBroadcast(item.deliveryId, 'ttl-expired');
+      this.#save();
+      return 'expired';
+    }
+    if (item.requiresGameInstance) {
+      const g = this.games.get(item.chatKey);
+      if (!g || g.instanceId !== item.instanceId) {
+        this.#dropBroadcast(item.deliveryId, 'game-gone');
+        this.#save();
+        return 'dropped';
+      }
+    }
+    const began = this.effects?.begin({
+      kind: 'game-broadcast',
+      chatKey: item.chatKey,
+      idemKey: `game:${item.chatKey}:${item.deliveryId}`,
+      detail: {
+        gameId: item.gameId || '',
+        instanceId: item.instanceId || '',
+        type: 'public',
+        phase: this.games.get(item.chatKey)?.state?.phase || ''
+      }
+    });
+    if (began && began.action === 'done') {
+      this.#removeBroadcast(item.deliveryId);
+      this.#save();
+      return 'sent';
+    }
+    if (began && began.action === 'review') {
+      // 上次结果未知：绝不自动重发；移除队列，账本留给人工核对。
+      this.#removeBroadcast(item.deliveryId);
+      this.#save();
+      this.log(`[group-game] ${item.chatKey} 阶段播报上次结果未知，停止自动重试`);
+      return 'unknown';
+    }
+    if (began && began.action === 'in-flight') {
+      item.retryAt = now + BROADCAST_RETRY_BASE_MS;
+      this.#save();
+      return 'in-flight';
+    }
+    item.effectId = began?.id || item.effectId || null;
+    try {
+      const res = await this.sender.sendTextBatch(
+        item.chatKey,
+        [String(item.effect.text).slice(0, 500)],
+        item.effectId ? { runId: item.effectId } : {}
+      );
+      // 部分发送也是"外部写入不确定"，不能再自动重试。
+      if (Array.isArray(res?.failed) && res.failed.length) {
+        this.#settleEffect(item.effectId, 'unknown', { partial: true, error: '部分发送失败' });
+        this.#removeBroadcast(item.deliveryId);
+        this.#save();
+        this.log(`[group-game] ${item.chatKey} 阶段播报部分送达，按 unknown 处理，不自动重试`);
+        return 'unknown';
+      }
+      const messageIds = (res?.sent || []).map((x) => x?.messageId).filter(Boolean);
+      this.#settleEffect(item.effectId, 'sent', messageIds.length ? { messageIds } : {});
+      this.#removeBroadcast(item.deliveryId);
+      this.#save();
+      return 'sent';
+    } catch (error) {
+      const uncertain = item.effectId ? this.store.hasUncertainEffects(item.effectId) : true;
+      this.#settleEffect(item.effectId, uncertain ? 'unknown' : 'failed', {
+        error: String(error?.message ?? error).slice(0, 200)
+      });
+      if (uncertain) {
+        this.#removeBroadcast(item.deliveryId);
+        this.#save();
+        this.log(`[group-game] ${item.chatKey} 阶段播报结果未知，停止自动重试`);
+        return 'unknown';
+      }
+      item.attempts = Math.min(20, (Number(item.attempts) || 0) + 1);
+      item.retryAt = this.now() + Math.min(BROADCAST_RETRY_BASE_MS * 2 ** (item.attempts - 1), BROADCAST_RETRY_MAX_MS);
+      this.#save();
+      this.log(`[group-game] ${item.chatKey} 阶段播报失败（第 ${item.attempts} 次，${Math.round((item.retryAt - this.now()) / 1000)}s 后再试）:`, error);
+      return 'failed';
+    }
+  }
+
+  /** 刷新所有到期队列项；同群遇到失败/在途就停止该群后续项，保证顺序。 */
+  async #flushDeliveries({ chatKey = '', force = false } = {}) {
+    if (!this.pendingBroadcasts.length) return;
+    this.#pruneBroadcasts(this.now());
+    const blocked = new Set();
+    for (const item of [...this.pendingBroadcasts]) {
+      if (chatKey && item.chatKey !== chatKey) continue;
+      if (!this.pendingBroadcasts.some((x) => x.deliveryId === item.deliveryId)) continue;
+      if (blocked.has(item.chatKey)) continue;
+      if (!force && Number(item.retryAt) > this.now()) continue;
+      const outcome = await this.#deliverPendingBroadcast(item);
+      if (outcome === 'failed' || outcome === 'in-flight') blocked.add(item.chatKey);
+    }
+    this.#save();
+  }
+
+  /** private 阶段播报：只记账本，不进入重试队列（避免重复发身份/词语/行动提示）。 */
+  async #deliverPrivateEffect(chatKey, effect, cfg) {
+    const uid = String(effect.userId || '');
+    if (!cfg.allowPrivateInvite) {
+      this.log('[group-game] 跳过私聊消息（未开启「允许私聊发身份」）');
+      return { ok: false, userId: uid };
+    }
+    // 游戏期间豁免（开关开启时）：只对**本局在册玩家**放宽私聊白名单；不在册一律不发，
+    // 免得一次提示注入就把词/身份发给任意 QQ（把关放在这里，而不是只靠插件自觉）
+    const roster = new Set((this.games.get(chatKey)?.state?.roles || []).map((r) => String(r.userId)));
+    const gameScoped = cfg.allowGamePrivateDm && roster.has(uid);
+    const g = this.games.get(chatKey);
+    const began = this.effects?.begin({
+      kind: 'game-broadcast',
+      chatKey,
+      idemKey: `game:${chatKey}:dm:${crypto.randomUUID()}`,
+      detail: { gameId: g?.gameId || '', instanceId: g?.instanceId || '', type: 'private', userId: uid }
+    });
+    const effectId = began?.id || null;
+    try {
+      const res = await this.sender.sendTextBatch(`private:${uid}`, [String(effect.text).slice(0, 500)], {
+        ...(gameScoped ? { gameScoped: true } : {}),
+        // 身份/查验结果/行动回执：从落库那一刻就标成 game-secret（不进模型上下文）
+        eventKind: 'game-secret',
+        ...(effectId ? { runId: effectId } : {})
+      });
+      // 登记这条私聊的 message id → 落库时标成 game-secret，不进模型上下文
+      for (const s of (res?.sent || [])) this.#noteSecretMid(`private:${uid}`, s?.messageId);
+      if (Array.isArray(res?.failed) && res.failed.length) {
+        this.#settleEffect(effectId, 'unknown', { partial: true, error: '部分发送失败' });
+        return { ok: false, userId: uid };
+      }
+      this.#settleEffect(effectId, 'sent');
+      return { ok: true, userId: uid };
+    } catch (error) {
+      const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : true;
+      this.#settleEffect(effectId, uncertain ? 'unknown' : 'failed', {
+        error: String(error?.message ?? error).slice(0, 200)
+      });
+      this.log('[group-game] 私聊效果发送失败:', error);
+      return { ok: false, userId: uid };
+    }
   }
 }

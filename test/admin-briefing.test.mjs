@@ -113,3 +113,32 @@ test('发送结果不确定：今天不再自动重试（避免重复私聊）�
   const manual = await f.manager.runOnce();
   assert.equal(manual.ok, false, '手动触发是明确意图，仍会尝试');
 });
+
+test('stop 后模型才返回：不再私聊管理员，也不落 sending/sent', async () => {
+  const f = fixture();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async () => {
+    f.stats.modelCalls += 1;
+    await gate;
+    return Response.json({
+      choices: [{ message: { content: '这是一条不该发出去的早报。' } }],
+      usage: { total_tokens: 5 }
+    });
+  };
+  const running = f.manager.runOnce();
+  for (let i = 0; i < 100 && f.stats.modelCalls === 0; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(f.stats.modelCalls, 1);
+  f.manager.stop();
+  release();
+  const result = await running;
+  assert.equal(result.skipped, 'stopped');
+  assert.equal(f.stats.sent.length, 0, '停机后不能再发');
+  const stateFile = path.join(root, 'admin-briefing-state.json');
+  if (fs.existsSync(stateFile)) {
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(!['sending', 'sent'].includes(state.status), `不能留下已发送状态：${state.status}`);
+  }
+});

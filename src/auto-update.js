@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { normalizeUpdateNetworkSettings } from './update-network.js';
 import { isContainerRuntime, containerUpdateHint } from './core/runtime.js';
 import { idList } from './core/list.js';
+import { settleWithDeadline } from './core/util.js';
 
 const STATE_FILE = 'auto-update.json';
 const REQUEST_FILE = 'auto-update-request.json';
@@ -600,11 +601,13 @@ export class AutoUpdateManager {
     this.notificationKickoff.unref?.();
   }
 
-  stop() {
+  async stop() {
     clearInterval(this.notificationTimer);
     clearTimeout(this.notificationKickoff);
     this.notificationTimer = null;
     this.notificationKickoff = null;
+    // 通知会 onebot.sendText + store.appendSelf；停机时必须等它落库再关 transport/store。
+    await settleWithDeadline([this.notificationTask], 5000);
   }
 
   resumeNotifications() {

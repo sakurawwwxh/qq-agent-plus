@@ -534,6 +534,12 @@
     "keyEndpoint": false
   },
   {
+    "method": "POST",
+    "path": "/api/plugins/write-op/resolve",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
     "method": "GET",
     "path": "/api/plugins/pending-count",
     "auth": true,

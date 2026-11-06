@@ -679,3 +679,27 @@ test('systemd 定时器漂移：缺 backup-drill 时报红，补齐后转绿（�
   assert.equal(skipped.ok, true);
   assert.match(String(skipped.detail), /未使用 systemd/);
 });
+
+test('mcp-isolation：要求隔离却没隔离 → 报红；显式信任的未沙箱只做说明', async () => {
+  const dir = makeDataDir({});
+  const run = (mcpStatus) => runHealthCheck({
+    dataDir: dir, fetchImpl: okFetch, statfs: okStatfs, notify: null,
+    containerRuntime: false, persist: false, integrityCheck: false, mcpStatus
+  });
+
+  const bad = (await run([
+    { id: 'ok', enabled: true, sandboxKind: 'bwrap', unsandboxed: false },
+    { id: 'bad', enabled: true, sandboxError: 'E_MCP_ISOLATION：没有 bwrap', unsandboxed: false },
+    { id: 'trusted', enabled: true, unsandboxed: true, allowUnsandboxed: true }
+  ])).checks.find((c) => c.name === 'mcp-isolation');
+  assert.ok(bad, '巡检必须包含 mcp-isolation 一项');
+  assert.equal(bad.ok, false, '配置要求隔离却没隔离必须报红');
+  assert.match(String(bad.detail), /bad/);
+
+  const good = (await run([
+    { id: 'ok', enabled: true, sandboxKind: 'bwrap', unsandboxed: false },
+    { id: 'trusted', enabled: true, unsandboxed: true, allowUnsandboxed: true }
+  ])).checks.find((c) => c.name === 'mcp-isolation');
+  assert.equal(good.ok, true, good.detail);
+  assert.match(String(good.detail), /显式未沙箱/);
+});

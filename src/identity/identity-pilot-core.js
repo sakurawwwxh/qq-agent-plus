@@ -257,7 +257,7 @@ export class IdentityPilotManager {
     return this.status();
   }
 
-  stop() {
+  async stop() {
     const store = this.identityStore;
     this.friendReviewGeneration += 1;
     for (const controller of this.friendReviewControllers.values()) {
@@ -267,13 +267,10 @@ export class IdentityPilotManager {
     this.identityStore = null;
     this.pendingIncomingEvents = [];
     this.friendSnapshotAt = 0;
-    const close = () => {
+    try {
+      if (this.friendReviewTasks.size) await Promise.allSettled([...this.friendReviewTasks]);
+    } finally {
       try { store?.close(); } catch { /* ignore */ }
-    };
-    if (this.friendReviewTasks.size) {
-      Promise.allSettled([...this.friendReviewTasks]).finally(close);
-    } else {
-      close();
     }
   }
 
@@ -552,6 +549,11 @@ export class IdentityPilotManager {
       if (this.pendingIncomingEvents.length > 100) this.pendingIncomingEvents.shift();
       return { queued: true, reason: 'starting' };
     }
+    // 人物资产被删除后，协议端再收到同一个人的好友请求也不再落库/通知：
+    // 否则管理员在控制台删掉的人会被一条新请求重新拉回审批队列。
+    if (this.identityStore.isIdentityAssetDeleted(userId)) {
+      return { ignored: true, reason: 'person-deleted' };
+    }
     const result = this.identityStore.createIncomingFriendRequest({
       userId,
       flag,
@@ -582,6 +584,10 @@ export class IdentityPilotManager {
     if (!this.identityStore || !incomingFriendRequestEnabled(cfg)) {
       throw new Error('入站好友请求审批功能当前未启用');
     }
+    const beforeDecision = this.identityStore.getIncomingFriendRequest(id);
+    if (beforeDecision && this.identityStore.isIdentityAssetDeleted(beforeDecision.userId)) {
+      throw new Error('人物资产已被删除，不能处理该好友请求');
+    }
     const request = this.identityStore.beginIncomingFriendRequestDecision(
       id,
       decision,
@@ -595,17 +601,28 @@ export class IdentityPilotManager {
           ? { remark: String(remark).trim().slice(0, 60) }
           : {})
       }, 15000, signal);
-      let completed = this.identityStore.completeIncomingFriendRequestDecision(
-        request.id,
-        request.actionAttemptId,
-        decision === 'approve' ? 'approved' : 'rejected'
-      );
+      // 协议调用期间管理员可能刚删掉这个人物：删除事务已把这条请求标成
+      // cancelled，此时不能再走 complete（状态已变），更不能加白。
+      const deletedMeanwhile = this.identityStore.isIdentityAssetDeleted(request.userId);
+      let completed = deletedMeanwhile
+        ? this.identityStore.getIncomingFriendRequest(request.id)
+        : this.identityStore.completeIncomingFriendRequestDecision(
+          request.id,
+          request.actionAttemptId,
+          decision === 'approve' ? 'approved' : 'rejected'
+        );
       let whitelistError = '';
       if (
         decision === 'approve'
+        && !deletedMeanwhile
         && cfg.identityPilot?.incomingFriendRequest?.autoWhitelist !== false
       ) {
         try {
+          // 审批期间管理员可能刚删掉这个人物：协议端已经同意（无法回滚），
+          // 但绝不能再把白名单加回来。删除事务会把这条请求标成 cancelled。
+          if (this.identityStore.isIdentityAssetDeleted(completed.userId)) {
+            throw new Error('人物已被删除，跳过自动加白');
+          }
           if (!this.allowPrivateUser) throw new Error('私聊白名单更新器未配置');
           await this.allowPrivateUser(completed.userId);
           completed = this.identityStore.markIncomingFriendWhitelist(
@@ -623,11 +640,13 @@ export class IdentityPilotManager {
       return {
         request: completed,
         execution: decision === 'approve' ? 'approved' : 'rejected',
-        note: decision === 'approve'
-          ? whitelistError
-            ? `已同意好友请求，但私聊白名单更新失败：${whitelistError}`
-            : '已同意好友请求，并已加入私聊白名单。'
-          : '已拒绝好友请求。'
+        note: deletedMeanwhile
+          ? '人物资产已被删除，本地审批记录已取消，未加入私聊白名单。'
+          : decision === 'approve'
+            ? whitelistError
+              ? `已同意好友请求，但私聊白名单更新失败：${whitelistError}`
+              : '已同意好友请求，并已加入私聊白名单。'
+            : '已拒绝好友请求。'
       };
     } catch (error) {
       const definiteFailure = /OneBot set_friend_add_request 失败: retcode=/i
@@ -654,10 +673,20 @@ export class IdentityPilotManager {
       throw new Error('主动好友候选功能当前未启用');
     }
     if (decision === 'approve') {
+      // 先看本地状态，避免为一条已删除的候选白跑一次好友列表刷新（外网调用）。
+      const beforeFresh = this.identityStore.getFriendProposal(id);
+      if (!beforeFresh) throw new Error('好友候选不存在或已被删除');
+      if (this.identityStore.isIdentityAssetDeleted(beforeFresh.userId)) {
+        throw new Error('该人物已被删除，不能批准好友候选');
+      }
       if (!await this.#ensureFriendSnapshotFresh(signal, true)) {
         throw new Error('好友关系状态无法确认，未执行批准');
       }
       const current = this.identityStore.getFriendProposal(id);
+      if (!current) throw new Error('好友候选不存在或已被删除');
+      if (this.identityStore.isIdentityAssetDeleted(current.userId)) {
+        throw new Error('该人物已被删除，不能批准好友候选');
+      }
       if (current && this.identityStore.isKnownFriend(current.userId)) {
         this.identityStore.markFriendAdded(current.userId);
         return {
@@ -754,6 +783,22 @@ export class IdentityPilotManager {
     }
   }
 
+  /**
+   * 删除人物资产：先掐掉该人物的在途评估（模型请求会 abort），再落墓碑并
+   * 取消待批请求/待评审机会。保留现有 allow.private —— 删除人物不等于拉黑。
+   */
+  deleteIdentityAsset(userId) {
+    if (!this.identityStore) return false;
+    const target = String(userId);
+    for (const [opportunityId, controller] of this.friendReviewControllers) {
+      const opportunity = this.identityStore.getFriendOpportunity(opportunityId);
+      if (opportunity?.userId === target) {
+        controller.abort(new Error('人物资产已被删除'));
+      }
+    }
+    return this.identityStore.deleteIdentityAsset(target);
+  }
+
   async markFriendAdded(userId) {
     if (!this.identityStore) return 0;
     for (const [opportunityId, controller] of this.friendReviewControllers) {
@@ -777,6 +822,8 @@ export class IdentityPilotManager {
       || relatedProposals.length > 0;
     if (
       needsWhitelist
+      &&
+      !this.identityStore.isIdentityAssetDeleted(userId)
       &&
       this.config().identityPilot?.incomingFriendRequest?.autoWhitelist !== false
       && this.allowPrivateUser
@@ -992,6 +1039,7 @@ export class IdentityPilotManager {
         snapshot.generation !== this.friendReviewGeneration
         || !triggeredFriendProposalEnabled(this.config())
         || this.identityStore !== store
+        || store.isIdentityAssetDeleted(opportunity.userId)
       ) {
         throw new Error('主动好友评估配置已改变');
       }
@@ -1055,6 +1103,7 @@ export class IdentityPilotManager {
       const cancelled = snapshot.generation !== this.friendReviewGeneration
         || !triggeredFriendProposalEnabled(this.config())
         || this.identityStore !== store
+        || store.isIdentityAssetDeleted(opportunity.userId)
         || store.isKnownFriend(opportunity.userId);
       try {
         store.finishFriendReview(opportunity.id, cancelled ? 'cancelled' : 'review_failed', {
@@ -1239,6 +1288,9 @@ export class IdentityPilotManager {
     ]);
     for (const userId of relatedIds) {
       if (!friendIds.has(userId)) continue;
+      // 删除人物资产时已明确“不再自动加回”：即使旧账本里还留着 accepted 行
+      // （老版本数据），启动/重排也不能把白名单补回来。
+      if (this.identityStore.isIdentityAssetDeleted(userId)) continue;
       try {
         // 启动/重排时的"已知好友"同步只补 allow：管理员可能刚把这个人写进 deny.private，
         // 不能因为一次重启就被自动白名单流程静默删掉。

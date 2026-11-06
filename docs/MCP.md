@@ -29,16 +29,22 @@ MCP（Model Context Protocol）是一个标准客户端/服务端协议。本项
 - `command` / `args` / `env` / `cwd`：启动方式。**等价于执行本机命令**，只填你信任的 server。
 - `timeoutMs`：单次 JSON-RPC 请求超时，默认 30 秒。
 - `maxCallsPerMinute`：每个 server 每分钟最多调用次数，默认 30。
-- `networkIsolation`（可选，默认 `false`）：Linux 上为 `true` 时用
-  `unshare --user --map-root-user --net` 启动，server 连不上任何网络接口；适合本地文件/数据库类
-  server。需要联网的 server（搜索、GitHub、浏览器）不要开。本机不支持 userns 时启动会直接失败，
-  不会静默退化成可联网。
+- `networkIsolation`（可选，默认 `false`）：要求 server 禁网。`node`/普通命令在 Linux 上用
+  `unshare --user --map-root-user --net`；`npx`/`uvx` 优先用 bubblewrap；**docker 不会被套 CLI
+  netns**，而是强制容器 `--network none`。本机做不到时启动直接失败，不会静默退化成可联网。
 - `permissionIsolation`（可选，默认 `false`）：用 Node 权限模型启动，只允许读入口脚本所在目录
   （或 `cwd`），禁止写文件、子进程、Worker 与 addons。**只对 `command` 是 `node`（或
   `process.execPath`）的 server 生效**；`npx`/`docker` 这类外壳进程会直接启动失败，不会假装隔离。
   白名单目录与数据目录重叠时也会拒绝启动。开启后 `NODE_OPTIONS`/`LD_PRELOAD` 等能改写启动行为的
   环境变量会被剥掉（业务令牌保留）。
-- `memoryMb`（可选，默认 0）：配合 `permissionIsolation` 给 server 设 V8 堆上限（64–4096MB）。
+- `sandbox`（可选）：统一沙箱策略。
+  - `mode`：`off`（不沙箱） / `auto`（有沙箱就用） / `required`（必须隔离，否则拒绝启动）；
+  - `network`：`none`（禁网） / `loopback`（仅 docker；容器内 lo 可用） / `host`（不隔离）；
+  - `writablePaths`：bwrap 模式下额外可写的宿主路径（不能包含数据目录）。
+  未填时按旧开关推导：开了 `networkIsolation`/`permissionIsolation` = `required`，否则 `off`。
+- `allowUnsandboxed`（可选，默认 `false`）：`auto` 模式找不到沙箱时，只有显式设为 `true` 才允许
+  裸跑；控制台状态与巡检会把它标成“未沙箱（已显式信任）”。`required` 模式不会看这个开关。
+- `memoryMb`（可选，默认 0）：给 server 设 V8 堆上限（64–4096MB）；docker 模式会转成 `--memory`。
 - `toolMounting`：
   - `direct`：每个工具各挂一个定义，模型直接看到工具名；
   - `meta`：只挂一个 `mcp_call`，参数里选 server/tool，适合工具多、想省提示词。
@@ -53,9 +59,12 @@ MCP server 是第三方代码。本项目默认只做三件事：
 3. 工具调用失败/超限只回给模型，不记进异常面板。
 
 隔离是可选的：`permissionIsolation` 把 Node 类 server 关进权限模型（只读入口目录、禁止写/子进程/
-Worker），`networkIsolation` 在 Linux 上关掉网络。两者都不支持时启动会失败（fail-closed），不会
-静默降级。`npx`/`docker` 外壳进程和 Windows/macOS 的网络都没有强隔离，这类 server 仍以当前用户
-权限运行：不要给它宿主机根目录、配置文件或密钥目录，只选官方/可信 server。
+Worker），`networkIsolation` 负责禁网。按命令分派：`node` 用权限模型 + netns；`npx`/`uvx` 在
+Linux 上优先 bubblewrap（只读根、独立 netns、npm/uv 缓存持久化）；`docker` 强制容器
+`--network none`、`--read-only`、`--cap-drop=ALL`、`no-new-privileges`，并拒绝 `--privileged`、
+挂载宿主目录、`docker.sock` 等参数。`required` 模式下本机做不到就拒绝启动；`auto` 模式裸跑必须
+显式 `allowUnsandboxed:true`。Windows/macOS 没有 bwrap/netns，这类 server 仍以当前用户权限运行：
+不要给它宿主机根目录、配置文件或密钥目录，只选官方/可信 server。
 
 ## 控制台与运维
 

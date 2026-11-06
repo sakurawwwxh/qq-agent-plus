@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   reloadConfig, conversationConfigForChat, identityPilotEnabled,
+  getConfigGeneration,
   pinImageGenKeyHost, imageGenKeyResolve,
   asrCredentialResolve, asrCredentialSlotOf, asrCredentialSlot, asrEndpointHost,
   ASR_PROVIDERS
@@ -56,6 +57,21 @@ export function registerConfigRoutes(router, deps = {}) {
     return [...keys].filter((k) => JSON.stringify(a?.[k]) !== JSON.stringify(b?.[k])).sort();
   };
 
+  // 保存/重载都会先改内存或磁盘、再做可能持续数秒的子系统重排；两个请求交错时，
+  // 后完成的那个会拿自己的旧快照覆盖前一个的副作用。整条路由排队执行。
+  let configWriteTail = Promise.resolve();
+  const serializeConfigWrite = (handler) => async (req, res) => {
+    const previous = configWriteTail;
+    let release;
+    configWriteTail = new Promise((resolve) => { release = resolve; });
+    await previous.catch(() => {});
+    try {
+      return await handler?.(req, res);
+    } finally {
+      release();
+    }
+  };
+
   router.add('GET', '/api/config', async (req, res) => {
     const cfgNow = getConfig();
     // 不把任何真实 Key 暴露给前端：递归清空所有密钥类字段，用 hasKey 表示"有密钥"。
@@ -64,7 +80,7 @@ export function registerConfigRoutes(router, deps = {}) {
     const safe = safeConfigWithAsrStatus(cfgNow);
     return json(res, 200, safe);
   });
-  router.add('POST', '/api/config', async (req, res) => {
+  router.add('POST', '/api/config', serializeConfigWrite(async (req, res) => {
     const patch = await readBody(req);
     // readBody 可能很慢（设置页整包可达数 MB），期间别的保存/接口写入可能已经落盘。
     // 快照必须取在读完之后：下面 tts/imageGen/asr 的 keys、voices 都是"服务端维护的映射"，
@@ -551,9 +567,19 @@ export function registerConfigRoutes(router, deps = {}) {
       }
     }
     let next;
+    let requestGen = 0;
+    // 并发的保存/重载可能在本请求的 await 期间换了配置：应用副作用前重新取最新快照，
+    // 避免旧 next 把新配置的 proactive/价格表/开关覆盖回去。
+    const refreshNext = () => {
+      const gen = getConfigGeneration();
+      if (gen === requestGen) return;
+      requestGen = gen;
+      next = getConfig();
+    };
     const force = new URL(req.url, 'http://127.0.0.1').searchParams.get('force') === '1';
     try {
       next = updateConfig(patch, { force });
+      requestGen = getConfigGeneration();
     } catch (error) {
       auditWrite('config.update', 'config', { req, before: auditBefore, ok: false, error: String(error?.message ?? error) });
       if (error?.code === 'CONFIG_CONFLICT') {
@@ -580,6 +606,7 @@ export function registerConfigRoutes(router, deps = {}) {
       try { await mcpManager.reload(); }
       catch (error) { mcpLog('配置保存后重载失败:', error); }
     }
+    refreshNext();
     let closedThreads = 0;
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
@@ -641,45 +668,53 @@ export function registerConfigRoutes(router, deps = {}) {
       identityChanged
       || (identityPilotEnabled(next) && (identitySourcesChanged || personaChanged))
     ) {
+      const callGen = requestGen;
       try {
         await syncIdentityPilot({
           reindex: identitySourcesChanged,
           reconfigure: identityChanged || identitySourcesChanged || personaChanged
         });
+        refreshNext();
       } catch (error) {
-        const reverted = updateConfig({
-          identityPilot: { ...(next.identityPilot || {}), enabled: false }
-        });
+        // 另一个保存已经改过配置时，不要用旧快照把它的开关关掉。
+        const canRevert = getConfigGeneration() === callGen;
+        const reverted = canRevert
+          ? updateConfig({ identityPilot: { ...(next.identityPilot || {}), enabled: false } })
+          : getConfig();
         return json(res, 500, {
           ok: false,
-          error: `统一身份库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
+          error: `统一身份库启动失败${canRevert ? '，开关已恢复为关闭' : ''}：${String(error?.message ?? error)}`,
           config: safeConfigWithAsrStatus(reverted)
         });
       }
     }
     if (JSON.stringify(next.slangPilot || {}) !== previousSlangPilot) {
+      const callGen = requestGen;
       try {
         await syncSlangPilot();
+        refreshNext();
       } catch (error) {
-        const reverted = updateConfig({
-          slangPilot: { ...(next.slangPilot || {}), enabled: false }
-        });
+        const canRevert = getConfigGeneration() === callGen;
+        const reverted = canRevert
+          ? updateConfig({ slangPilot: { ...(next.slangPilot || {}), enabled: false } })
+          : getConfig();
         return json(res, 500, {
           ok: false,
-          error: `黑话语料库启动失败，开关已恢复为关闭：${String(error?.message ?? error)}`,
+          error: `黑话语料库启动失败${canRevert ? '，开关已恢复为关闭' : ''}：${String(error?.message ?? error)}`,
           config: safeConfigWithAsrStatus(reverted)
         });
       }
     }
+    refreshNext();
     initPriceFeed(next.api?.priceRemoteUrl || '');   // 远程价格表 URL 可能改了（内部幂等）
     initChannelPrices(next.api?.channelPriceFeeds || []);   // 渠道价目表同理
     emit('status', { configUpdated: true });
     return json(res, 200, { ok: true, config: safeConfigWithAsrStatus(next), configConflict: getConfigConflict() });
-  });
+  }));
 
   // 配置冲突时用户选择“重新加载磁盘配置”：丢内存快照、重新读盘，并按与保存路径相同的
   // 口径重排所有缓存配置的子系统；单个子系统起不来只记警告，不把整次重载判失败。
-  router.add('POST', '/api/config/reload', async (req, res) => {
+  router.add('POST', '/api/config/reload', serializeConfigWrite(async (req, res) => {
     // 只读地看一眼磁盘版本做前置校验：不调用 loadConfig()，避免它更新基线后让后续保存
     // 把这份被拒绝的配置当成“自己的版本”静默覆盖。
     let diskToken = '';
@@ -708,7 +743,14 @@ export function registerConfigRoutes(router, deps = {}) {
     const previousModes = new Map(
       store.listChats().map((chatKey) => [chatKey, conversationConfigForChat(chatKey).mode])
     );
-    const next = reloadConfig();
+    let next = reloadConfig();
+    let requestGen = getConfigGeneration();
+    const refreshNext = () => {
+      const gen = getConfigGeneration();
+      if (gen === requestGen) return;
+      requestGen = gen;
+      next = getConfig();
+    };
     const warnings = [];
     const warn = (label, error) => {
       const text = `${label}：${String(error?.message ?? error)}`;
@@ -762,6 +804,7 @@ export function registerConfigRoutes(router, deps = {}) {
       try { await mcpManager.reload(); }
       catch (error) { warn('MCP 重载失败', error); }
     }
+    refreshNext();
 
     if (JSON.stringify(next.incidentPilot || {}) !== JSON.stringify(previous.incidentPilot || {})) {
       try {
@@ -793,14 +836,16 @@ export function registerConfigRoutes(router, deps = {}) {
       } catch (error) {
         warn('统一身份库重排失败', error);
       }
+      refreshNext();
     }
     if (JSON.stringify(next.slangPilot || {}) !== JSON.stringify(previous.slangPilot || {})) {
       try { await syncSlangPilot(); }
       catch (error) { warn('黑话语料库重排失败', error); }
+      refreshNext();
     }
     // 前面的 await（MCP/身份库/黑话库）可能持续数秒；期间另一个保存可能改了价目 URL。
     // 副作用一律用"现在"的配置，不能拿 reload 刚开始时的旧快照把运行态改回去。
-    const latest = getConfig();
+    const latest = next;
     initPriceFeed(latest.api?.priceRemoteUrl || '');
     initChannelPrices(latest.api?.channelPriceFeeds || []);
 
@@ -812,6 +857,6 @@ export function registerConfigRoutes(router, deps = {}) {
       configConflict: getConfigConflict(),
       ...(warnings.length ? { warnings } : {})
     });
-  });
+  }));
 
 }

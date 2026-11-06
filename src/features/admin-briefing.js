@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { vendorOfBaseUrl } from '../pricing/model-prices.js';
-import { todayKey } from '../core/util.js';
+import { todayKey, settleWithDeadline } from '../core/util.js';
 import { canRun } from '../core/access.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { chatCompletion, addUsage, emptyUsage } from '../llm/llm.js';
@@ -73,7 +73,10 @@ export class AdminBriefingManager {
     this.deferTimer = null;
     this.deferAttempts = 0;
     this.running = false;
-    this.stopped = true;
+    this.stopped = false;
+    this.runTask = null;
+    this.runGen = 0;
+    this.controller = null;
     this.lastRun = null;
   }
 
@@ -121,6 +124,7 @@ export class AdminBriefingManager {
   }
 
   #scheduleDefer() {
+    if (this.stopped) return;
     if (this.deferAttempts >= DEFER_MAX) return;
     this.deferAttempts += 1;
     if (this.deferTimer) clearTimeout(this.deferTimer);
@@ -184,10 +188,20 @@ export class AdminBriefingManager {
 
   stop() {
     this.stopped = true;
+    this.runGen += 1;
+    this.controller?.abort(new Error('管理员早报已停止'));
     if (this.timer) clearTimeout(this.timer);
     if (this.deferTimer) clearTimeout(this.deferTimer);
     this.timer = null;
     this.deferTimer = null;
+  }
+
+  /** 停机收尾：等在途早报（模型调用/发送）结束，最多 5 秒。 */
+  async drain(timeoutMs = 5000) {
+    this.stopped = true;
+    this.runGen += 1;
+    this.controller?.abort(new Error('管理员早报已停止'));
+    await settleWithDeadline([this.runTask], timeoutMs);
   }
 
   status() {
@@ -211,8 +225,25 @@ export class AdminBriefingManager {
     return [...new Set(keys)].filter((key) => canRun(key));
   }
 
-  async runOnce({ skipDone = false } = {}) {
+  async runOnce(opts = {}) {
+    if (this.stopped) return { skipped: 'stopped' };
     if (this.running) return { skipped: 'already-running' };
+    this.running = true;
+    const controller = new AbortController();
+    this.controller = controller;
+    const gen = this.runGen;
+    const task = this.#runOnceBody(opts, { controller, gen });
+    this.runTask = task;
+    try {
+      return await task;
+    } finally {
+      this.running = false;
+      if (this.runTask === task) this.runTask = null;
+      if (this.controller === controller) this.controller = null;
+    }
+  }
+
+  async #runOnceBody({ skipDone = false } = {}, { controller, gen } = {}) {
     const cfg = this.#cfg();
     if (skipDone && !cfg.enabled) return { skipped: 'disabled' };
     const target = this.#target();
@@ -230,10 +261,9 @@ export class AdminBriefingManager {
       if (skipDone && idList(getConfig().allow?.groups).length) this.#scheduleDefer();
       return { skipped: 'no-groups' };
     }
-    this.running = true;
     // 跨午夜完成时按"开始这一天"落盘，否则会把第二天标成已发、次日早报被跳过。
     const runDay = todayKey(this.now());
-    try {
+    {
       const since = this.now() - WINDOW_MS;
       const groups = groupKeys.slice(0, MAX_GROUPS).map((chatKey) => {
         const rows = filterBlockedHistory(
@@ -285,7 +315,8 @@ export class AdminBriefingManager {
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
-        purpose: 'write'
+        purpose: 'write',
+        signal: controller?.signal
       });
       try {
         const usage = emptyUsage();
@@ -300,6 +331,8 @@ export class AdminBriefingManager {
         this.#writeState('failed', runDay);
         return { ok: false, error: '模型没有产出内容' };
       }
+      // 模型返回时可能已经被 stop()/reconfigure()：不能再落 sending，更不能再私聊管理员。
+      if (this.stopped || gen !== this.runGen) return { skipped: 'stopped' };
       // 发送前先落 sending：进程在发送途中被重启时，不能又走一次启动补跑重复私聊。
       this.#writeState('sending', runDay);
       let sent;
@@ -318,8 +351,6 @@ export class AdminBriefingManager {
       this.deferAttempts = 0;
       this.lastRun = { at: this.now(), ok: true, chars: text.length, groups: sections.length, totalMessages };
       return { ok: true, chars: text.length, groups: sections.length, totalMessages };
-    } finally {
-      this.running = false;
     }
   }
 }

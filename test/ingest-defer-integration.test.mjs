@@ -67,34 +67,46 @@ test.after(async () => {
   try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* Windows 句柄 */ }
 });
 
-test('慢引用解析不阻塞后续普通消息；到点按占位符放行', async () => {
-  app.onebot.getMsg = () => new Promise(() => {});   // 模拟协议端永不返回
+test('慢引用解析不阻塞后续普通消息；到点按占位符放行', { timeout: 10_000 }, async () => {
+  let releaseReply;
+  let replyResolved = false;
+  const replyGate = new Promise((resolve) => {
+    releaseReply = (value) => { replyResolved = true; resolve(value); };
+  });
+  app.onebot.getMsg = () => replyGate;   // 模拟协议端返回前一直挂着
   wakeCalls.length = 0;
   const slow = groupEvent([
     { type: 'reply', data: { id: '9000' } },
     { type: 'text', data: { text: '看这个' } }
   ]);
-  const started = Date.now();
+  // 能在此处返回本身就是断言：入口若 await 富化，这个 await 会一直挂到测试超时。
   await app.onebot.onEvent(slow);
-  assert.ok(Date.now() - started < 150, `慢引用不应阻塞入口，实际 ${Date.now() - started}ms`);
 
   const before = rowByMid(slow.message_id);
   assert.ok(before, '占位消息应立即落库');
   assert.equal(before.state, 'deferred');
   assert.match(before.text, /\[引用消息\]/);
   assert.equal(wakeCalls.length, 0, '富化完成前不该唤醒');
+  assert.equal(replyResolved, false, '入口返回时富化仍未完成');
 
   // 紧随其后的普通消息必须立刻处理，不能排在慢引用后面
   const fast = textEvent('普通消息');
-  const fastStarted = Date.now();
   await app.onebot.onEvent(fast);
-  assert.ok(Date.now() - fastStarted < 150, `普通消息不应排队，实际 ${Date.now() - fastStarted}ms`);
+  assert.equal(rowByMid(fast.message_id)?.state, 'pending');
   await waitFor(() => wakeCalls.length >= 1);
   assert.deepEqual(wakeCalls, ['group:1'], '普通消息应先唤醒');
+  assert.equal(replyResolved, false, '后续消息处理时慢富化仍未完成');
 
+  releaseReply({
+    group_id: 1,
+    message_type: 'group',
+    sender: { nickname: '甲', user_id: 43 },
+    message: [{ type: 'text', data: { text: '引用原文' } }]
+  });
   await waitFor(() => rowByMid(slow.message_id)?.state === 'pending');
   const after = rowByMid(slow.message_id);
-  assert.match(after.text, /\[引用消息\]看这个/);
+  assert.match(after.text, /引用原文/);
+  assert.match(after.text, /看这个/);
   await waitFor(() => wakeCalls.length >= 2);
   assert.equal(wakeCalls.length, 2, '延迟消息收尾后也要唤醒');
 });
@@ -145,20 +157,23 @@ test('富化后的正文命中黑名单：丢弃且不唤醒', async () => {
   }
 });
 
-test('合并转发在后台展开并更新正文', async () => {
+test('合并转发在后台展开并更新正文', { timeout: 10_000 }, async () => {
+  let releaseForward;
+  let forwardResolved = false;
+  const forwardGate = new Promise((resolve) => {
+    releaseForward = (value) => { forwardResolved = true; resolve(value); };
+  });
   app.onebot.call = async (action, args) => {
-    if (action === 'get_forward_msg' && args?.id === 'fwd12345') {
-      await sleep(30);
-      return { messages: [{ sender: { nickname: '甲' }, message: [{ type: 'text', data: { text: '转发正文' } }] }] };
-    }
+    if (action === 'get_forward_msg' && args?.id === 'fwd12345') return forwardGate;
     throw new Error(`unexpected call ${action}`);
   };
   wakeCalls.length = 0;
   const event = groupEvent([{ type: 'forward', data: { id: 'fwd12345' } }]);
-  const started = Date.now();
+  // 入口返回即证明没有等待展开；若等待，这个 await 会挂到测试超时。
   await app.onebot.onEvent(event);
-  assert.ok(Date.now() - started < 150, `转发展开不应阻塞入口，实际 ${Date.now() - started}ms`);
   assert.equal(rowByMid(event.message_id)?.state, 'deferred');
+  assert.equal(forwardResolved, false, '入口返回时转发展开仍未完成');
+  releaseForward({ messages: [{ sender: { nickname: '甲' }, message: [{ type: 'text', data: { text: '转发正文' } }] }] });
   await waitFor(() => rowByMid(event.message_id)?.text?.includes('转发正文'));
   const row = rowByMid(event.message_id);
   assert.equal(row.state, 'pending');

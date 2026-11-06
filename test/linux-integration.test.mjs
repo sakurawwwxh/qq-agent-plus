@@ -95,28 +95,50 @@ it('protects console APIs, redacts credentials and blocks all sending in observe
   assert.equal(fs.statSync(accessFile).mode & 0o777, 0o600);
 });
 
-it('persists mode, starts headless and exits cleanly on SIGTERM', linuxOnly, async (t) => {
-  const port = await freePort();
-  updateConfig({ server: { port }, runtime: { mode: 'observe' } });
-  const child = spawn(process.execPath, ['src/server.js'], { cwd: process.cwd(),
-    env: { ...process.env, QQ_AGENT_DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '';
-  child.stdout.on('data', (v) => { output += v; });
-  child.stderr.on('data', (v) => { output += v; });
-  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
-  const until = Date.now() + 5000;
-  let ready = false;
+// 就绪判据只认子进程自己打印的启动行：CI 里多个测试文件并发跑，freePort 释放的
+// 临时端口可能被别的测试进程抢到，单看 /healthz 会从别人那里拿到 200，然后在子进程
+// 还没挂上信号处理器时发 SIGTERM（表现为 exit signal=SIGTERM，而不是干净的 code 0）。
+async function waitForHeadless(child, readOutput, port) {
+  const until = Date.now() + 15000;
   while (Date.now() < until) {
-    try { ready = (await fetch(`http://127.0.0.1:${port}/healthz`)).ok; } catch { /* 未就绪，继续轮询 */ }
-    if (ready) break;
+    if (child.exitCode !== null) return false;
+    if (readOutput().includes('控制台已就绪')) {
+      try {
+        if ((await fetch(`http://127.0.0.1:${port}/healthz`)).ok) return true;
+      } catch { /* 日志已打印但端口还没接上，继续轮询 */ }
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.ok(ready, output);
+  return false;
+}
+
+it('persists mode, starts headless and exits cleanly on SIGTERM', linuxOnly, async (t) => {
+  let child = null;
+  let readOutput = () => '';
+  let failedOutput = '';
+  for (let attempt = 0; attempt < 3 && !child; attempt += 1) {
+    const port = await freePort();
+    updateConfig({ server: { port }, runtime: { mode: 'observe' } });
+    const candidate = spawn(process.execPath, ['src/server.js'], { cwd: process.cwd(),
+      env: { ...process.env, QQ_AGENT_DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    candidate.stdout.on('data', (v) => { output += v; });
+    candidate.stderr.on('data', (v) => { output += v; });
+    if (await waitForHeadless(candidate, () => output, port)) {
+      child = candidate;
+      readOutput = () => output;
+      break;
+    }
+    failedOutput += output;
+    candidate.kill('SIGKILL');
+  }
+  assert.ok(child, `headless 启动失败：\n${failedOutput}`);
+  t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   const exited = once(child, 'exit');
   child.kill('SIGTERM');
   const [code, signal] = await exited;
-  assert.equal(signal, null);
-  assert.equal(code, 0, output);
+  assert.equal(signal, null, readOutput());
+  assert.equal(code, 0, readOutput());
 });
 
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));

@@ -4,7 +4,7 @@
 // - Markdown → 纯文本、QQ 硬长度切分、CQ 转义
 // - 发出的每一条记进 ChatStore（self=true，供下一次运行当"自己的发言"）
 import { getConfig, DEFAULT_CONFIG } from '../core/config.js';
-import { sleep, sleepAbortable, randInt, createSendChain, formatClockTime, todayKey } from '../core/util.js';
+import { sleep, sleepAbortable, randInt, createSendChain, settleWithDeadline, formatClockTime, todayKey } from '../core/util.js';
 import { mdToPlain, splitForQQ } from '../llm/md-to-plain.js';
 import { shapeBubbles } from '../llm/bubble-shape.js';
 import { assertCanSend, chatAllowed } from '../core/access.js';
@@ -245,6 +245,15 @@ export class SendQueue {
     this.hourTimes = new Map();   // chatKey -> [ts]
     this.mentionCache = new Map(); // chatKey -> { at, members }（协议端成员名单，10 分钟缓存）
     this.mentionDirectoryPending = new Map(); // chatKey -> Promise
+  }
+
+  /**
+   * 停机屏障：等待所有会话发送链上已入队的任务收尾（含 appendSelf/onSent）。
+   * 超时后返回，避免协议端卡死拖住进程退出；未完成的发送会由下次启动的 outbox 按 unknown 处理。
+   */
+  async drain({ timeoutMs = 5000 } = {}) {
+    const chains = [...this.chains.values()].map((enqueue) => enqueue.idle?.()).filter(Boolean);
+    await settleWithDeadline(chains, timeoutMs);
   }
 
   async #refreshMentionDirectory(chatKey) {

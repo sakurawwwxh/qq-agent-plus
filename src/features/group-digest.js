@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { vendorOfBaseUrl } from '../pricing/model-prices.js';
-import { todayKey } from '../core/util.js';
+import { todayKey, settleWithDeadline } from '../core/util.js';
 import { canRun } from '../core/access.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { chatCompletion, addUsage, emptyUsage } from '../llm/llm.js';
@@ -32,6 +32,8 @@ export class GroupDigestManager {
     this.deferTimer = null;
     this.deferAttempts = 0;
     this.running = false;
+    this.runningTask = null;
+    this.stopped = false;
     this.lastRun = null;
   }
 
@@ -50,10 +52,17 @@ export class GroupDigestManager {
   }
 
   stop() {
+    this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (this.deferTimer) clearTimeout(this.deferTimer);
     this.deferTimer = null;
+  }
+
+  /** 停机收尾：等在途一轮日报（可能正在发送）结束，最多 5 秒。 */
+  async drain(timeoutMs = 5000) {
+    this.stopped = true;
+    await settleWithDeadline([this.runningTask], timeoutMs);
   }
 
   /** 持久化的"最近一次真正跑完的日期"（内存里那份重启就没了，补跑判断要靠它）。 */
@@ -87,6 +96,7 @@ export class GroupDigestManager {
 
   /** 全部群都被"观察/暂停/白名单"挡下时的当日重试（30 分钟一次，最多 8 次）。 */
   #scheduleDefer() {
+    if (this.stopped) return;
     if (this.deferAttempts >= DEFER_MAX) return;   // 放弃当天，等下一个计划日
     this.deferAttempts += 1;
     // 覆盖句柄前先清旧的：手动「立即运行」+ 自动补跑可能各排一个，旧的会变成孤儿，
@@ -105,6 +115,7 @@ export class GroupDigestManager {
     this.deferAttempts = 0;
     const cfg = this.#cfg();
     if (!cfg.enabled) return;
+    this.stopped = false;
     const at = nextAtFromHHMM(cfg.time, this.now());
     if (at === null) {
       this.log('[group-digest] 时间格式不合法（应为 HH:MM），已停用');
@@ -144,18 +155,30 @@ export class GroupDigestManager {
   }
 
   /** 立即跑一轮（控制台手动触发/测试用）。返回每个群的执行结果。 */
-  async runOnce({ skipDone = false, forceUnknown = false } = {}) {
+  async runOnce(opts = {}) {
+    if (this.stopped) return { skipped: 'stopped' };
     if (this.running) return { skipped: 'already-running' };
+    this.running = true;
+    const task = this.#runOnceBody(opts);
+    this.runningTask = task;
+    try {
+      return await task;
+    } finally {
+      this.running = false;
+      if (this.runningTask === task) this.runningTask = null;
+    }
+  }
+
+  async #runOnceBody({ skipDone = false, forceUnknown = false } = {}) {
     const cfg = this.#cfg();
     // 自动补跑（skipDone）必须尊重 enabled：关闭功能时 stop() 可能已经错过某个在途补跑，
     // 手动「立即运行」不传 skipDone，仍按显式意图执行（2026-10-19 复审 P2）。
     if (skipDone && !cfg.enabled) return { skipped: 'disabled' };
     if (!cfg.chats.length) return { skipped: 'no-chats' };
-    this.running = true;
     const results = [];
     // 归属日：整轮只算一次。跨午夜时发送时刻已经是第二天，但这一轮仍属于开始那天。
     const day = todayKey(this.now());
-    try {
+    {
       const done = this.#todayDone(day).done;
       for (const chatKey of cfg.chats) {
         // 只对**自动**路径跳过：控制台手点重跑是明确意图，不该被「今天发过」挡下。
@@ -166,7 +189,7 @@ export class GroupDigestManager {
           // 被观察/暂停/白名单挡下的群不算"今天已完成"：否则 30 分钟后的补跑会把它们
           // 当 already-sent-today 跳过，当天日报永久丢失（2026-10-19 全项目审查 P2）。
           const blocked = r.ok === false && /观察\/暂停|还在发送中/.test(String(r.error || ''));
-          if (!blocked) {
+          if (!blocked && !this.stopped) {
             done.add(chatKey);
             this.#writeProgress(done, day);
           }
@@ -185,8 +208,6 @@ export class GroupDigestManager {
         this.deferAttempts = 0;
       }
       return { ok: true, results };
-    } finally {
-      this.running = false;
     }
   }
 
@@ -311,6 +332,11 @@ export class GroupDigestManager {
       if (!text) {
         settle('failed', { stage: 'model', error: 'empty-content' });
         return { ok: false, error: '模型没有产出内容' };
+      }
+      // 停机/停用后在途模型调用可能刚返回：此时不能再发，也不要把这一天记成已完成。
+      if (this.stopped) {
+        settle('skipped', { stage: 'send', reason: 'stopped' });
+        return { ok: false, error: '群日报已停止' };
       }
       // 发送形态：默认走「聊天记录」卡片（platform.forwardCards，2026-10-07 协议端能力升级）。
       // 卡片把一段较长的汇总收在一个可展开的气泡里，比一长串文字更清爽；

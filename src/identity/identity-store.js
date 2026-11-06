@@ -3,6 +3,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { openDatabase } from '../core/sqlite.js';
 import { DATA_DIR } from '../core/config.js';
+import {
+  cancelOpenFriendArtifacts,
+  ensureCancelReasonColumn,
+  isIdentityAssetDeleted as hasIdentityAssetTombstone
+} from './identity-asset-deletion.js';
 
 const DB_NAME = 'identity-pilot.sqlite';
 const FRIEND_PROPOSAL_REASONS = new Set(['interest', 'frequent', 'banter']);
@@ -78,6 +83,7 @@ function incomingRequestView(row) {
     comment: String(row.comment || ''),
     status: String(row.status || ''),
     decision: String(row.decision || ''),
+    cancelReason: String(row.cancel_reason || ''),
     createdAt: Number(row.created_at) || 0,
     decidedAt: Number(row.decided_at) || 0,
     decidedBy: String(row.decided_by || ''),
@@ -428,6 +434,7 @@ export class IdentityStore {
       'opportunity_id',
       "TEXT NOT NULL DEFAULT ''"
     );
+    ensureCancelReasonColumn(this.db);
     const now = Date.now();
     this.db.prepare(`
       UPDATE friend_proposals
@@ -1419,6 +1426,11 @@ export class IdentityStore {
     return identityPersonView(row, aliases);
   }
 
+  isIdentityAssetDeleted(userId) {
+    const uin = normalizeUin(userId);
+    return uin ? hasIdentityAssetTombstone(this.db, uin) : false;
+  }
+
   deleteIdentityAsset(userId, now = Date.now()) {
     const uin = normalizeUin(userId);
     if (!uin) throw new Error('人物 QQ 号必须为正整数');
@@ -1426,6 +1438,8 @@ export class IdentityStore {
     if (!existing) return false;
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      // 墓碑先落库：同一个事务里后续的取消/删除都基于它，避免并发链路
+      // （friend_add 事件、启动重排）在事务提交前又把人加回白名单。
       this.db.prepare(`
         INSERT INTO identity_asset_overrides (
           uin, primary_name, profile_json, is_friend, source_chat_key,
@@ -1435,6 +1449,8 @@ export class IdentityStore {
           deleted=1,
           updated_at=excluded.updated_at
       `).run(uin, now, now);
+      // 留下现有 allow.private（删人物 ≠ 拉黑），但终止待批请求，防止批准后又被自动加白。
+      cancelOpenFriendArtifacts(this.db, uin, now);
       this.db.prepare('DELETE FROM friend_proposals WHERE uin=?').run(uin);
       this.db.prepare('DELETE FROM people WHERE uin=?').run(uin);
       this.db.exec('COMMIT');

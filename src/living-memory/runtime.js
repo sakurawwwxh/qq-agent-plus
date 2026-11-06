@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chatCompletion } from '../llm/llm.js';
-import { safeSlice } from '../core/util.js';
+import { safeSlice, settleWithDeadline } from '../core/util.js';
 import { readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from './config.js';
 import { LivingMemoryService } from './service.js';
@@ -119,6 +119,7 @@ export class LivingMemoryRuntime {
     this.lastRecall = new Map();
     this.pruneTimer = null;
     this.stopped = false;
+    this.inFlight = new Set();
   }
 
   config() { return normalizeLivingMemoryConfig(this.getConfig()?.livingMemory); }
@@ -150,7 +151,18 @@ export class LivingMemoryRuntime {
     return this.service;
   }
 
-  async recall({ chatKey, triggerEntries = [], signal = null, forceSemantic = false } = {}) {
+  async recall(options = {}) {
+    const task = this.#recall(options);
+    this.inFlight.add(task);
+    try {
+      return await task;
+    } finally {
+      this.inFlight.delete(task);
+      if (this.stopped && !this.inFlight.size) this.#closeService();
+    }
+  }
+
+  async #recall({ chatKey, triggerEntries = [], signal = null, forceSemantic = false } = {}) {
     const cfg = this.config();
     if (!this.applies(chatKey)) return { text: '', entries: [], mode: 'disabled' };
     if (signal?.aborted) return { text: '', entries: [], mode: 'aborted' };
@@ -222,6 +234,17 @@ export class LivingMemoryRuntime {
   }
 
   async flush(chatKey) {
+    const task = this.#flush(chatKey);
+    this.inFlight.add(task);
+    try {
+      return await task;
+    } finally {
+      this.inFlight.delete(task);
+      if (this.stopped && !this.inFlight.size) this.#closeService();
+    }
+  }
+
+  async #flush(chatKey) {
     clearTimeout(this.timers.get(chatKey));
     this.timers.delete(chatKey);
     const batch = this.pending.get(chatKey) || [];
@@ -344,6 +367,11 @@ export class LivingMemoryRuntime {
     return { ...result, injectedText: renderContext(result.entries || [], cfg.maxInjectChars) };
   }
 
+  #closeService() {
+    try { this.service?.close(); } catch { /* ignore */ }
+    this.service = null;
+  }
+
   stop() {
     this.stopped = true;
     for (const timer of this.timers.values()) clearTimeout(timer);
@@ -352,7 +380,14 @@ export class LivingMemoryRuntime {
     this.retries.clear();
     clearInterval(this.pruneTimer);
     this.pruneTimer = null;
-    this.service?.close();
-    this.service = null;
+    // 在途 flush/recall 可能还在用 service；有在途任务时留给 drain() 收尾。
+    if (!this.inFlight.size) this.#closeService();
+  }
+
+  /** 停机收尾：等在途 flush/recall 结束再关库，最多 5 秒。 */
+  async drain(timeoutMs = 5000) {
+    this.stop();
+    await settleWithDeadline([...this.inFlight], timeoutMs);
+    this.#closeService();
   }
 }

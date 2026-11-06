@@ -870,7 +870,8 @@ test('friend_add 自动白名单只补 allow，不清管理员手写的 deny.pri
     listIncomingFriendRequests: () => [{ id: 7, userId: '123456', status: 'pending', whitelistApplied: false }],
     listFriendProposals: () => [],
     markFriendAdded: () => ({ proposals: 0, incoming: 1, opportunities: 0 }),
-    markIncomingFriendWhitelist: () => {}
+    markIncomingFriendWhitelist: () => {},
+    isIdentityAssetDeleted: () => false
   };
   assert.equal(await manager.markFriendAdded('123456'), 1);
   assert.deepEqual(calls, [{ userId: '123456', options: { clearDeny: false } }]);
