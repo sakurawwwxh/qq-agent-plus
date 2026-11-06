@@ -373,8 +373,20 @@ export function rejectPendingApproval(dataDir, id) {
   const list = listPendingApprovals(dataDir);
   const hit = list.find((item) => item.id === id);
   if (!hit) throw fail('E_NOT_FOUND', '这条待批请求不存在或已过期');
+  // 批准写 grant 与删除 pending 是两次落盘：如果 grant 已写、pending 还在，
+  // 管理员点“拒绝”必须把这张按 sourcePendingId 关联的通行证一起撤销，
+  // 否则界面显示拒绝、实际授权仍然有效（与“拒绝 = 撤销”的语义相反）。
+  let revokedGrants = 0;
+  const state = load(dataDir, hit.pluginId);
+  const grants = cleanGrants(state, Date.now());
+  const kept = grants.filter((entry) => String(entry.sourcePendingId || '') !== id);
+  if (kept.length !== grants.length) {
+    revokedGrants = grants.length - kept.length;
+    state.approvals = kept;
+    save(dataDir, hit.pluginId, state);
+  }
   savePending(dataDir, list.filter((item) => item !== hit));
-  return hit;
+  return { ...hit, ...(revokedGrants ? { revokedGrants } : {}) };
 }
 
 /**

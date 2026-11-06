@@ -1,6 +1,6 @@
 import { Embedder, readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { LivingMemoryStore } from './store.js';
-import { asText, clampInt, now, redactionReason } from './util.js';
+import { asText, clampInt, now, redactionReason, similarityTokens } from './util.js';
 
 function embeddingText(memory) {
   return [memory.summary, memory.content, memory.tags.join(' '), memory.entities.join(' ')].filter(Boolean).join('\n');
@@ -33,21 +33,47 @@ function boundedDeadlineMs(value) {
   return Math.max(200, Math.min(15000, Math.round(parsed)));
 }
 
-function contentTokenSet(value) {
-  const text = asText(value, 3000).toLowerCase();
-  const words = text.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1);
-  if (words.length >= 3) return new Set(words);
-  const compact = text.replace(/\s+/g, '');
-  return new Set(Array.from({ length: Math.max(0, compact.length - 1) }, (_, index) => compact.slice(index, index + 2)));
-}
-
 function textSimilarity(left, right) {
-  const a = contentTokenSet(left);
-  const b = contentTokenSet(right);
+  const a = similarityTokens(left);
+  const b = similarityTokens(right);
   if (!a.size || !b.size) return 0;
   let common = 0;
   for (const token of a) if (b.has(token)) common += 1;
-  return common / Math.max(a.size + b.size - common, 1);
+  // Dice 比 Jaccard 更适合长短不一的中文改写：同一句话改一两个词仍能过 0.82，
+  // Jaccard 会被分母里的新增 bigram 拉低到 0.7 左右。
+  return (2 * common) / (a.size + b.size);
+}
+
+const MEMORY_TYPES = new Set(['episode', 'fact', 'profile', 'preference', 'commitment', 'project', 'rule']);
+
+function normalizeType(value) {
+  return MEMORY_TYPES.has(value) ? value : 'episode';
+}
+
+function subjectsCompatible(left, right) {
+  const collect = (value) => new Set((Array.isArray(value) ? value : [])
+    .map((item) => asText(item, 120).toLowerCase().trim()).filter(Boolean));
+  const a = collect(left);
+  const b = collect(right);
+  if (!a.size || !b.size) return true;
+  for (const item of a) if (b.has(item)) return true;
+  return false;
+}
+
+function mergeSource(previous, next) {
+  const prev = previous && typeof previous === 'object' ? previous : {};
+  const incoming = next && typeof next === 'object' ? next : {};
+  const union = (key) => [...new Set([
+    ...(Array.isArray(prev[key]) ? prev[key] : []),
+    ...(Array.isArray(incoming[key]) ? incoming[key] : [])
+  ])];
+  return {
+    ...prev,
+    ...incoming,
+    sessionIds: union('sessionIds'),
+    turnIds: union('turnIds'),
+    turnCount: Math.max(Number(prev.turnCount) || 0, Number(incoming.turnCount) || 0)
+  };
 }
 
 export class LivingMemoryService {
@@ -74,42 +100,55 @@ export class LivingMemoryService {
   #findNearDuplicate(raw) {
     const scopeKey = asText(raw?.scopeKey, 80);
     if (!scopeKey) return null;
-    const type = asText(raw?.type, 32) || 'episode';
+    const type = normalizeType(raw?.type);
     const target = `${raw?.summary || ''}\n${raw?.content || ''}`;
     if (!target.trim()) return null;
     if (typeof this.store.listMemories !== 'function') return null;
     const candidates = this.store.listMemories({ scopeKeys: [scopeKey], status: 'active', type, limit: 80 }).entries;
+    const subjects = [...(Array.isArray(raw?.participants) ? raw.participants : []), ...(Array.isArray(raw?.entities) ? raw.entities : [])];
     for (const candidate of candidates) {
       const similarity = textSimilarity(target, `${candidate.summary || ''}\n${candidate.content || ''}`);
-      if (similarity >= 0.82) return candidate;
+      if (similarity < 0.82) continue;
+      // 相似但主体不同（张三 vs 李四）不能合并，否则会把别人的事实覆盖掉。
+      if (!subjectsCompatible(subjects, [...(candidate.participants || []), ...(candidate.entities || [])])) continue;
+      return candidate;
     }
     return null;
   }
 
   async upsertMemory(raw) {
     // 服务层自己始终做敏感信息检查；allowSensitive 只用于内部迁移，不能从控制台传进来。
+    const input = { ...raw, type: normalizeType(raw?.type) };
     const redactionText = [
-      raw?.summary || '', raw?.content || '',
-      ...(Array.isArray(raw?.tags) ? raw.tags : []),
-      ...(Array.isArray(raw?.topics) ? raw.topics : []),
-      ...(Array.isArray(raw?.keyFacts) ? raw.keyFacts : []),
-      ...(Array.isArray(raw?.participants) ? raw.participants : []),
-      ...(Array.isArray(raw?.entities) ? raw.entities : []),
-      ...(Array.isArray(raw?.relations)
-        ? raw.relations.flatMap((item) => [item?.source, item?.predicate, item?.target])
+      input.summary || '', input.content || '',
+      ...(Array.isArray(input.tags) ? input.tags : []),
+      ...(Array.isArray(input.topics) ? input.topics : []),
+      ...(Array.isArray(input.keyFacts) ? input.keyFacts : []),
+      ...(Array.isArray(input.participants) ? input.participants : []),
+      ...(Array.isArray(input.entities) ? input.entities : []),
+      ...(Array.isArray(input.relations)
+        ? input.relations.flatMap((item) => [item?.source, item?.predicate, item?.target])
         : [])
     ].join('\n');
     const rejected = redactionReason(redactionText);
     if (rejected) throw new Error(`拒绝保存：${rejected}`);
-    const duplicate = raw?.id ? null : this.store.findDuplicate({
-      scopeKey: raw?.scopeKey,
-      type: raw?.type,
-      summary: raw?.summary,
-      content: raw?.content
-    }) || this.#findNearDuplicate(raw);
-    const normalized = duplicate && !raw?.id
-      ? { ...raw, id: duplicate.id, importance: Math.max(Number(raw?.importance) || 0, Number(duplicate.importance) || 0) }
-      : raw;
+    const duplicate = input.id ? null : this.store.findDuplicate({
+      scopeKey: input.scopeKey,
+      type: input.type,
+      summary: input.summary,
+      content: input.content,
+      participants: input.participants,
+      entities: input.entities
+    }) || this.#findNearDuplicate(input);
+    const normalized = duplicate && !input.id
+      ? {
+        ...input,
+        id: duplicate.id,
+        importance: Math.max(Number(input.importance) || 0, Number(duplicate.importance) || 0),
+        // 合并更新必须保留旧批次的来源回合：否则删除记忆时旧 turn 永远清不掉。
+        source: mergeSource(duplicate.source, input.source)
+      }
+      : input;
     const memory = this.store.upsertMemory(normalized, { id: normalized?.id || '' });
     if (!this.embedder.ready()) {
       // 没有配置 Embedding 时标成“仅关键词”；编辑已有向量记忆则保留旧向量。

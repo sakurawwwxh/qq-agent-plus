@@ -1071,6 +1071,8 @@ export class DailyMomentsManager {
     confirmDuplicateRisk = false
   } = {}) {
     return this.#exclusive('publish-draft', async () => {
+      // 停机/停用收尾期间不再发起新的 Qzone 写：否则进程被杀后记录会停在 publishing 变成 unknown。
+      if (this.abortRequested) throw momentError('MOMENT_STOPPED', '服务正在停止，本次发布已取消', 409);
       const record = this.state.records.find((item) => item.id === id);
       if (!record) throw momentError('MOMENT_NOT_FOUND', '草稿不存在', 404);
       if (PUBLICATION_STATUSES.has(record.status)) {

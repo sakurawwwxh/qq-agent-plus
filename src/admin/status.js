@@ -62,6 +62,10 @@ export function createStatusService({
   async function health() {
     const cfg = getConfigFn();
     const onebotCfg = cfg.onebot || {};
+    // 主进程能拿到活的 MCP 注册表：不传的话，“MCP 没起来/没按配置隔离”
+    // 只会在控制台一键体检里报红，管理员私聊的 !health 却始终显示通过。
+    let mcpStatus = [];
+    try { mcpStatus = getMcp?.()?.status?.() || []; } catch { mcpStatus = []; }
     const result = await runHealthCheck({
       dataDir,
       mode: cfg.runtime?.mode || 'active',
@@ -71,7 +75,8 @@ export function createStatusService({
       onebotToken: String(onebotCfg.httpAccessToken || onebotCfg.accessToken || ''),
       notify: null,
       persist: false,
-      integrityCheck: false
+      integrityCheck: false,
+      mcpStatus
     });
     if (result?.healthy) return `健康检查通过（${result.checks?.length || 0} 项）。`;
     const failures = (result?.checks || []).filter((check) => !check.ok);

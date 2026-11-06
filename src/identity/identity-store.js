@@ -879,11 +879,9 @@ export class IdentityStore {
     const normalized = new Map();
     for (const friend of friends) {
       const uin = normalizeUin(friend?.userId ?? friend?.user_id);
-      if (!uin) continue;
-      normalized.set(
-        uin,
-        cleanName(friend?.remark || friend?.name || friend?.nickname)
-      );
+      // 已删除的人物墓碑优先于好友快照，否则一次刷新就会把人重新加回来。
+      if (!uin || hasIdentityAssetTombstone(this.db, uin)) continue;
+      normalized.set(uin, cleanName(friend?.remark || friend?.name || friend?.nickname));
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {

@@ -546,13 +546,13 @@ export async function runHealthCheck(opts = {}) {
   if (Array.isArray(mcpStatus)) {
     const enabled = mcpStatus.filter((row) => row?.enabled !== false);
     if (enabled.length) {
-      // 除了隔离问题，还要报“根本没起来”：spawn ENOENT/初始化超时/重启耗尽时
-      // sandboxError 是空的，以前这里会显示绿色。
-      const unavailable = (row) => !row?.ready && !row?.starting && !row?.restarting
-        && Boolean(row?.error || row?.stderr);
-      const bad = enabled.filter((row) => row.sandboxError
-        || (row.unsandboxed && row.allowUnsandboxed !== true)
-        || unavailable(row));
+      // 除了隔离问题，还要报“根本没起来”：配置里有 enabled、但既不在启动/重启、
+      // 也没有 ready，说明 spawn 失败或启动流程卡死；不能等 error 字段非空才报。
+      const unavailable = (row) => !row?.ready && !row?.starting && !row?.restarting;
+      // 显式 sandbox.mode:'off' 是管理员要求不隔离，不算“未按配置隔离”。
+      const isolateMismatch = (row) => row.sandboxMode !== 'off'
+        && row.unsandboxed && row.allowUnsandboxed !== true;
+      const bad = enabled.filter((row) => row.sandboxError || isolateMismatch(row) || unavailable(row));
       const trusted = enabled.filter((row) => row.unsandboxed && row.allowUnsandboxed === true);
       const detail = bad.length
         ? `有 ${bad.length} 个 server 不可用或未按配置隔离：${bad.map((row) => row.id).join(', ')}`

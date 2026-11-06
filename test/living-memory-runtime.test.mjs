@@ -109,6 +109,22 @@ test('recent fallback memories survive the automatic relevance threshold', async
   runtime.stop();
 });
 
+test('recent conversation context expands the automatic recall query', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
+  });
+  await runtime.recall({
+    chatKey: 'group:100',
+    triggerEntries: [{ text: '那个方案后来怎么样了？' }],
+    recentContext: [{ text: '上周讨论的 NAS 向量记忆方案' }]
+  });
+  assert.match(service.recalls[0].query, /NAS 向量记忆方案/);
+  assert.match(service.recalls[0].query, /那个方案/);
+  runtime.stop();
+});
+
 test('passive capture queues incoming messages without a bot reply', async () => {
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({

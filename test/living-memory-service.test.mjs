@@ -211,6 +211,17 @@ test('embedding configuration stays in process environment and long-memory defau
   assert.equal('serviceUrl' in config, false);
   assert.equal(normalizeLivingMemoryConfig({ turnRetentionDays: 0 }).turnRetentionDays, 0);
   assert.equal(normalizeLivingMemoryConfig({}).recallTimeoutMs, 1800);
+  const cleared = normalizeLivingMemoryConfig({
+    autoInjectMinScore: null,
+    autoInjectDiversity: '',
+    autoInjectMaxItems: null,
+    turnRetentionDays: null
+  });
+  assert.equal(cleared.autoInjectMinScore, 0.3, 'null/空值应回默认，而不是变成 0');
+  assert.equal(cleared.autoInjectDiversity, 0.68);
+  assert.equal(cleared.autoInjectMaxItems, 3);
+  assert.equal(cleared.turnRetentionDays, 7);
+  assert.equal(normalizeLivingMemoryConfig({ autoInjectMinScore: 0 }).autoInjectMinScore, 0, '显式 0 要保留');
   const embedding = readLivingMemoryEmbeddingConfig({
     LIVING_MEMORY_EMBEDDING_BASE_URL: 'https://embed.example.com/v1/',
     LIVING_MEMORY_EMBEDDING_API_KEY: 'secret',

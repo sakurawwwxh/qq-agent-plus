@@ -1,6 +1,15 @@
 function clampInt(value, min, max, fallback) {
+  // null/空串是“没填”，不是 0：否则 turnRetentionDays=null 会变成永久保留、
+  // autoInject* 会变成最激进/最保守值。
+  if (value === null || value === undefined || value === '') return fallback;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.round(parsed))) : fallback;
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
 }
 
 export const LIVING_MEMORY_DEFAULTS = Object.freeze({
@@ -49,8 +58,8 @@ export function normalizeLivingMemoryConfig(raw = {}) {
     rrfK: clampInt(source.rrfK, 10, 200, LIVING_MEMORY_DEFAULTS.rrfK),
     recentMemoryCount: clampInt(source.recentMemoryCount, 0, 4, LIVING_MEMORY_DEFAULTS.recentMemoryCount),
     autoInjectMaxItems: clampInt(source.autoInjectMaxItems, 1, 8, LIVING_MEMORY_DEFAULTS.autoInjectMaxItems),
-    autoInjectMinScore: Math.max(0, Math.min(1, Number.isFinite(Number(source.autoInjectMinScore)) ? Number(source.autoInjectMinScore) : LIVING_MEMORY_DEFAULTS.autoInjectMinScore)),
-    autoInjectDiversity: Math.max(0.2, Math.min(0.95, Number.isFinite(Number(source.autoInjectDiversity)) ? Number(source.autoInjectDiversity) : LIVING_MEMORY_DEFAULTS.autoInjectDiversity)),
+    autoInjectMinScore: clampNumber(source.autoInjectMinScore, 0, 1, LIVING_MEMORY_DEFAULTS.autoInjectMinScore),
+    autoInjectDiversity: clampNumber(source.autoInjectDiversity, 0.2, 0.95, LIVING_MEMORY_DEFAULTS.autoInjectDiversity),
     autoInjectRecentContext: source.autoInjectRecentContext !== false,
     autoInjectMinQueryChars: clampInt(source.autoInjectMinQueryChars, 1, 80, LIVING_MEMORY_DEFAULTS.autoInjectMinQueryChars),
     autoCapture: source.autoCapture !== false,

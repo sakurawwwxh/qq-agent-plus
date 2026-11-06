@@ -134,6 +134,14 @@ test('删除人物：同事务取消待批请求与待评审机会，删提议�
   );
   assert.equal(store.getFriendProposal('fp_delete'), null, 'friend_proposals 仍整行删除');
 
+  // 好友列表快照刷新不能绕过墓碑把已删除人物加回来
+  store.replaceKnownFriends([
+    { userId: '123456', name: '甲' },
+    { userId: '654321', name: '乙' }
+  ]);
+  assert.equal(store.getPerson('123456', { chatKey: 'group:1' }), null, '墓碑人物不能被好友快照复活');
+  assert.equal(store.getPerson('654321', { chatKey: 'group:1' })?.primaryName, '乙', '其他好友照常处理');
+
   const cancelledRequest = store.getIncomingFriendRequest(request.request.id);
   assert.equal(cancelledRequest.status, 'cancelled');
   assert.equal(cancelledRequest.cancelReason, 'person-deleted');

@@ -63,8 +63,13 @@ Worker），`networkIsolation` 负责禁网。按命令分派：`node` 用权限
 Linux 上优先 bubblewrap（只读根、独立 netns、npm/uv 缓存持久化）；`docker` 强制容器
 `--network none`、`--read-only`、`--cap-drop=ALL`、`no-new-privileges`，并拒绝 `--privileged`、
 挂载宿主目录、`docker.sock` 等参数。`required` 模式下本机做不到就拒绝启动；`auto` 模式裸跑必须
-显式 `allowUnsandboxed:true`。Windows/macOS 没有 bwrap/netns，这类 server 仍以当前用户权限运行：
-不要给它宿主机根目录、配置文件或密钥目录，只选官方/可信 server。
+  显式 `allowUnsandboxed:true`。Windows/macOS 没有 bwrap/netns，这类 server 仍以当前用户权限运行：
+  不要给它宿主机根目录、配置文件或密钥目录，只选官方/可信 server。
+
+`npx`/`uvx` 在 bwrap 内运行时 `npm_config_offline=true`，且只持久化 npm/uv 缓存目录 ——
+**不会在沙箱里临时联网装包**。首次启用前先在同一台机器上预热一次（例如
+`npx -y @modelcontextprotocol/server-filesystem --help`，或 `uvx <包名> --help`），
+否则 server 会因缓存未命中（`ENOTCACHED`）启动失败；更稳妥的做法是全局安装后直接用可执行文件。
 
 ## 控制台与运维
 
