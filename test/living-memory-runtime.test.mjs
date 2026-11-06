@@ -36,7 +36,7 @@ test('shadow mode audits semantic recall without injecting it into the prompt', 
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow' } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'shadow', autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: '之前的向量记忆方案是什么？' }] });
   assert.equal(result.text, '');
@@ -49,13 +49,63 @@ test('active mode injects only current scope memories and keeps private chat opt
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
     dataDir: root,
-    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false } }), service
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', maxInjectChars: 900, allowPrivate: false, autoInjectMinQueryChars: 1, autoInjectMinScore: 0 } }), service
   });
   const group = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.match(group.text, /长期语义记忆/);
   const privateResult = await runtime.recall({ chatKey: 'private:100', triggerEntries: [{ text: 'SQLite' }] });
   assert.equal(privateResult.mode, 'disabled');
   assert.equal(service.recalls.length, 1);
+  runtime.stop();
+});
+
+test('automatic recall skips low-signal messages but keeps explicit searches available', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 4 } }), service
+  });
+  const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: '？' }] });
+  assert.equal(result.mode, 'low-signal-query');
+  assert.equal(service.recalls.length, 0);
+  runtime.stop();
+});
+
+test('default automatic threshold accepts normalized retrieval scores', async () => {
+  const service = serviceFixture();
+  service.recall = async () => ({
+    mode: 'hybrid',
+    entries: [{
+      id: 'm_1', type: 'project', summary: 'SQLite 向量记忆', content: '向量和卡片保存在数据目录。', importance: 8,
+      retrieval: { score: 0.62 }
+    }]
+  });
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 1 } }), service
+  });
+  const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
+  assert.equal(result.entries.length, 1);
+  assert.match(result.text, /SQLite 向量记忆/);
+  runtime.stop();
+});
+
+test('recent fallback memories survive the automatic relevance threshold', async () => {
+  const service = serviceFixture();
+  service.recall = async () => ({
+    mode: 'hybrid',
+    entries: [{
+      id: 'm_recent', type: 'episode', summary: '昨天刚聊过的部署约定', content: '周五下午发布。', importance: 6,
+      retrieval: { score: 0, recentFallback: true }
+    }]
+  });
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, mode: 'active', autoInjectMinQueryChars: 1 } }), service
+  });
+  const result = await runtime.recall({ chatKey: 'group:100', triggerEntries: [{ text: 'SQLite' }] });
+  assert.equal(result.entries.length, 1, '近期兜底没有检索分，不能按相关度阈值过滤掉');
+  assert.match(result.text, /部署约定/);
   runtime.stop();
 });
 
