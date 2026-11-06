@@ -99,7 +99,6 @@ export function proactiveWindowState(raw, now) {
   return { active: false, nextActiveAt: now + best * 60000 };
 }
 
-
 import { safeSlice } from './util.js';
 import { canRun, chatAllowed } from './access.js';
 import { idList } from './list.js';
@@ -3463,9 +3462,10 @@ export class Orchestrator {
       const minInterval = Math.max(30 * 60 * 1000, Number(cfg.memory?.consolidateMinIntervalMs) || 6 * 60 * 60 * 1000);
       if (Date.now() - (st.lastConsolidatedAt || 0) < minInterval) return;
       this.consolidating.add(chatKey);
-      this.consolidateMemoryForChat(chatKey)
+      const task = this.consolidateMemoryForChat(chatKey)
         .catch((error) => log.error(`[memory] 整理 ${chatKey} 失败:`, error?.message ?? error))
-        .finally(() => this.consolidating.delete(chatKey));
+        .finally(() => { this.consolidating.delete(chatKey); this.runTasks.delete(task); });
+      this.runTasks.add(task);
     } catch { /* 整理是锦上添花，绝不影响聊天主流程 */ }
   }
 

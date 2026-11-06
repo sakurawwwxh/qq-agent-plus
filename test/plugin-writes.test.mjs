@@ -78,6 +78,9 @@ function makeRegistry({ switchOn = true, ownerUin = '', behavior = {}, manifestP
     hostFactory: () => host
   });
   registry.hosts.set('demo', host);
+  // 同一文件共用一个 dataDir：journal 现在会持久化 lastWriteAt（重启后 floor 仍生效）。
+  // 这些用例按"新进程"语义跑，显式把进程内 floor 归零；需要测持久化的用例自己再写回。
+  registry.lastWriteAt.set('demo', 0);
   return { registry, host, calls };
 }
 

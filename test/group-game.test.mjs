@@ -1057,3 +1057,161 @@ test('同一群同一种游戏开第二局：终局播报照常发（幂等键�
   assert.equal(rows.length, 2);
   assert.ok(rows.every((r) => r.state === 'sent'));
 });
+
+const pendingFile = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'games.json'), 'utf8')).pendingBroadcasts || [];
+
+test('阶段播报失败进入持久化队列：退避后重试成功，之后不再重发', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  let failures = 0;
+  const attempts = [];
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      const text = String(msgs?.[0] || '');
+      if (/不在这段里/.test(text)) {
+        attempts.push(text);
+        if (failures === 0) {
+          failures += 1;
+          throw new Error('socket timeout');
+        }
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(attempts.length, 1);
+  assert.equal(pendingFile().length, 1, '失败后要落盘等待重试');
+  assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='failed'").get().n, 1);
+
+  await w.mgr.tick();   // 退避未到，不重试
+  assert.equal(attempts.length, 1);
+  w.setClock(w.getClock() + 21000);
+  await w.mgr.tick();
+  assert.equal(attempts.length, 2, '退避后应重试一次');
+  assert.equal(pendingFile().length, 0, '送达后队列要清空');
+  assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='sent'").get().n, 2);
+  await w.mgr.tick();
+  assert.equal(attempts.length, 2, '已送达的播报不能再次发送');
+});
+
+test('阶段播报结果未知：账本 unknown，队列丢弃且永不重发', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  w.store.hasUncertainEffects = () => true;
+  let attempts = 0;
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      if (/不在这段里/.test(String(msgs?.[0] || ''))) {
+        attempts += 1;
+        throw new Error('socket timeout');
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(attempts, 1);
+  assert.equal(pendingFile().length, 0, 'unknown 不进重试队列');
+  assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='unknown'").get().n, 1);
+  w.setClock(w.getClock() + 30 * 60 * 1000);
+  await w.mgr.tick();
+  assert.equal(attempts, 1, '结果未知绝不自动重发');
+});
+
+test('阶段播报部分送达：按 unknown 处理，不自动重试', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  let attempts = 0;
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      if (/不在这段里/.test(String(msgs?.[0] || ''))) {
+        attempts += 1;
+        return { sent: [{ messageId: 'm1' }], failed: [{ index: 1, text: 'x', error: 'boom' }] };
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(attempts, 1);
+  assert.equal(pendingFile().length, 0);
+  assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='unknown'").get().n, 1);
+});
+
+test('私聊阶段播报失败只记账本，不进入公共重试队列', async () => {
+  const w = makeWorld({ players: 6 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      if (String(chatKey).startsWith('private:')) throw new Error('private blocked');
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  updateConfig({ groupGame: { enabled: true, chats: ['group:1'], allowPrivateInvite: true, allowGamePrivateDm: false, dailyLimitPerChat: 6, recruitSeconds: 0, games: ['werewolf'] } });
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'werewolf' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.text, /有 \d+ 人没发出去/);
+  assert.equal(pendingFile().length, 0, '私聊失败不能进公共重试队列');
+  const rows = w.store.db.prepare("SELECT state, detail FROM effects WHERE kind='game-broadcast'").all()
+    .filter((row) => JSON.parse(row.detail).type === 'private');
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every((row) => row.state === 'failed'));
+});
+
+test('重启后继续重试已落盘的阶段播报，送达后不重复', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  let failures = 0;
+  const failing = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      if (/不在这段里/.test(String(msgs?.[0] || '')) && failures === 0) {
+        failures += 1;
+        throw new Error('socket timeout');
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  w.mgr.sender = failing;
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(pendingFile().length, 1);
+
+  let clock = w.getClock() + 21000;
+  const retried = [];
+  const w2 = new GroupGameManager({
+    store: w.store,
+    sender: {
+      sendTextBatch: async (chatKey, msgs) => {
+        retried.push(String(msgs?.[0] || ''));
+        return { sent: [{ messageId: 'm-retry' }], failed: [] };
+      }
+    },
+    effects,
+    log: () => {},
+    now: () => clock,
+    rng: () => 0.42
+  });
+  await w2.tick();
+  assert.equal(retried.filter((text) => /不在这段里/.test(text)).length, 1);
+  assert.equal(pendingFile().length, 0);
+  assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='sent'").get().n, 2, '第二条是重启后的重试');
+});

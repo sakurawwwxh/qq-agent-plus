@@ -76,7 +76,7 @@ import { personaStateSnapshot } from '../core/persona-state.js';
 import { resolvePersona } from '../personas.js';
 import { scanModelsVision, visionResults } from '../llm/vision-scan.js';
 import { builtinVisionResults } from '../llm/model-vision-docs.js';
-import { createEventBus, todayKey, shanghaiDayStart, isSelfSender, safeSlice, sanitizeUserText } from '../core/util.js';
+import { createEventBus, todayKey, shanghaiDayStart, isSelfSender, safeSlice, sanitizeUserText, settleWithDeadline } from '../core/util.js';
 import { chatAllowed } from '../core/access.js';
 import { idList } from '../core/list.js';
 import { isTimeActive } from '../core/time-gate.js';
@@ -2692,7 +2692,8 @@ function buildApp({
       service: '',
       notify: null,
       persist: false,
-      integrityCheck: false
+      integrityCheck: false,
+      mcpStatus: mcpManager.status()
       // 不注入 sudoDockerProbe：巡检默认会试一次 `sudo -n docker`（8 秒上限）。
       // 固定成 false 会让"直连不可用但 sudo 回退可用"的机器在控制台里假红。
     }))();
@@ -3658,29 +3659,38 @@ function buildApp({
     clearTimeout(snowlumaAutoTimer);
     stopPluginIndexRefresh();
     releaseTimeControl();
+    // Phase 1：先停所有会产生新工作的调度器（不要在这里关 transport/store）。
     dailyMoments.stop();
     lifeFeed.stop();
-    dailyMoments.abort();
     qzoneInteractions.stop();
     // 群游戏/群日报的定时器也要停：store.close() 之后它们还在 tick 会撞已关闭的 sqlite，
     // 且群游戏 tick 会把 games.json 再写一遍（2026-10-07 复审 P3）。
     groupGame.stopLoop();
     groupDigest.stop();
     adminBriefing.stop();
-    // 插件子进程要在 onebot 关闭之前停掉：停机后不该再有插件在读消息
-    mcpManager.close();
-    await pluginRegistry.stop();
-    await qzoneInteractions.abort();
-    autoUpdate.stop();
-    identityPilot?.stop();
+    // Phase 2：并行收尾各 manager 的在途任务；8 秒总上限，单个卡死不能拖垮退出。
+    const identityStop = identityPilot?.stop();
     identityPilot = null;
+    await settleWithDeadline([
+      dailyMoments.abort(), lifeFeed.drain(), qzoneInteractions.abort(), groupGame.drain(),
+      groupDigest.drain(), adminBriefing.drain(), autoUpdate.stop(), identityStop
+    ], 8000);
+
+    // Phase 3：先停子进程，再中止对话 run；orchestrator 必须在 onebot.close() 之前收尾。
+    // 插件子进程要在 onebot 关闭之前停掉：停机后不该再有插件在读消息。
+    await pluginRegistry.stop();
+    await settleWithDeadline([mcpManager.close()], 5000);
+    await orchestrator.abortAll();
+    // 对话 run 可能还在用 living-memory；等它们结束后再关库。
+    await livingMemory.drain();
     await slangPilot?.stop();
     slangPilot = null;
     await incidentPilot?.stop();
     incidentPilot = null;
-    livingMemory.stop();
+
+    // Phase 4：发送队列是 appendSelf/onSent 的最后一道屏障，必须在 store.close() 前 drain。
+    await sender.drain({ timeoutMs: 3000 });
     onebot.close();
-    await orchestrator.abortAll();
     // 等待所有在途入站/富化收尾。用循环重新取集合而不是一次快照：正在收尾的 ingress
     // 任务可能在 await 期间又入队一条 deferred（Issue #85 停服竞态）。
     for (let round = 0; round < 100; round += 1) {

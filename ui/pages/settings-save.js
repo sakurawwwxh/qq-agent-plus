@@ -108,7 +108,18 @@ async function saveConfig({ quiet = false } = {}) {
         timeoutMs: clampInt(read('.mcp-timeout'), 1000, 300000, 30000),
         maxCallsPerMinute: clampInt(read('.mcp-maxcalls'), 1, 600, 30),
         toolMounting: read('.mcp-mounting') === 'meta' ? 'meta' : 'direct',
+        networkIsolation: row.querySelector('.mcp-network-isolation')?.checked === true,
         permissionIsolation: row.querySelector('.mcp-permission-isolation')?.checked === true,
+        sandbox: {
+          mode: ['off', 'auto', 'required'].includes(read('.mcp-sandbox-mode'))
+            ? read('.mcp-sandbox-mode')
+            : 'off',
+          network: ['none', 'loopback', 'host'].includes(read('.mcp-sandbox-network'))
+            ? read('.mcp-sandbox-network')
+            : 'host',
+          writablePaths: []
+        },
+        allowUnsandboxed: row.querySelector('.mcp-allow-unsandboxed')?.checked === true,
         memoryMb: clampInt(read('.mcp-memory'), 0, 4096, 0)
       };
     }).filter((server) => server.id && server.command);

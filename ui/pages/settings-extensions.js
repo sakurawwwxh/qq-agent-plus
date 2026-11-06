@@ -9,6 +9,13 @@ function mcpServerRowHtml(server = {}, { open = false } = {}) {
   const args = esc(JSON.stringify(Array.isArray(server.args) ? server.args : []));
   const env = esc(JSON.stringify(server.env && typeof server.env === 'object' ? server.env : {}));
   const mounting = String(server.toolMounting || 'direct');
+  const sandbox = server.sandbox && typeof server.sandbox === 'object' ? server.sandbox : {};
+  const sandboxMode = ['off', 'auto', 'required'].includes(String(sandbox.mode || ''))
+    ? String(sandbox.mode)
+    : (server.networkIsolation === true || server.permissionIsolation === true ? 'required' : 'off');
+  const sandboxNetwork = ['none', 'loopback', 'host'].includes(String(sandbox.network || ''))
+    ? String(sandbox.network)
+    : (server.networkIsolation === true ? 'none' : 'host');
   return `
     <details class="mcp-server" data-id="${id}" ${open ? 'open' : ''}>
       <summary>
@@ -28,8 +35,22 @@ function mcpServerRowHtml(server = {}, { open = false } = {}) {
         <div class="field"><label>工作目录（可选）</label><input class="mcp-cwd" type="text" value="${esc(server.cwd || '')}" placeholder="/srv/workspace" /></div>
         <div class="field"><label>环境变量（JSON 对象，可留空）</label><input class="mcp-env" type="text" value="${env}" placeholder='{"TOKEN":"..."}' /></div>
         <div class="field-row">
+          <div class="field"><label><input class="mcp-network-isolation" type="checkbox" ${server.networkIsolation === true ? 'checked' : ''} /> 网络隔离（禁网）</label></div>
           <div class="field"><label><input class="mcp-permission-isolation" type="checkbox" ${server.permissionIsolation === true ? 'checked' : ''} /> Node 权限隔离（只读入口目录）</label></div>
           <div class="field"><label>堆上限 MB（隔离时生效）</label><input class="mcp-memory" type="number" min="0" max="4096" value="${esc(server.memoryMb ?? 0)}" /></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>沙箱模式</label><select class="mcp-sandbox-mode">
+            <option value="off" ${sandboxMode === 'off' ? 'selected' : ''}>off（不沙箱）</option>
+            <option value="auto" ${sandboxMode === 'auto' ? 'selected' : ''}>auto（能用就用）</option>
+            <option value="required" ${sandboxMode === 'required' ? 'selected' : ''}>required（必须隔离）</option>
+          </select></div>
+          <div class="field"><label>网络策略</label><select class="mcp-sandbox-network">
+            <option value="none" ${sandboxNetwork === 'none' ? 'selected' : ''}>none（禁网）</option>
+            <option value="loopback" ${sandboxNetwork === 'loopback' ? 'selected' : ''}>loopback（仅 docker）</option>
+            <option value="host" ${sandboxNetwork === 'host' ? 'selected' : ''}>host（不隔离）</option>
+          </select></div>
+          <div class="field"><label><input class="mcp-allow-unsandboxed" type="checkbox" ${server.allowUnsandboxed === true ? 'checked' : ''} /> 允许未沙箱运行（显式信任）</label></div>
         </div>
         <div class="field-row">
           <div class="field"><label>挂载方式</label><select class="mcp-mounting">
@@ -584,8 +605,11 @@ async function hydrateExtensionStatus() {
         mcpBox.innerHTML = rows.map((row) => {
           const stateText = row.ready ? '就绪' : row.starting ? '启动中' : '未就绪';
           const tools = row.tools?.length ? ` · 工具：${row.tools.join(', ')}` : '';
+          const sandbox = row.sandboxKind && row.sandboxKind !== 'none'
+            ? ` · 沙箱：${row.sandboxKind}${row.netIsolated ? '·禁网' : ''}${row.fsIsolated ? '·只读FS' : ''}`
+            : row.unsandboxed ? ' · 沙箱：未隔离（已显式信任）' : ' · 沙箱：未隔离';
           const err = row.error ? ` · ${row.error}` : '';
-          return `<div>${esc(row.id)}：${stateText}${esc(tools)}${esc(err)}</div>`;
+          return `<div>${esc(row.id)}：${stateText}${esc(tools)}${esc(sandbox)}${esc(err)}</div>`;
         }).join('');
       }
       for (const badge of document.querySelectorAll('[data-mcp-state]')) {

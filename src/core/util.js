@@ -336,12 +336,36 @@ export function normalizeMessageList(input) {
 /** 简单串行队列：保证发送按顺序、带间隔执行。 */
 export function createSendChain() {
   let chain = Promise.resolve();
-  return function enqueue(task) {
+  const enqueue = (task) => {
     const next = chain.then(task, task);
     // 防止单次失败中断整条链
     chain = next.then(() => undefined, () => undefined);
     return next;
   };
+  // 停机时等待链上所有已入队任务收尾；返回的 promise 不会 reject。
+  enqueue.idle = () => chain;
+  return enqueue;
+}
+
+/**
+ * 等待一组任务结束，但最多等 timeoutMs（用于停机收尾）。
+ * 任务抛错不会向外冒；超时后返回，避免一个卡死的管理器拖住整个进程退出。
+ */
+export async function settleWithDeadline(tasks, timeoutMs = 5000) {
+  const list = [...(tasks || [])].filter(Boolean);
+  if (!list.length) return;
+  let timer;
+  try {
+    await Promise.race([
+      Promise.allSettled(list),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, Math.max(0, Number(timeoutMs) || 0));
+        if (timer.unref) timer.unref();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** 简易事件总线。 */

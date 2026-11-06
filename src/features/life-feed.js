@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chatAllowed } from '../core/access.js';
+import { settleWithDeadline } from '../core/util.js';
 import { buildInterestProfile } from './life-feed-interest.js';
 import { forageBilibili, scoreCandidate } from './life-feed-source-bilibili.js';
 import { forageRss } from './life-feed-source-rss.js';
@@ -202,6 +203,7 @@ export class LifeFeedManager {
     this.loaded = false;
     this.started = false;
     this.timer = null;
+    this.forageTask = null;
   }
 
   #cfg() {
@@ -319,10 +321,20 @@ export class LifeFeedManager {
       this.#schedule(60000);
       return;
     }
-    await this.forageNow({ reason: 'schedule' });
+    await this.#runForage({ reason: 'schedule' });
     if (!this.started) return;
     const next = Number(this.state.nextForageAt) || (this.now() + this.#intervalMs(cfg));
     this.#schedule(next - this.now());
+  }
+
+  async #runForage(options) {
+    const task = this.forageNow(options);
+    this.forageTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.forageTask === task) this.forageTask = null;
+    }
   }
 
   start() {
@@ -347,6 +359,13 @@ export class LifeFeedManager {
   stop() {
     this.started = false;
     this.#clearTimer();
+  }
+
+  /** 停机收尾：等在途觅食结束（它可能还在写 state 文件），最多 5 秒。 */
+  async drain(timeoutMs = 5000) {
+    this.started = false;
+    this.#clearTimer();
+    await settleWithDeadline([this.forageTask], timeoutMs);
   }
 
   reconfigure() {

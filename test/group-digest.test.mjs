@@ -190,6 +190,33 @@ test('跨午夜：日报归属开始那天，第二天照常发（不再被标�
   } finally { store.close(); }
 });
 
+test('stop 后模型才返回：不再发送，也不把当天记成已完成', async () => {
+  fs.rmSync(path.join(root, 'group-digest-state.json'), { force: true });
+  const f = fixture();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async () => {
+    f.stats.modelCalls += 1;
+    await gate;
+    return Response.json({ choices: [{ message: { content: '这是一条不该发出去的日报。' } }], usage: { total_tokens: 5 } });
+  };
+  const running = f.manager.runOnce();
+  for (let i = 0; i < 100 && f.stats.modelCalls === 0; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(f.stats.modelCalls, 1);
+  f.manager.stop();
+  release();
+  const result = await running;
+  assert.equal(f.stats.sent, 0, '停机后不能再发');
+  assert.ok(result.results.some((item) => /停止/.test(String(item.error || ''))), JSON.stringify(result));
+  const stateFile = path.join(root, 'group-digest-state.json');
+  if (fs.existsSync(stateFile)) {
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal((state.doneChats || []).includes('group:1'), false, '停机中断不能记成已完成');
+  }
+});
+
 test('发送结果未知：账本记 unknown，同一天不再自动重发', async () => {
   const store = new ChatStore(0, { dataDir: fs.mkdtempSync(path.join(root, 'ledger-unknown-')) });
   try {

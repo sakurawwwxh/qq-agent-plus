@@ -831,8 +831,13 @@ export const DEFAULT_CONFIG = {
     // 单个 server 形状：
     // { id, enabled, transport: 'stdio', command, args: [], env: {}, cwd,
     //   timeoutMs: 30000, maxCallsPerMinute: 30, toolMounting: 'direct' | 'meta',
-    //   networkIsolation: false, permissionIsolation: false, memoryMb: 0 }
+    //   networkIsolation: false, permissionIsolation: false, memoryMb: 0,
+    //   sandbox: { mode: 'off'|'auto'|'required', kind: 'auto'|'bwrap'|'docker'|'node-permission',
+    //              network: 'none'|'loopback'|'host', writablePaths: [] },
+    //   allowUnsandboxed: false }
     // permissionIsolation 只对 command=node 的 server 生效：只读入口目录，禁止写/子进程/Worker。
+    // docker 不会被套 CLI netns：要求隔离时强制 --network none + 只读根 + cap-drop=ALL。
+    // npx/uvx 在 Linux 上用 bwrap；没有 bwrap 时 required fail-closed，auto 需要 allowUnsandboxed。
   },
   // 群管理动作（禁言/踢人/撤回/设管理员）：只对全局管理员开放。
   moderation: {

@@ -21,10 +21,23 @@ import { validateBlacklistKeywordRules } from './keyword-rules.js';
 
 export * from './config-legacy.js';
 
+// 配置代次：每次有效配置被替换/重载时自增。控制台保存/重载的异步副作用用它判断
+// "await 期间是否已有另一个请求改了配置"，避免旧快照把新配置覆盖回去。
+let configGeneration = 1;
+
+export function getConfigGeneration() {
+  return configGeneration;
+}
+
+function bumpConfigGeneration() {
+  configGeneration += 1;
+}
+
 function stabilize(config, { persist = false } = {}) {
   const before = stableFeatureFingerprint(config);
   applyStableFeaturePolicy(config);
   if (persist && before !== stableFeatureFingerprint(config)) {
+    bumpConfigGeneration();
     legacy.scheduleConfigSave();
   }
   return config;
@@ -116,7 +129,9 @@ export function getConfig() {
 }
 
 export function reloadConfig() {
-  return stabilize(legacy.reloadConfig());
+  const next = stabilize(legacy.reloadConfig());
+  bumpConfigGeneration();
+  return next;
 }
 
 /** The only administrator QQ configuration read/written by current code. */
@@ -365,7 +380,9 @@ export function updateConfig(patch, options = {}) {
     // 真的改写了配置时再补一次保存。原来的 finally 无条件 scheduleConfigSave 会让每次保存
     // 都多写一次盘，连"校验失败被 400 拒绝"的请求也会在 400ms 后整体重写 config.json，
     // 可能在用户没保存任何东西时撞出 .conflict 备份。
-    return stabilize(updated, { persist: true });
+    const stabilized = stabilize(updated, { persist: true });
+    bumpConfigGeneration();
+    return stabilized;
   } finally {
     // An unrelated validation error must never leave promoted infrastructure
     // gated off in the in-memory legacy object.
@@ -374,7 +391,9 @@ export function updateConfig(patch, options = {}) {
 }
 
 export function setRuntimeConfig(config) {
-  return legacy.setRuntimeConfig(applyStableFeaturePolicy(config));
+  const next = legacy.setRuntimeConfig(applyStableFeaturePolicy(config));
+  bumpConfigGeneration();
+  return next;
 }
 
 export function scheduleConfigSave() {

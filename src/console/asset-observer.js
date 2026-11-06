@@ -725,8 +725,8 @@ export class AssetObserver {
   }
 
   deleteIdentity(userId) {
-    const activeStore = this.getIdentityPilot?.()?.identityStore;
-    if (activeStore) return activeStore.deleteIdentityAsset(userId);
+    const pilot = this.getIdentityPilot?.();
+    if (pilot?.identityStore) return pilot.deleteIdentityAsset(userId);
     const store = new IdentityStore({ dataDir: this.dataDir });
     try {
       return store.deleteIdentityAsset(userId);

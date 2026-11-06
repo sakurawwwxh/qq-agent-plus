@@ -1,9 +1,9 @@
 // 极简 MCP stdio 客户端：只依赖 node 内建。一个 server 一个子进程，JSON-RPC 走 stdin/stdout。
 // 不实现采样/资源/提示词，只做 tools/list + tools/call —— 这是给聊天机器人用的最小闭环。
 
-import { spawn } from 'node:child_process';
-import { networkIsolationSupported } from '../plugins/isolation.js';
-import { mcpPermissionSpec, stripIsolationEnv, wrapWithNetns } from './isolation.js';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import { buildMcpLaunchSpec } from './sandbox.js';
 
 const DEFAULT_TIMEOUT = 30000;
 const PROTOCOL_VERSION = '2024-11-05';
@@ -21,7 +21,7 @@ function safeEnv() {
 }
 
 export class McpStdioClient {
-  constructor({ id, command, args = [], env = {}, cwd = '', timeoutMs = DEFAULT_TIMEOUT, log = () => {}, onExit = null, networkIsolation = false, permissionIsolation = false, memoryMb = 0 }) {
+  constructor({ id, command, args = [], env = {}, cwd = '', timeoutMs = DEFAULT_TIMEOUT, log = () => {}, onExit = null, networkIsolation = false, permissionIsolation = false, memoryMb = 0, sandbox = {}, allowUnsandboxed = false }) {
     this.id = String(id || '').trim();
     this.command = String(command || '').trim();
     this.args = Array.isArray(args) ? args.map(String) : [];
@@ -35,10 +35,19 @@ export class McpStdioClient {
     // 可选的 Node 权限模型隔离：只读白名单 + 禁止子进程/Worker/加载插件。只对
     // command 就是 node 的 server 生效；npx/docker 外壳会在 start() 里 fail-closed。
     this.permissionIsolation = permissionIsolation === true;
+    // sandbox：{ mode:'off'|'auto'|'required', kind, network, writablePaths }。
+    // allowUnsandboxed 是显式信任门禁：auto 模式找不到沙箱时只有它为 true 才允许裸跑。
+    this.sandbox = sandbox && typeof sandbox === 'object' ? sandbox : {};
+    this.allowUnsandboxed = allowUnsandboxed === true;
     // 小于 64MB 的堆上限只会让 server 起不来；按 0（不设）处理。
     const heapMb = Math.floor(Number(memoryMb) || 0);
     this.memoryMb = heapMb >= 64 ? Math.min(4096, heapMb) : 0;
     this.permissionActive = false;
+    this.netIsolated = false;
+    this.fsIsolated = false;
+    this.unsandboxed = false;
+    this.sandboxKind = 'none';
+    this.cleanup = null;
     // 意外退出时通知管理器。主动 stop()（重载/关闭）不触发，避免把关闭当成崩溃重启。
     this.onExit = typeof onExit === 'function' ? onExit : null;
     this.intentionalStop = false;
@@ -69,45 +78,48 @@ export class McpStdioClient {
     let command = this.command;
     let args = [...this.args];
     this.permissionActive = false;
-    let permissionEnabled = false;
-    if (this.permissionIsolation) {
-      const spec = mcpPermissionSpec({ command, args, cwd: this.cwd || '' });
-      if (!spec.ok) {
-        // 配了隔离但跑不起来：宁可启动失败，也不能静默退化成“能读整个磁盘”。
-        const error = new Error(`MCP ${this.id} 要求权限隔离，但${spec.error}`);
-        error.code = 'E_MCP_ISOLATION';
-        throw error;
-      }
-      command = spec.command;
-      args = spec.args;
-      if (this.memoryMb > 0) args.unshift(`--max-old-space-size=${this.memoryMb}`);
-      permissionEnabled = true;
-      this.log.info?.(`MCP ${this.id} 启用 Node 权限模型隔离（只读 ${spec.allowDir}）`);
+    this.netIsolated = false;
+    this.fsIsolated = false;
+    this.unsandboxed = false;
+    this.sandboxKind = 'none';
+    let spec;
+    try {
+      spec = buildMcpLaunchSpec({
+        id: this.id,
+        command,
+        args,
+        cwd: this.cwd || '',
+        env: this.env,
+        networkIsolation: this.networkIsolation,
+        permissionIsolation: this.permissionIsolation,
+        memoryMb: this.memoryMb,
+        sandbox: this.sandbox,
+        allowUnsandboxed: this.allowUnsandboxed
+      });
+    } catch (error) {
+      if (!error?.code) error.code = 'E_MCP_ISOLATION';
+      throw error;
     }
-    if (this.networkIsolation) {
-      const probe = networkIsolationSupported();
-      if (!probe.ok) {
-        // 配了隔离但机器做不到：宁可启动失败，也不能静默退化成“能联网”。
-        const error = new Error(`MCP ${this.id} 要求网络隔离，但本机不支持：${probe.error}`);
-        error.code = 'E_MCP_ISOLATION';
-        throw error;
-      }
-      const wrapped = wrapWithNetns(command, args);
-      command = wrapped.command;
-      args = wrapped.args;
-      this.log.info?.(`MCP ${this.id} 启用网络命名空间隔离（unshare --net）`);
-    }
+    command = spec.command;
+    args = spec.args;
+    this.cleanup = spec.cleanup || null;
+    this.permissionActive = spec.permissionActive === true;
+    this.netIsolated = spec.netIsolated === true;
+    this.fsIsolated = spec.fsIsolated === true;
+    this.unsandboxed = spec.unsandboxed === true;
+    this.sandboxKind = String(spec.sandboxKind || 'none');
+    this.log.info?.(`MCP ${this.id} 启动方式：${this.sandboxKind}`
+      + `${this.netIsolated ? '（禁网）' : '（允许网络）'}${this.unsandboxed ? '（未沙箱，管理员已显式信任）' : ''}`);
     const child = spawn(command, args, {
       cwd: this.cwd,
       // 不继承完整 process.env：第三方 server 不该读到宿主的所有凭据/代理变量。
       // 配置变量可以扩展；隔离模式下 NODE_OPTIONS/LD_PRELOAD 这类能改写启动行为的键会被剥掉。
-      env: { ...((this.permissionIsolation || this.networkIsolation) ? stripIsolationEnv(this.env) : this.env), ...safeEnv() },
+      env: { ...safeEnv(), ...spec.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       windowsHide: true
     });
     this.proc = child;
-    this.permissionActive = permissionEnabled;
     this.startedAt = Date.now();
     child.stdin.on('error', (error) => {
       // 子进程退出/关闭 stdin 后再写会异步抛 EPIPE；没有监听会变成 uncaughtException，
@@ -253,13 +265,35 @@ export class McpStdioClient {
     return result;
   }
 
+  #cleanupSandbox() {
+    const cleanup = this.cleanup;
+    this.cleanup = null;
+    if (!cleanup) return;
+    if (cleanup.cidFile) {
+      try {
+        const cid = fs.readFileSync(cleanup.cidFile, 'utf8').trim();
+        if (cid) {
+          // docker run 是前台进程，杀掉 CLI 不一定能带走容器；用 cidfile 兜底强制清理。
+          spawnSync('docker', ['rm', '-f', cid], { timeout: 8000, stdio: 'ignore' });
+        }
+      } catch { /* 容器可能已退出并 --rm 自清 */ }
+      try { fs.rmSync(cleanup.cidFile, { force: true }); } catch { /* ignore */ }
+    }
+    if (cleanup.tempHome) {
+      try { fs.rmSync(cleanup.tempHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  }
+
   stop() {
     this.intentionalStop = true;
     this.permissionActive = false;
+    this.netIsolated = false;
+    this.fsIsolated = false;
     const child = this.proc;
     this.proc = null;
     this.ready = false;
     this.#failAll(new Error(`MCP ${this.id} 已停止`));
+    this.#cleanupSandbox();
     if (!child) return;
     try { child.kill('SIGTERM'); } catch { /* 已退出 */ }
     const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* 已退出 */ } }, 2000);

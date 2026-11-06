@@ -12,7 +12,7 @@ import {
 } from '../llm/llm.js';
 import { safeFetchBinary, validateImageUrl } from '../llm/safe-fetch.js';
 import { convertGifToStillStrip } from '../tools/image-downsample.js';
-import { sanitizeUserText } from '../core/util.js';
+import { sanitizeUserText, settleWithDeadline } from '../core/util.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { displayNameOf } from '../core/display-name.js';
 import { visibleImpressions } from '../core/memory-visibility.js';
@@ -479,6 +479,7 @@ export class DailyMomentsManager {
     this.controller = null;
     this.nextRunAt = 0;
     this.stopped = true;
+    this.abortRequested = false;
     let recovered = false;
     for (const record of this.state.records) {
       if (!['running', 'publishing'].includes(record.status)) continue;
@@ -502,6 +503,7 @@ export class DailyMomentsManager {
 
   start({ startup = true } = {}) {
     this.stop();
+    this.abortRequested = false;
     const cfg = normalizedConfig();
     if (!cfg.enabled) return;
     const target = shanghaiDayStart(this.now()) + (cfg.hour * 60 + cfg.minute) * 60000;
@@ -513,7 +515,10 @@ export class DailyMomentsManager {
 
   reconfigure() {
     if (normalizedConfig().enabled) this.start({ startup: false });
-    else this.stop();
+    else {
+      this.stop();
+      void this.abort();
+    }
   }
 
   stop() {
@@ -524,8 +529,12 @@ export class DailyMomentsManager {
     this.nextRunAt = 0;
   }
 
-  abort() {
-    this.controller?.abort(new Error('Daily moments stopped'));
+  abort(timeoutMs = 5000) {
+    const running = this.running;
+    this.abortRequested = true;
+    this.controller?.abort(momentError('MOMENT_STOPPED', '每日动态已停止'));
+    if (!running) return Promise.resolve();
+    return settleWithDeadline([running], timeoutMs);
   }
 
   status() {
@@ -685,6 +694,14 @@ export class DailyMomentsManager {
     })) writeJson(this.stateFile, this.state);
   }
 
+  #interruptSlot(slot) {
+    const record = this.state.records.find((item) => item.scheduleSlotId === slot.id);
+    slot.status = record?.status && record.status !== 'running' ? record.status : 'interrupted';
+    slot.recordId = record?.id || '';
+    slot.reason = record?.error || '执行已停止';
+    writeJson(this.stateFile, this.state);
+  }
+
   async #tickWindows(cfg, startup, version) {
     this.#updatePlan(cfg);
     const pending = this.state.scheduleSlots.filter((slot) => slot.status === 'pending');
@@ -718,10 +735,13 @@ export class DailyMomentsManager {
             dayKey: slot.dayKey, publish: cfg.autoPublish === true,
             source: startup ? 'startup-catchup' : 'scheduled', scheduleSlot: { ...slot }
           });
+          // 停机/重排后旧 tick 不能再把 slot 写回 running 或覆盖新一代计划。
+          if (this.stopped || version !== this.scheduleVersion) return this.#interruptSlot(slot);
           slot.status = result.record.status;
           slot.recordId = result.record.id;
           slot.reason = result.record.error || result.record.reason || '';
         } catch (error) {
+          if (this.stopped || version !== this.scheduleVersion) return this.#interruptSlot(slot);
           const record = this.state.records.find((item) => item.scheduleSlotId === slot.id);
           // 错误码优先于记录状态：被时间控制/忙碌打断时必须回 pending（窗口还开着就该再试），
           // 而 #run 已经把记录写成 'deferred' —— 那个值不在任何恢复分支里，计划会被静默吞掉（2026-10-13 全项目审查 P2-2）。
@@ -808,6 +828,7 @@ export class DailyMomentsManager {
     };
     this.#saveRecord(record);
     this.controller = new AbortController();
+    if (this.abortRequested) this.controller.abort(momentError('MOMENT_STOPPED', '每日动态已停止'));
     const releaseTimeGuard = watchTimeWindow((error) => this.controller?.abort(error), '');
     let releaseGroupGuards = () => {};
     const timeout = setTimeout(() => this.controller?.abort(new Error('Daily moments run timed out')), 10 * 60 * 1000);
@@ -892,7 +913,8 @@ export class DailyMomentsManager {
     } catch (error) {
       if (record.status !== 'publish-unknown') {
         record.status = error?.code === 'MOMENT_WINDOW_EXPIRED' ? 'missed'
-          : error?.code === 'TIME_CONTROL_INACTIVE' ? 'deferred' : 'failed';
+          : error?.code === 'MOMENT_STOPPED' ? 'interrupted'
+            : error?.code === 'TIME_CONTROL_INACTIVE' ? 'deferred' : 'failed';
         if (session) {
           record.usage = { ...session.usage };
           record.model = session.model || record.model;

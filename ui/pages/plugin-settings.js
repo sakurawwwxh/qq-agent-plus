@@ -126,10 +126,26 @@ function settingsFormHtml(data) {
         ${item.note ? `<span class="pd-write-note">${esc(noteHint(item))}</span>` : ''}
       </div>`).join('')}
     </div>` : '';
-  if (!groupsHtml && !approvalHtml && !pendingHtml && !writesHtml) {
+  // 崩溃/超时留下的 unknown 写操作：必须人工核对。确认未执行才退批准与当天配额。
+  const unknownOps = Array.isArray(data.writeOps) ? data.writeOps : [];
+  const opsHtml = unknownOps.length ? `
+    <div class="pd-settings-group">
+      <div class="pd-settings-group-title">待核对写操作（结果未知，不会自动重试）</div>
+      ${unknownOps.map((op) => `<div class="pd-write-row">
+        <span class="pd-write-at">${esc(new Date(Number(op.startedAt)).toLocaleString())}</span>
+        <span class="pd-write-action">${esc(op.action)}${op.target ? ` → ${esc(op.target)}` : ''}</span>
+        <span class="pd-write-outcome is-unknown">结果未确认</span>
+        ${op.note ? `<span class="pd-write-note">${esc(String(op.note).slice(0, 120))}</span>` : ''}
+        <span class="pd-approval-actions">
+          <button type="button" class="btn btn-small" data-pd-resolve-op="${esc(op.id)}" data-pd-executed="1">确认已执行</button>
+          <button type="button" class="btn btn-small btn-primary" data-pd-resolve-op="${esc(op.id)}" data-pd-executed="0">确认未执行（退额度）</button>
+        </span>
+      </div>`).join('')}
+    </div>` : '';
+  if (!groupsHtml && !approvalHtml && !pendingHtml && !writesHtml && !opsHtml) {
     return '<div class="plugin-note">这个插件没有需要填写的设置。</div>';
   }
-  return `${secretError}${loginBadge}${groupsHtml}${pendingHtml}${approvalHtml}${writesHtml}
+  return `${secretError}${loginBadge}${groupsHtml}${pendingHtml}${opsHtml}${approvalHtml}${writesHtml}
     <div class="pd-settings-actions">
       <button type="button" class="btn btn-primary btn-small" data-pd-settings-save="${esc(data.id)}">保存设置</button>
       <button type="button" class="btn btn-small" data-pd-probe="${esc(data.id)}">检测登录</button>
@@ -411,6 +427,23 @@ async function clearPluginSecretField(id, key) {
   }
 }
 
+async function resolveUnknownWriteOp(id, opId, executed) {
+  try {
+    await api('/api/plugins/write-op/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ id, opId, executed })
+    });
+    await hydratePluginSettings(id);
+    setSettingsStatus(
+      id,
+      executed ? '已标记为执行，不退还额度' : '已标记未执行，已退还批准与当天配额',
+      'success'
+    );
+  } catch (error) {
+    setSettingsStatus(id, `核对失败：${String(error?.message || error)}`, 'error');
+  }
+}
+
 export {
   hasPluginSettings,
   hydratePluginSettings,
@@ -422,5 +455,6 @@ export {
   startQrLogin,
   pollQrOnce,
   setSettingsStatus,
-  stopQrPoll
+  stopQrPoll,
+  resolveUnknownWriteOp
 };

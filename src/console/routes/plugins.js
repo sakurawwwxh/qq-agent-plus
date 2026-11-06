@@ -10,7 +10,7 @@ import { fetchBinaryWithMirrors } from '../../plugins/mirrors.js';
 import { pluginSecretStatus, writePluginSecrets, secretFieldKeys, clearPluginSecrets } from '../../plugins/secrets.js';
 import {
   grantsStatus, listPendingApprovals, approvePendingApproval,
-  rejectPendingApproval, listPluginWrites, clearPluginGrants
+  rejectPendingApproval, listPluginWrites, clearPluginGrants, listWriteOps, resolveWriteOp
 } from '../../plugins/grants.js';
 import { applyUpgradeSecurity } from '../../plugins/upgrade-security.js';
 
@@ -91,6 +91,8 @@ export function registerPluginRoutes(router, deps = {}) {
       switches: getConfig().plugins?.switches?.[id] || {},
       pending: listPendingApprovals(dataDir).filter((item) => item.pluginId === id),
       writes: listPluginWrites(dataDir, id, 30),
+      // 结果未知的写操作（崩溃恢复/超时）：控制台人工核对入口
+      writeOps: listWriteOps(dataDir, id, { state: 'unknown' }),
       // 登录徽标（可选）：插件实现了 probe 就带一份实测登录态，面板打开即见
       loginInfo: await pluginRegistry.probePlugin(id).then((r) => (r.ok ? { ...r.info, measuredAt: Date.now() } : null)).catch(() => null)
     });
@@ -209,6 +211,29 @@ export function registerPluginRoutes(router, deps = {}) {
         pending: listPendingApprovals(dataDir).filter((item) => item.pluginId === id),
         grants: grantsStatus(dataDir, id, entry.manifest || {})
       });
+    } catch (error) {
+      return pluginError(res, error, 400);
+    }
+  });
+
+  // 人工核对"结果未知"的写操作：executed=true 表示确认对方已经收到（不退款）；
+  // false 表示确定没执行（退批准与当天配额）。只有 unknown 状态能核对，重复核对返回 400。
+  router.add('POST', '/api/plugins/write-op/resolve', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const id = String(body.id || '').trim();
+    const opId = String(body.opId || '').trim();
+    if (!pluginIdValid(id)) return json(res, 400, { ok: false, error: '插件 id 不合法' });
+    if (!/^wo_[a-f0-9]{8,32}$/i.test(opId)) return json(res, 400, { ok: false, error: '写操作 id 不合法' });
+    if (typeof body.executed !== 'boolean') return json(res, 400, { ok: false, error: 'executed 必须是布尔值' });
+    try {
+      const op = resolveWriteOp(dataDir, id, opId, {
+        executed: body.executed,
+        by: String(req.actor || req.user || 'console').slice(0, 80)
+      });
+      auditWrite('plugins.write.resolve', `plugins:${id}:${op.action}`, {
+        req, target: op.target, executed: body.executed
+      });
+      return json(res, 200, { ok: true, op });
     } catch (error) {
       return pluginError(res, error, 400);
     }

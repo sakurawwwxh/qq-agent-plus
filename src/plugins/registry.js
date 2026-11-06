@@ -21,7 +21,7 @@ import { canonicalVersion } from './version.js';
 import { hashManifest } from './manifest-diff.js';
 import { readOwnerUin, sendOwnerText } from '../core/notify-owner.js';
 import {
-  checkApproval, refundApproval, consumeQuota, refundQuota,
+  admitWrite, settleWriteOp, recoverWriteOps,
   requestPendingApproval, listPendingApprovals, approvePendingApproval,
   rejectPendingApproval, recordPluginWrite, normalizeTarget, backfillManifestHash,
   markPendingNotified, grantsStatus
@@ -122,8 +122,11 @@ export class PluginRegistry {
     this.discovered = [];        // [{ id, dir, manifest, error }]
     this.opChain = Promise.resolve(); // 起停/重载/安装的串行队列（见 #serialize）
     this.scheduleState = new Map();   // "<id>:<任务名>" -> 上次触发时间（内存态：重启后重新计时）
-    this.lastWriteAt = new Map();     // pluginId -> 上次写操作时间（60s 间隔下限，内存态即可）
+    this.lastWriteAt = new Map();     // pluginId -> 上次写操作时间（60s 间隔下限；journal 里也持久化）
     this.lastPendingAt = new Map();   // pluginId -> 上次登记待批时间（防止未批准请求绕过写间隔刷屏）
+    // 启动时刻：recoverWriteOps 只恢复这之前开始的 op —— 配置重载会再次 start()，
+    // 不能把重载瞬间正在执行的写误判成"上次进程崩溃遗留"。
+    this.bootAt = Date.now();
     this.lastUsedAt = new Map();      // id -> 最近一次被用到的时间（懒启动的"空闲"判据）
     this.starting = new Map();        // id -> 在途的按需启动 promise（并发调用共享同一个）
     this.scheduleTimer = null;
@@ -295,6 +298,14 @@ export class PluginRegistry {
 
   async #startImpl() {
     this.started = true;
+    // 先恢复崩溃遗留的写 journal（不依赖插件是否启用）：admitted 且早于本进程启动的
+    // 写操作一律标 unknown，保留已消费的批准/配额，等管理员在控制台核对。
+    try {
+      const recovered = recoverWriteOps(this.dataDir, this.bootAt);
+      if (recovered) this.log(`插件写 journal：${recovered} 条在途写已标记为 unknown（未自动退款/重试）`);
+    } catch (error) {
+      this.log(`插件写 journal 恢复失败：${error?.message ?? error}`);
+    }
     const cfg = this.#config();
     if (!cfg.enabled) return { started: [], skipped: 'disabled' };
     this.discover();
@@ -739,15 +750,24 @@ export class PluginRegistry {
     if (tool.actionPreview && !preview) {
       return denied(`这个写操作需要内容（${tool.actionPreview}），空内容不能提交批准`);
     }
-    const last = Number(this.lastWriteAt.get(host.id)) || 0;
-    if (Date.now() - last < PLUGIN_WRITE_FLOOR_MS) {
-      return denied(`同一插件的写操作至少间隔 ${Math.round(PLUGIN_WRITE_FLOOR_MS / 1000)} 秒，请稍后再试`, 'denied', 'rate-floor');
-    }
     // 批准绑定 (动作, 目标, 预览内容, 当前 manifest)：评论/弹幕换了正文就必须重新批准；
     // 插件升级后权限面变化，旧版本的批准也不能继续用。
+    // admitWrite 一次落盘完成 floor/批准/配额检查与扣减，并把 op 写进 journal：
+    // kill -9 落在调用与结算之间时，重启恢复能把这次写标成 unknown 而不是丢账。
     const manifestHash = hashManifest(host.manifest);
-    const approval = checkApproval(this.dataDir, host.id, action, { consume: true, target, preview, manifestHash });
-    if (!approval.approved) {
+    const admission = admitWrite(this.dataDir, host.id, action, {
+      target,
+      preview,
+      manifestHash,
+      quotaLimit: Number(host.manifest.quotas?.[action]) || 0,
+      floorMs: PLUGIN_WRITE_FLOOR_MS,
+      lastWriteAt: this.lastWriteAt.get(host.id)
+    });
+    if (!admission.admitted) {
+      if (!admission.needsApproval) {
+        if (admission.quotaExceeded) return denied(admission.reason, 'denied', 'quota');
+        return denied(admission.reason, 'denied', admission.rateLimited ? 'rate-floor' : '');
+      }
       // 待批也要限流：否则模型可以在未批准状态下连续刷待批，绕过 60 秒下限，
       // 并且每来一次都再私聊 owner。这里用独立的 lastPendingAt，不占 lastWriteAt ——
       // 管理员批准后模型马上重试时不能被这条挡成"再等 60 秒"。
@@ -782,15 +802,9 @@ export class PluginRegistry {
         pending.id
       );
     }
-    const quota = consumeQuota(this.dataDir, host.id, action, Number(host.manifest.quotas?.[action]) || 0);
-    if (!quota.ok) {
-      // 配额不够时把刚扣掉的批准退回去：不能让一次被配额挡住的调用白烧管理员批的一次权限
-      if (approval.receipt) refundApproval(this.dataDir, host.id, approval.receipt);
-      return denied(quota.reason, 'denied', 'quota');
-    }
     this.lastWriteAt.set(host.id, Date.now());
     this.lastPendingAt.delete(host.id);   // 已放行一次：下一次待批不用再等"待批间隔"
-    return { proceed: true, action, target, approvalReceipt: approval.receipt, quotaReceipt: quota.receipt };
+    return { proceed: true, action, target, opId: admission.opId };
   }
 
   /**
@@ -799,40 +813,23 @@ export class PluginRegistry {
    * 而请求可能已经到了对方服务器（评论/弹幕没有幂等键），会造成重复写入（2026-10-24 审查 P2）。
    */
   #settleWrite(host, tool, gate, payload, { unknown = false } = {}) {
-    if (!gate || gate.proceed !== true) return;
-    const action = gate.action;
-    const target = gate.target;
-    if (unknown) {
-      recordPluginWrite(this.dataDir, host.id, {
-        action, target, outcome: 'unknown',
-        note: String(payload?.note || '结果未知：请求可能已经到达对方，批准与配额保持已消费')
-      });
-      return;
-    }
-    if (payload?.ok === false) {
-      if (gate.approvalReceipt) refundApproval(this.dataDir, host.id, gate.approvalReceipt);
-      if (gate.quotaReceipt) refundQuota(this.dataDir, host.id, gate.quotaReceipt);
-      recordPluginWrite(this.dataDir, host.id, {
-        action, target, outcome: 'failed', note: String(payload?.note || payload?.error || 'ok:false')
-      });
-      return;
-    }
-    // 幂等跳过（插件发现"已经做过"什么都没写）：批准与配额都退回去 ——
-    // 没发生的写入不该烧管理员批的次数。
-    if (payload?.skipped) {
-      if (gate.approvalReceipt) refundApproval(this.dataDir, host.id, gate.approvalReceipt);
-      if (gate.quotaReceipt) refundQuota(this.dataDir, host.id, gate.quotaReceipt);
-      recordPluginWrite(this.dataDir, host.id, {
-        action, target, outcome: 'ok', note: `幂等跳过：${String(payload.skipped).slice(0, 60)}`
-      });
-      return;
-    }
-    recordPluginWrite(this.dataDir, host.id, {
-      action,
-      target,
-      outcome: payload?.verified === false ? 'unknown' : 'ok',
-      note: payload?.verified === true ? '回读核验通过' : (payload?.verified === false ? '写后回读未确认' : '')
-    });
+    if (!gate?.opId) return;
+    const outcome = unknown
+      ? 'unknown'
+      : payload?.ok === false
+        ? 'failed'
+        : payload?.skipped
+          ? 'skipped'
+          : payload?.verified === false ? 'unknown' : 'ok';
+    const note = String(
+      payload?.note
+      || payload?.error
+      || (payload?.skipped ? `幂等跳过：${String(payload.skipped).slice(0, 60)}` : '')
+      || (payload?.verified === false ? '写后回读未确认' : '')
+      || (payload?.verified === true ? '回读核验通过' : '')
+    ).slice(0, 300);
+    // 结算与退款/审计在 grants 层一次 load/save 内完成，避免"退了批准没退配额"。
+    settleWriteOp(this.dataDir, host.id, gate.opId, { outcome, note });
   }
 
   /** 待批请求 → 管理员私聊（fire-and-forget：通知失败不影响待批列表与控制台批准）。 */
