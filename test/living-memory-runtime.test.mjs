@@ -109,6 +109,23 @@ test('turn capture skips sensitive source text and never blocks the caller', asy
   runtime.stop();
 });
 
+test('turn retention is applied to an already-open service without restarting', () => {
+  const service = serviceFixture();
+  service.store.turnRetentionDays = 7;
+  let retention = 30;
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, turnRetentionDays: retention } }),
+    service
+  });
+  runtime.list({ scopeKeys: ['group:100'] });
+  assert.equal(service.store.turnRetentionDays, 30, '控制台改保留期要立即作用到已打开的库');
+  retention = 0;
+  runtime.list({ scopeKeys: ['group:100'] });
+  assert.equal(service.store.turnRetentionDays, 0, '改成永久保留也要立即生效');
+  runtime.stop();
+});
+
 test('disabled runtime does not create its SQLite database while the page is only inspected', () => {
   const dataDir = path.join(root, `disabled-${Date.now()}-${Math.random()}`);
   const runtime = new LivingMemoryRuntime({

@@ -436,6 +436,9 @@ export class PluginRegistry {
   }
 
   async #startOne(item, cfg) {
+    // 停服开始后不再拉起任何插件进程：否则停机时仍在排队的 reload 会在
+    // pluginRegistry.stop() 之后把子进程重新 spawn 成孤儿。
+    if (this.stopped) return false;
     // engines.minVersion 必须在**所有**启动路径上判：常驻、懒启动登记、reload、按需拉起。
     if (!this.#enginesOk(item.manifest)) {
       this.log(`插件 ${item.id} 要求宿主 ≥ ${item.manifest.engines?.minVersion}，本机是 ${HOST_VERSION}，不予加载`);

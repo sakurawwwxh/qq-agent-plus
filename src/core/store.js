@@ -294,13 +294,38 @@ export class ChatStore {
     if (mid !== null) {
       const existing = this.db.prepare('SELECT * FROM messages WHERE chat_key=? AND mid=?').get(chatKey, mid);
       if (existing) {
+        let row = existing;
+        let marked = false;
         // 首次落库与"后来才知道它是引擎私聊"可能竞速（发送端先写、回显后到，或反之）：
         // 命中重复时把 game-secret 补上，避免这行永远留在模型可见的历史里（2026-09-29 审查）
         if (m.eventKind === 'game-secret' && existing.event_kind !== 'game-secret') {
           this.db.prepare("UPDATE messages SET event_kind='game-secret' WHERE chat_key=? AND mid=?").run(chatKey, mid);
-          return { ...entry({ ...existing, event_kind: 'game-secret' }), duplicate: true, marked: true };
+          row = { ...existing, event_kind: 'game-secret' };
+          marked = true;
         }
-        return { ...entry(existing), duplicate: true };
+        // 发送回执与 message_sent 回显竞速时，谁先落库谁说了算；后来的 media
+        // （比如自发图片的 stickerId）合并进去，别因为 duplicate 丢掉看图兜底（Issue #99）。
+        const added = Array.isArray(m.media) ? m.media.filter(Boolean) : [];
+        if (added.length) {
+          const current = entry(row);
+          const mediaKey = (item) => (item?.stickerId
+            ? `s:${item.stickerId}`
+            : (item?.url || item?.file ? `u:${item.url || item.file}` : ''));
+          const seen = new Set((current.media || []).map(mediaKey));
+          const merged = [...(current.media || [])];
+          for (const item of added) {
+            const key = mediaKey(item);
+            if (!key || seen.has(key)) continue;
+            seen.add(key);
+            merged.push(item);
+          }
+          if (merged.length > (current.media || []).length) {
+            this.db.prepare('UPDATE messages SET media=? WHERE chat_key=? AND mid=?')
+              .run(JSON.stringify(merged), chatKey, mid);
+            row = { ...row, media: JSON.stringify(merged) };
+          }
+        }
+        return { ...entry(row), duplicate: true, ...(marked ? { marked: true } : {}) };
       }
     }
     this.db.prepare('INSERT OR IGNORE INTO chats(chat_key) VALUES (?)').run(chatKey);

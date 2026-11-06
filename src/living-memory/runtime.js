@@ -2,11 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chatCompletion } from '../llm/llm.js';
 import { safeSlice, settleWithDeadline } from '../core/util.js';
+import { redactionReason } from './util.js';
 import { readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from './config.js';
 import { LivingMemoryService } from './service.js';
 
-const SENSITIVE = /(?:密码|口令|验证码|密钥|token|api[ _-]?key|access[ _-]?key|secret|pass(?:word)?|cvv|银行卡|卡号|身份证|护照|家庭住址|详细地址|病历|诊断|病情|政治立场|投票意向)/i;
 const MAX_PENDING_TURNS = 40;
 const MAX_TRANSCRIPT_CHARS = 16000;
 
@@ -74,7 +74,7 @@ function normalizeCards(cards, scopeKey, source) {
       expiresAt: expiresDays ? Date.now() + expiresDays * 86400000 : 0,
       source
     };
-  }).filter((item) => item.summary && item.content && !SENSITIVE.test(`${item.summary}\n${item.content}`));
+  }).filter((item) => item.summary && item.content && !redactionReason(`${item.summary}\n${item.content}`));
 }
 
 function cardsPrompt(turns) {
@@ -149,17 +149,21 @@ export class LivingMemoryRuntime {
   #service({ create = true } = {}) {
     if (this.stopped) return null;
     if (!create && !this.service && !fs.existsSync(this.databaseFile)) return null;
+    const cfg = this.config();
     if (!this.service) {
       this.service = new LivingMemoryService({
         file: this.databaseFile,
         embeddingConfig: readLivingMemoryEmbeddingConfig(),
         log: { warn: (...args) => this.log(...args) },
-        turnRetentionDays: this.config().turnRetentionDays
+        turnRetentionDays: cfg.turnRetentionDays
       });
       this.pruneTimer = setInterval(() => {
         try { this.service?.prune(); } catch (error) { this.log('[living-memory] 定期清理失败：', error?.message || error); }
       }, 6 * 60 * 60 * 1000);
       this.pruneTimer.unref?.();
+    } else if (this.service.store) {
+      // 保留期是运行时配置：控制台改完立即生效，不用重启进程。
+      this.service.store.turnRetentionDays = cfg.turnRetentionDays;
     }
     return this.service;
   }
@@ -206,7 +210,9 @@ export class LivingMemoryRuntime {
   }
 
   captureTurn(input = {}) {
-    void this.#captureTurn(input);
+    void this.#captureTurn(input).catch((error) => {
+      this.log(`[living-memory] 采集跳过：${error?.message || error}`);
+    });
   }
 
   /** Capture non-bot traffic even when the reply trigger does not run. */
@@ -214,11 +220,14 @@ export class LivingMemoryRuntime {
     const cfg = this.config();
     if (cfg.autoCapture === false || cfg.captureAllMessages !== true || !message || message.self) return;
     const text = cleanText(message.text, 1200);
-    if (!text || SENSITIVE.test(text)) return;
+    // 与落库层同一个敏感判定：手机号/证件号也在入口挡住，不再只认关键词。
+    if (!text || redactionReason(text)) return;
     void this.#queueCapture(chatKey, '', [{
       role: 'user', text, senderName: cleanText(message.senderName, 80),
       senderId: cleanText(message.senderId, 40), ts: Number(message.ts) || Date.now()
-    }]);
+    }]).catch((error) => {
+      this.log(`[living-memory] 采集跳过：${error?.message || error}`);
+    });
   }
 
   async #captureTurn({ chatKey, sessionId = '', triggerEntries = [], sent = [] } = {}) {
@@ -229,7 +238,7 @@ export class LivingMemoryRuntime {
     const lines = [
       ...(allCapture ? [] : (triggerEntries || []).filter((entry) => !entry?.self).map((entry) => ({ role: 'user', text: cleanText(entry?.text, 1200), senderName: cleanText(entry?.senderName, 80), senderId: cleanText(entry?.senderId, 40), ts: Number(entry?.ts) || Date.now() }))),
       ...(sent || []).map((entry) => ({ role: 'assistant', text: cleanText(entry?.text || entry?.content || '', 1200), senderName: '机器人', senderId: 'self', ts: Date.now() }))
-    ].filter((entry) => entry.text && !SENSITIVE.test(entry.text));
+    ].filter((entry) => entry.text && !redactionReason(entry.text));
     // With passive capture enabled, user lines were already queued at ingress;
     // this later call contributes the bot's own reply to that same window.
     if (!lines.length || (!allCapture && !lines.some((entry) => entry.role === 'user'))) return;
@@ -240,7 +249,13 @@ export class LivingMemoryRuntime {
     if (this.stopped || !this.applies(chatKey)) return;
     const cfg = this.config();
     if (cfg.autoCapture === false || !Array.isArray(lines) || !lines.length) return;
-    const service = this.#service();
+    // 数据库打不开（目录只读/磁盘满/文件损坏）时只降级记忆功能，不能把每条消息
+    // 都变成一次 unhandledRejection（server.js 会记成 critical 告警）。
+    let service;
+    try { service = this.#service(); } catch (error) {
+      this.log(`[living-memory] 初始化跳过：${error?.message || error}`);
+      return;
+    }
     if (!service) return;
     let turnId = '';
     try {
@@ -305,8 +320,13 @@ export class LivingMemoryRuntime {
       if (!service) return { created: 0, stopped: true };
       let created = 0;
       for (const card of cards) {
-        await service.upsertMemory(card);
-        created += 1;
+        // 单卡敏感/格式问题只丢这一张：不能让它把整批干净卡片一起带走并重烧一次模型。
+        try {
+          await service.upsertMemory(card);
+          created += 1;
+        } catch (error) {
+          this.log(`[living-memory] 丢弃一张卡片：${error?.message || error}`);
+        }
       }
       this.retries.delete(chatKey);
       this.emit('living-memory-update', { chatKey, phase: 'capture', created });

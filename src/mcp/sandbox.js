@@ -18,7 +18,9 @@ import { isNodeCommand, mcpPermissionSpec, stripIsolationEnv } from './isolation
 
 const NETWORKS = new Set(['none', 'loopback', 'host']);
 const MODES = new Set(['off', 'auto', 'required']);
-const DOCKER_UNSAFE_RE = /^(?:--privileged|--volume|--mount|--device|--cap-add|--pid|--ipc|--userns|--network|--net)(?:=|$)/i;
+// 只做黑名单也要把短参数和容易漏的口子全列上：`-v/:/host`（无空格挂载）、
+// `--volumes-from`、`--security-opt`（可关 seccomp/apparmor）、`-p` 发布端口。
+const DOCKER_UNSAFE_RE = /^(?:--privileged|--volume(?:=|$)|--mount(?:=|$)|--device(?:=|$)|--cap-add(?:=|$)|--pid(?:=|$)|--ipc(?:=|$)|--userns(?:=|$)|--uts(?:=|$)|--cgroupns(?:=|$)|--security-opt(?:=|$)|--volumes-from(?:=|$)|--entrypoint(?:=|$)|--runtime(?:=|$)|--network(?:=|$)|--net(?:=|$)|--publish(?:=|$)|--expose(?:=|$)|-v.*|-p.*)/i;
 const DOCKER_IMAGE_RE = /^[a-zA-Z0-9][\w./:@-]*$/;
 
 function baseName(command) {
@@ -32,19 +34,34 @@ function isDockerCommand(command) {
 function normMode(server = {}, { networkIsolation = false, permissionIsolation = false } = {}) {
   const raw = String(server?.mode || '').trim().toLowerCase();
   if (MODES.has(raw)) return raw;
-  return networkIsolation || permissionIsolation ? 'required' : 'off';
+  if (networkIsolation || permissionIsolation) return 'required';
+  // 只写了 sandbox.network:'none'/'loopback' 也要真的尝试隔离：以前默认 off，
+  // 这行配置会被静默忽略，npx/uvx 仍以完整网络启动。
+  const net = String(server?.network || '').trim().toLowerCase();
+  return net && net !== 'host' ? 'auto' : 'off';
 }
 
-function normNetwork(server = {}, networkIsolation = false) {
+function normNetwork(server = {}, networkIsolation = false, fallback = 'host') {
   const raw = String(server?.network || '').trim().toLowerCase();
   if (NETWORKS.has(raw)) return raw;
-  return networkIsolation ? 'none' : 'host';
+  return networkIsolation ? 'none' : fallback;
 }
 
 function isolationError(id, message) {
   const error = new Error(`MCP ${id} 隔离配置不成立：${message}`);
   error.code = 'E_MCP_ISOLATION';
   return error;
+}
+
+/** 两个路径是否互为祖先/相等（用于挡住“传数据目录的父目录”这种绕过）。 */
+function overlaps(left, right) {
+  return left === right
+    || left.startsWith(`${right}${path.sep}`)
+    || right.startsWith(`${left}${path.sep}`);
+}
+
+function realOrResolved(target) {
+  try { return fs.realpathSync(target); } catch { return path.resolve(target); }
 }
 
 // bwrap/docker 探测都真跑一次并缓存；测试可注入 spawn / platform / force。
@@ -187,19 +204,27 @@ function bwrapSpec({
   for (const file of BWRAP_RO_FILES) {
     if (fs.existsSync(file)) bindArgs.push('--ro-bind', file, file);
   }
+  const dataReal = realOrResolved(DATA_DIR);
   const workDir = String(cwd || '').trim();
   if (workDir) {
     const real = fs.realpathSync(workDir);
+    // cwd 是只读 bind，但只读也能读到 config.json / 令牌文件：与数据目录重叠就拒绝。
+    if (overlaps(real, dataReal)) throw isolationError(id, `cwd 不能与数据目录重叠：${real}`);
     bindArgs.push('--ro-bind', real, real, '--chdir', real);
   } else {
     bindArgs.push('--chdir', '/tmp');
   }
   for (const raw of Array.isArray(writablePaths) ? writablePaths : []) {
     const target = String(raw || '').trim();
-    if (!target || path.resolve(target) === path.parse(path.resolve(target)).root) continue;
+    if (!target) continue;
     const real = fs.realpathSync(target);
-    if (real === path.resolve(DATA_DIR) || real.startsWith(`${path.resolve(DATA_DIR)}${path.sep}`)) {
-      throw isolationError(id, `writablePaths 不能包含数据目录：${real}`);
+    // 先 realpath 再判根：`/tmp/link -> /` 这种软链不能靠 target 字面量绕过。
+    if (real === path.parse(real).root) {
+      throw isolationError(id, 'writablePaths 不能是文件系统根目录');
+    }
+    // 双向判断：既不能是数据目录本身/子目录，也不能是它的父目录（父目录可写 = 数据目录可写）。
+    if (overlaps(real, dataReal)) {
+      throw isolationError(id, `writablePaths 不能与数据目录重叠：${real}`);
     }
     bindArgs.push('--bind', real, real);
   }
@@ -297,7 +322,9 @@ export function buildMcpLaunchSpec({
     throw error;
   }
   const mode = normMode(sandbox, { networkIsolation, permissionIsolation });
-  const network = normNetwork(sandbox, networkIsolation);
+  // docker 容器不存在“host 网络可用”的合法形态：没显式配置时默认 none，而不是让
+  // 每个 OCI/registry 导入的 server 都因为默认 host 被 fail-closed 挡死。
+  const network = normNetwork(sandbox, networkIsolation, isDockerCommand(cmd) ? 'none' : 'host');
   // Node 权限模型只能约束 node 本身：npx/docker 是外壳进程，往它们前面塞 --permission
   // 不会约束真正跑起来的 server，必须 fail-closed 而不是假装隔离。
   if (permissionIsolation && !isNodeCommand(cmd, execPath)) {

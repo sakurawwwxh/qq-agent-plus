@@ -582,7 +582,8 @@ async function currentMessageImageUrls(ctx, entry) {
       const data = await ctx.onebot.getMsg(entry.mid);
       const segments = Array.isArray(data?.message) ? data.message : [];
       const fresh = extractMediaFromSegments(segments)
-        .filter((item) => (item.kind === 'image' || item.kind === 'video') && (item.url || item.file));
+        // file-only 会顶掉 stickerId 兜底，validateImageUrl 也不接受裸文件名（Issue #99）。
+        .filter((item) => ['image', 'video'].includes(item.kind) && /^(https?:\/\/|base64:\/\/)/i.test(String(item.url || '')));
       if (fresh.length) {
         media = fresh;
         ctx.store?.updateByMid?.(ctx.chatKey, entry.mid, { appendMedia: fresh });

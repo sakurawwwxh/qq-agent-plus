@@ -42,17 +42,25 @@ test('docker：绝不套 CLI netns，强制 --network none + 只读根 + cap-dro
 });
 
 test('docker：privileged / host 网络 / 挂载 / docker.sock 一律拒绝', () => {
-  const base = { id: 'docker-bad', command: 'docker', probeDocker: OK };
+  const base = {
+    id: 'docker-bad', command: 'docker', probeDocker: OK,
+    sandbox: { mode: 'required', network: 'none' }
+  };
   for (const args of [
     ['run', '--privileged', 'img'],
     ['run', '--network=host', 'img'],
     ['run', '-v', '/:/host', 'img'],
+    ['run', '-v/:/host', 'img'],
+    ['run', '--volume=/etc:/etc', 'img'],
+    ['run', '--volumes-from', 'other', 'img'],
+    ['run', '--security-opt=seccomp=unconfined', 'img'],
+    ['run', '-p', '8080:80', 'img'],
     ['run', '--mount', 'type=bind,src=/etc,dst=/etc', 'img'],
     ['run', '--device', '/dev/sda', 'img'],
     ['run', '--cap-add=SYS_ADMIN', 'img'],
     ['run', '-v', '/var/run/docker.sock:/var/run/docker.sock', 'img']
   ]) {
-    assert.throws(() => buildMcpLaunchSpec({ ...base, args }), /隔离配置不成立/);
+    assert.throws(() => buildMcpLaunchSpec({ ...base, args }), /隔离配置不成立/, args.join(' '));
   }
   assert.throws(
     () => buildMcpLaunchSpec({ ...base, args: ['run', 'img'], sandbox: { mode: 'required', network: 'host' } }),
@@ -61,6 +69,32 @@ test('docker：privileged / host 网络 / 挂载 / docker.sock 一律拒绝', ()
   assert.throws(
     () => buildMcpLaunchSpec({ ...base, args: ['run', 'img'], probeDocker: NO_DOCKER }),
     /Docker 不可用/
+  );
+});
+
+test('docker：没写 sandbox.network 时默认 none，而不是被 host 默认值挡死', () => {
+  const spec = buildMcpLaunchSpec({
+    id: 'docker-default', command: 'docker', args: ['run', 'img'], probeDocker: OK
+  });
+  assert.match(spec.args.join(' '), /--network none/);
+  assert.equal(spec.netIsolated, true);
+});
+
+test('bwrap：cwd/writablePaths 不能与数据目录重叠（含父目录与软链）', () => {
+  const base = {
+    id: 'bwrap-paths', command: 'npx', args: ['-y', 'pkg'],
+    sandbox: { mode: 'required', network: 'none' },
+    platform: 'linux', probeBwrap: OK
+  };
+  assert.throws(
+    () => buildMcpLaunchSpec({ ...base, cwd: root }),
+    /cwd 不能与数据目录重叠/,
+    '数据目录本身不能当 cwd'
+  );
+  assert.throws(
+    () => buildMcpLaunchSpec({ ...base, sandbox: { mode: 'required', network: 'none', writablePaths: [os.tmpdir()] } }),
+    /writablePaths 不能与数据目录重叠/,
+    '数据目录的父目录可写等于数据目录可写'
   );
 });
 

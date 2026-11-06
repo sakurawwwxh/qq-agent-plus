@@ -134,6 +134,9 @@ export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 
   const previous = grants.find((entry) => entry.action === key && String(entry.target || '') === wanted
     && String(entry.previewKey || '') === keyPreview);
   const entry = {
+    // 退款/人工核对按 grantId 精确定位：只按 (动作,目标,预览) 匹配时，旧通行证被清掉后
+    // 管理员新批一张同键通行证，迟到的退款会把额度加到新证上（等于多授权一次）。
+    grantId: String(previous?.grantId || crypto.randomUUID()),
     action: key,
     target: wanted,
     ...(keyPreview ? { previewKey: keyPreview } : {}),
@@ -206,7 +209,7 @@ export function checkApproval(dataDir, pluginId, action, { consume = false, targ
     return {
       approved: true, reason: '', expiresAt: Number(hit.expiresAt),
       usesLeft: Math.max(0, Number(hit.usesLeft)),
-      receipt: { action: key, target: String(hit.target || ''), previewKey: String(hit.previewKey || ''), refunded: false }
+      receipt: { grantId: String(hit.grantId || ''), action: key, target: String(hit.target || ''), previewKey: String(hit.previewKey || ''), refunded: false }
     };
   }
   state.approvals = grants;
@@ -219,9 +222,7 @@ export function refundApproval(dataDir, pluginId, receipt) {
   if (!receipt || receipt.refunded === true || !receipt.action) return false;
   const state = load(dataDir, pluginId);
   const grants = cleanGrants(state, Date.now());
-  const hit = grants.find((entry) => entry.action === receipt.action
-    && String(entry.target || '') === String(receipt.target || '')
-    && String(entry.previewKey || '') === String(receipt.previewKey || ''));
+  const hit = findGrantByReceipt(grants, receipt);
   if (hit) {
     hit.usesLeft = Number(hit.usesLeft) + 1;
     state.approvals = grants;
@@ -515,12 +516,20 @@ function appendWrite(state, entry) {
   state.writes = kept;
 }
 
+/** 按收据找可退的通行证；带 grantId 的收据只认同一张，不降级到同键新证。 */
+function findGrantByReceipt(grants, receipt) {
+  if (receipt?.grantId) {
+    return grants.find((entry) => String(entry.grantId || '') === String(receipt.grantId)) || null;
+  }
+  return grants.find((entry) => entry.action === receipt?.action
+    && String(entry.target || '') === String(receipt?.target || '')
+    && String(entry.previewKey || '') === String(receipt?.previewKey || '')) || null;
+}
+
 function refundApprovalState(state, receipt, now) {
   if (!receipt || receipt.refunded === true || !receipt.action) return false;
   const grants = cleanGrants(state, now);
-  const hit = grants.find((entry) => entry.action === receipt.action
-    && String(entry.target || '') === String(receipt.target || '')
-    && String(entry.previewKey || '') === String(receipt.previewKey || ''));
+  const hit = findGrantByReceipt(grants, receipt);
   if (hit) hit.usesLeft = Number(hit.usesLeft) + 1;
   state.approvals = grants;
   receipt.refunded = true;
@@ -539,7 +548,10 @@ function refundQuotaState(state, receipt) {
 }
 
 function trimWriteOps(state) {
-  const entries = Object.entries(state.writeOps || {});
+  // 只淘汰已结算/已核对的历史条目：admitted 还在途、unknown 等人工核对，
+  // 按时间一刀切会把退款收据删掉（控制台就再也看不到这笔未知写了）。
+  const entries = Object.entries(state.writeOps || {})
+    .filter(([, op]) => !['admitted', 'unknown'].includes(String(op?.state || '')));
   if (entries.length <= MAX_WRITE_OPS_KEPT) return;
   entries.sort((a, b) => (Number(a[1]?.startedAt) || 0) - (Number(b[1]?.startedAt) || 0));
   for (const [id] of entries.slice(0, entries.length - MAX_WRITE_OPS_KEPT)) delete state.writeOps[id];
@@ -627,6 +639,7 @@ export function admitWrite(dataDir, pluginId, action, {
   state.lastWriteAt = now;
   const opId = `wo_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
   const approvalReceipt = {
+    grantId: String(hit.grantId || ''),
     action: key,
     target: String(hit.target || ''),
     previewKey: String(hit.previewKey || ''),

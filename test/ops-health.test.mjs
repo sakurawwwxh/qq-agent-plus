@@ -696,6 +696,12 @@ test('mcp-isolation：要求隔离却没隔离 → 报红；显式信任的未�
   assert.equal(bad.ok, false, '配置要求隔离却没隔离必须报红');
   assert.match(String(bad.detail), /bad/);
 
+  const down = (await run([
+    { id: 'down', enabled: true, ready: false, error: 'spawn ENOENT', unsandboxed: false }
+  ])).checks.find((c) => c.name === 'mcp-isolation');
+  assert.equal(down.ok, false, 'MCP 根本没起来也必须报红，不能只看隔离错误');
+  assert.match(String(down.detail), /down/);
+
   const good = (await run([
     { id: 'ok', enabled: true, sandboxKind: 'bwrap', unsandboxed: false },
     { id: 'trusted', enabled: true, unsandboxed: true, allowUnsandboxed: true }

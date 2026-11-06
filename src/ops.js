@@ -392,8 +392,8 @@ const KNOWN_IGNORE = [
   'isRetryable', 'random', 'resolveAtName', 'resolveReply', 'normalizeBehaviorProfile',
   'getConfigFn', 'allowSource', 'fetchFn',
   // 可注入的实现（测试里传假实现）：WebSocketImpl=WebSocket 构造器；nowFn=时间函数；perChunk=逐片转写回调；
-  // fetchImpl/statfs/notify=health-check 的注入点（测试不打真实网络/磁盘；解构参数默认值超出扫描器识别范围）
-  'WebSocketImpl', 'nowFn', 'perChunk', 'fetchImpl', 'statfs', 'notify'
+  // onProgress=重建索引的进度回调；fetchImpl/statfs/notify=health-check 的注入点（测试不打真实网络/磁盘；解构参数默认值超出扫描器识别范围）
+  'WebSocketImpl', 'nowFn', 'perChunk', 'onProgress', 'fetchImpl', 'statfs', 'notify'
 ];
 
 const REGEX_PRECEDERS = new Set([...'(,=:[!&|?{};+-*%<>~^', '\n', '']);

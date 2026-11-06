@@ -1457,9 +1457,6 @@ function buildApp({
   async function dispatchStoredIncoming(options) {
     const { chatKey, kind, id, stored, isSelf, backlog = false } = options;
     const finalize = options.finalize || null;
-    // backlog＝重连/启动补拉的历史：不参与被动采集，避免重启时把上百条旧聊天灌进记忆。
-    // 静默时段的实时消息照常采集（recordOnly 只表示"不叫醒模型"，不等于"不该记"）。
-    if (!isSelf && !backlog) livingMemory.captureIncoming?.({ chatKey, message: stored });
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
     if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
     // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
@@ -1507,6 +1504,9 @@ function buildApp({
       await ackHandled();
       return;
     }
+    // 被动采集放在命令/游戏私聊消费之后：管理员批准命令、狼人杀夜间行动这类
+    // "就地消费、不叫醒模型"的消息不该进长期记忆（backlog 补课历史同样跳过）。
+    if (!isSelf && !backlog) livingMemory.captureIncoming?.({ chatKey, message: stored });
     if (finalize) {
       const released = await options.finalize('wake');
       if (released !== 'pending') return;   // 'acked' = 只存档，不触发 wake
