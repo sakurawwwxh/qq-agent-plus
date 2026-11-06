@@ -12,13 +12,19 @@ export const LIVING_MEMORY_DEFAULTS = Object.freeze({
   recallTimeoutMs: 1800,
   maxInjectChars: 2400,
   maxRecallItems: 6,
+  rrfK: 60,
+  recentMemoryCount: 2,
   autoCapture: true,
+  // Capture every allowed incoming message, independent of whether the bot replies.
+  captureAllMessages: false,
   captureMinMessages: 6,
   captureIdleMs: 90000,
   // shadow 阶段只审计关键词召回；语义召回要等转正或手动“召回测试”时才付 Embedding 延迟与费用。
   shadowSemantic: false,
   allowPrivate: false,
   allowGlobal: false,
+  // 0 keeps source turns indefinitely. The operator explicitly requested that
+  // mode, so pruning must not silently impose the historical 5000-turn cap.
   turnRetentionDays: 7,
   groups: []
 });
@@ -35,13 +41,16 @@ export function normalizeLivingMemoryConfig(raw = {}) {
     recallTimeoutMs: clampInt(source.recallTimeoutMs, 300, 5000, LIVING_MEMORY_DEFAULTS.recallTimeoutMs),
     maxInjectChars: clampInt(source.maxInjectChars, 300, 8000, LIVING_MEMORY_DEFAULTS.maxInjectChars),
     maxRecallItems: clampInt(source.maxRecallItems, 1, 16, LIVING_MEMORY_DEFAULTS.maxRecallItems),
+    rrfK: clampInt(source.rrfK, 10, 200, LIVING_MEMORY_DEFAULTS.rrfK),
+    recentMemoryCount: clampInt(source.recentMemoryCount, 0, 4, LIVING_MEMORY_DEFAULTS.recentMemoryCount),
     autoCapture: source.autoCapture !== false,
+    captureAllMessages: source.captureAllMessages === true,
     captureMinMessages: clampInt(source.captureMinMessages, 2, 60, LIVING_MEMORY_DEFAULTS.captureMinMessages),
     captureIdleMs: clampInt(source.captureIdleMs, 10_000, 30 * 60_000, LIVING_MEMORY_DEFAULTS.captureIdleMs),
     shadowSemantic: source.shadowSemantic === true,
     allowPrivate: source.allowPrivate === true,
     allowGlobal: source.allowGlobal === true,
-    turnRetentionDays: clampInt(source.turnRetentionDays, 1, 365, LIVING_MEMORY_DEFAULTS.turnRetentionDays),
+    turnRetentionDays: clampInt(source.turnRetentionDays, 0, 3650, LIVING_MEMORY_DEFAULTS.turnRetentionDays),
     groups
   };
 }

@@ -1455,8 +1455,11 @@ function buildApp({
    * finalize 只在延迟路径传入：命令拦截时也放行（保持原有"不叫醒模型"语义）。
    */
   async function dispatchStoredIncoming(options) {
-    const { chatKey, kind, id, stored, isSelf } = options;
+    const { chatKey, kind, id, stored, isSelf, backlog = false } = options;
     const finalize = options.finalize || null;
+    // backlog＝重连/启动补拉的历史：不参与被动采集，避免重启时把上百条旧聊天灌进记忆。
+    // 静默时段的实时消息照常采集（recordOnly 只表示"不叫醒模型"，不等于"不该记"）。
+    if (!isSelf && !backlog) livingMemory.captureIncoming?.({ chatKey, message: stored });
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
     if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
     // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
@@ -1511,7 +1514,7 @@ function buildApp({
     if (!isSelf) orchestrator.onIncoming(chatKey, stored);
   }
 
-  async function ingestMessage(kind, id, event, arrivedInactive = false) {
+  async function ingestMessage(kind, id, event, arrivedInactive = false, backlog = false) {
     const cfgNow = getConfig();
     if (!allowed(kind, id, cfgNow)) return; // 白名单外的聊天完全不记录
     const chatKey = `${kind}:${id}`;
@@ -1609,7 +1612,7 @@ function buildApp({
     emit('chat-update', chatKey);
 
     if (!deferred) {
-      await dispatchStoredIncoming({ chatKey, kind, id, stored, isSelf });
+      await dispatchStoredIncoming({ chatKey, kind, id, stored, isSelf, recordOnly, backlog });
       return;
     }
 
@@ -1639,9 +1642,7 @@ function buildApp({
       }
       const current = store.getMessage(chatKey, stored.id);
       if (!current) return;
-      await dispatchStoredIncoming({
-        chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
-      });
+      await dispatchStoredIncoming({ chatKey, kind, id, stored: current, isSelf: false, backlog, finalize: finalizeDeferred });
     };
     // recordOnly（静默段/重连补课）走单独队列：不能让一大批历史富化把实时消息的
     // 延迟放行链堵在后面（Issue #85 的同类慢队列问题）。
@@ -1682,9 +1683,7 @@ function buildApp({
         if (!changed) return;
         const current = store.getMessage(chatKey, stored.id);
         if (!current) return;
-        await dispatchStoredIncoming({
-          chatKey, kind, id, stored: current, isSelf: false, finalize: finalizeDeferred
-        });
+        await dispatchStoredIncoming({ chatKey, kind, id, stored: current, isSelf: false, backlog, finalize: finalizeDeferred });
       },
       fallback: finishWithFallback
     });
@@ -1745,7 +1744,8 @@ function buildApp({
           const ts = Math.round(Number(item?.time || 0) * 1000) || Date.now();
           const fresh = isFreshForReply(ts, Date.now(), windowMs);  // 窗口内的按新消息处理，更早的只补记录
           if (!fresh) recordedOnly += 1;
-          await ingestMessage(kind, id, item, !fresh);
+          // 第五个参数 backlog：补拉的历史（!fresh）不参与长期记忆的被动采集。
+          await ingestMessage(kind, id, item, !fresh, !fresh);
           added += 1;
         }
         const line = catchupLogLine(chatKey, added, recordedOnly);

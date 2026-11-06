@@ -166,7 +166,7 @@ function overviewHtml() {
         <div><dt>自动记忆</dt><dd>${esc(cfg.enabled === true ? autoScope : '关闭')}</dd></div>
         <div><dt>管理员全局知识</dt><dd>${cfg.allowGlobal === true ? '允许' : '关闭'}</dd></div>
         <div><dt>每轮召回</dt><dd>最多 ${num(cfg.maxRecallItems) || 6} 条<small>注入不超过 ${num(cfg.maxInjectChars) || 2400} 字</small></dd></div>
-        <div><dt>来源回合保留</dt><dd>${num(cfg.turnRetentionDays) || 7} 天</dd></div>
+        <div><dt>来源回合保留</dt><dd>${Number(cfg.turnRetentionDays) === 0 ? '永久保留' : `${num(cfg.turnRetentionDays) || 7} 天`}</dd></div>
         <div><dt>生效群</dt><dd>${groups.length ? `${groups.length} 个指定群` : '所有群'}</dd></div>
       </dl>
       <p class="lm-card-note">影子模式只记录召回结果，不改写回复；确认命中质量后再切换到「注入」。</p>
@@ -381,6 +381,7 @@ function settingsHtml() {
       ${settingCheck('lm-auto-capture', cfg.autoCapture !== false, '自动提炼记忆', '关掉后只保留手动新建与召回；不会因为聊天自动写入新记忆')}
       ${settingCheck('lm-private', cfg.allowPrivate === true, '允许私聊自动记忆', '默认只记群聊，避免把私聊内容带进其他会话')}
       ${settingCheck('lm-global', cfg.allowGlobal === true, '允许管理员全局知识', '新增 owner-global 范围，只给管理员本人使用')}
+      ${settingCheck('lm-capture-all', cfg.captureAllMessages === true, '捕获全部群消息', '不再依赖机器人是否回复；黑名单和敏感内容仍会在入口过滤')}
       ${settingCheck('lm-shadow-semantic', cfg.shadowSemantic === true, '影子模式也跑语义召回', '会调用 Embedding；关掉可省成本')}
     </div>
     <div class="lm-form-grid">
@@ -390,6 +391,8 @@ function settingsHtml() {
       </select></label>
       <label class="lm-field">每轮最多召回<input id="lm-max-items" type="number" min="1" max="16" value="${num(cfg.maxRecallItems) || 6}" /></label>
       <label class="lm-field">注入上限（字符）<input id="lm-max-chars" type="number" min="300" max="8000" value="${num(cfg.maxInjectChars) || 2400}" /></label>
+      <label class="lm-field">检索融合系数（RRF）<input id="lm-rrf-k" type="number" min="10" max="200" value="${num(cfg.rrfK) || 60}" /><small>值越大越平滑地融合关键词与向量排序</small></label>
+      <label class="lm-field">近期记忆保留（条）<input id="lm-recent-memory-count" type="number" min="0" max="4" value="${num(cfg.recentMemoryCount)}" /><small>检索不命中时补入近期活跃记忆；填 0 关闭</small></label>
     </div>
   </section>
   <section class="lm-card">
@@ -398,7 +401,7 @@ function settingsHtml() {
       <label class="lm-field">自动总结阈值（回合）<input id="lm-capture-min" type="number" min="2" max="60" value="${num(cfg.captureMinMessages) || 6}" /></label>
       <label class="lm-field">空闲多久后提炼（秒）<input id="lm-capture-idle" type="number" min="10" max="1800" step="5" value="${Math.round((num(cfg.captureIdleMs) || 90000) / 1000)}" /></label>
       <label class="lm-field">召回等待上限（毫秒）<input id="lm-recall-timeout" type="number" min="300" max="5000" step="100" value="${num(cfg.recallTimeoutMs) || 1800}" /></label>
-      <label class="lm-field">来源回合保留（天）<input id="lm-turn-retention" type="number" min="1" max="365" value="${num(cfg.turnRetentionDays) || 7}" /></label>
+      <label class="lm-field">来源回合保留（天）<input id="lm-turn-retention" type="number" min="0" max="3650" value="${num(cfg.turnRetentionDays)}" /><small>填 0 永久保留</small></label>
       <label class="lm-field lm-field-wide">启用的群号（留空＝所有群）<input id="lm-groups" value="${esc((cfg.groups || []).join(','))}" placeholder="123456, 234567" /></label>
     </div>
     <div class="skills-error" id="lm-save-error" hidden></div>
@@ -543,6 +546,8 @@ async function saveConfig(button) {
       return el ? el.checked : fallback;
     };
     const modeBox = $('#lm-mode');
+    const retentionFallback = Number.isFinite(Number(cfg.turnRetentionDays))
+      ? Number(cfg.turnRetentionDays) : 7;
     const patch = {
       enabled: checkedValue('#lm-enabled', cfg.enabled === true),
       graduated: cfg.graduated === true,
@@ -551,10 +556,13 @@ async function saveConfig(button) {
       captureIdleMs: Math.round(captureIdleSec * 1000),
       allowPrivate: checkedValue('#lm-private', cfg.allowPrivate === true),
       allowGlobal: checkedValue('#lm-global', cfg.allowGlobal === true),
+      captureAllMessages: checkedValue('#lm-capture-all', cfg.captureAllMessages === true),
       shadowSemantic: checkedValue('#lm-shadow-semantic', cfg.shadowSemantic === true),
-      turnRetentionDays: Math.max(1, Math.min(365, intValue('#lm-turn-retention', num(cfg.turnRetentionDays) || 7))),
+      turnRetentionDays: Math.max(0, Math.min(3650, intValue('#lm-turn-retention', retentionFallback))),
       maxInjectChars: Math.max(300, Math.min(8000, intValue('#lm-max-chars', num(cfg.maxInjectChars) || 2400))),
       maxRecallItems: Math.max(1, Math.min(16, intValue('#lm-max-items', num(cfg.maxRecallItems) || 6))),
+      rrfK: Math.max(10, Math.min(200, intValue('#lm-rrf-k', num(cfg.rrfK) || 60))),
+      recentMemoryCount: Math.max(0, Math.min(4, intValue('#lm-recent-memory-count', num(cfg.recentMemoryCount)))),
       recallTimeoutMs: Math.max(300, Math.min(5000, intValue('#lm-recall-timeout', num(cfg.recallTimeoutMs) || 1800))),
       captureMinMessages: Math.max(2, Math.min(60, intValue('#lm-capture-min', num(cfg.captureMinMessages) || 6))),
       groups: parseGroups($('#lm-groups')?.value)

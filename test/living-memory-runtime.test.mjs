@@ -59,6 +59,37 @@ test('active mode injects only current scope memories and keeps private chat opt
   runtime.stop();
 });
 
+test('passive capture queues incoming messages without a bot reply', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, captureAllMessages: true, captureMinMessages: 60, captureIdleMs: 600000 } }), service
+  });
+  runtime.captureIncoming({
+    chatKey: 'group:100',
+    message: { text: '下周讨论向量记忆的迁移方案', senderName: '测试用户', senderId: '10001', ts: Date.now() }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.recorded.scopeKey, 'group:100');
+  assert.match(JSON.stringify(service.recorded.payload), /下周讨论向量记忆/);
+  runtime.stop();
+});
+
+test('关闭自动提炼后，完整消息捕获不再写入来源回合或安排提炼', async () => {
+  const service = serviceFixture();
+  const runtime = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: true, autoCapture: false, captureAllMessages: true } }), service
+  });
+  runtime.captureIncoming({
+    chatKey: 'group:100',
+    message: { text: '这条完整捕获模式下也不应入库', senderName: '测试用户', senderId: '10001', ts: Date.now() }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.recorded, undefined);
+  runtime.stop();
+});
+
 test('turn capture skips sensitive source text and never blocks the caller', async () => {
   const service = serviceFixture();
   const runtime = new LivingMemoryRuntime({
@@ -88,4 +119,11 @@ test('disabled runtime does not create its SQLite database while the page is onl
   assert.deepEqual(runtime.list({ scopeKeys: ['group:100'] }), { total: 0, entries: [] });
   assert.equal(fs.existsSync(path.join(dataDir, 'living-memory', 'living-memory.sqlite')), false);
   runtime.stop();
+});
+
+test('重连补课的历史不进入被动采集（源码锚点）', () => {
+  const source = fs.readFileSync(new URL('../src/console/app.js', import.meta.url), 'utf8');
+  // catchup 用第五个参数把 !fresh 标成 backlog；dispatch 只在非 backlog 时采集。
+  assert.match(source, /ingestMessage\(kind, id, item, !fresh, !fresh\)/);
+  assert.match(source, /if \(!isSelf && !backlog\) livingMemory\.captureIncoming/);
 });

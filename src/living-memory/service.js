@@ -100,11 +100,14 @@ export class LivingMemoryService {
     }
   }
 
-  async recall({ scopeKeys, query, limit = 6, deadlineMs = 0, semantic = true } = {}) {
+  async recall({ scopeKeys, query, limit = 6, deadlineMs = 0, semantic = true, rrfK = 60, recentMemoryCount = 0 } = {}) {
     const maxItems = clampInt(limit, 1, 20, 6);
     const lexical = this.store.lexicalCandidates({ scopeKeys, query, limit: 800 });
     const ranked = new Map();
-    for (const item of lexical) ranked.set(item.memory.id, { memory: item.memory, lexical: item.score, semantic: 0 });
+    const fusionK = clampInt(rrfK, 10, 200, 60);
+    for (const [index, item] of lexical.entries()) ranked.set(item.memory.id, {
+      memory: item.memory, lexical: item.score, lexicalRank: index + 1, semantic: 0, semanticRank: 0
+    });
 
     let vectorError = '';
     let semanticAvailable = semantic && this.embedder.ready() && this.store.hasReadyVectors({
@@ -138,11 +141,12 @@ export class LivingMemoryService {
             .slice(0, 32);
           const memories = this.store.getMemories(best.map((item) => item.id));
           const byId = new Map(memories.map((memory) => [memory.id, memory]));
-          for (const match of best) {
+          for (const [index, match] of best.entries()) {
             const memory = byId.get(match.id);
             if (!memory) continue;
-            const prior = ranked.get(memory.id) || { memory, lexical: 0, semantic: 0 };
+            const prior = ranked.get(memory.id) || { memory, lexical: 0, lexicalRank: 0, semantic: 0, semanticRank: 0 };
             prior.semantic = Math.max(prior.semantic, match.score);
+            prior.semanticRank = index + 1;
             ranked.set(memory.id, prior);
           }
         }
@@ -152,15 +156,17 @@ export class LivingMemoryService {
     }
 
     const entries = [...ranked.values()].map((item) => {
-      const lexicalNormal = Math.min(1, item.lexical / 18);
-      const score = item.semantic * 0.62 + lexicalNormal * 0.25
+      const rrf = (item.lexicalRank ? 1 / (fusionK + item.lexicalRank) : 0)
+        + (item.semanticRank ? 1 / (fusionK + item.semanticRank) : 0);
+      const dualRouteBonus = item.lexicalRank && item.semanticRank ? 0.002 : 0;
+      const score = rrf + dualRouteBonus
         + (Number(item.memory.importance) || 0) / 10 * 0.09 + recencyScore(item.memory) * 0.04;
       return {
         ...item.memory,
         retrieval: {
           score: Math.round(score * 1000) / 1000,
           semantic: Math.round(item.semantic * 1000) / 1000,
-          lexical: item.lexical,
+          lexical: item.lexical, rrf: Math.round(rrf * 100000) / 100000,
           recency: Math.round(recencyScore(item.memory) * 1000) / 1000
         }
       };
@@ -171,7 +177,14 @@ export class LivingMemoryService {
       : !semanticAvailable
         ? 'lexical-pending-vectors'
         : vectorError ? 'hybrid-degraded' : 'hybrid';
-    return { entries, vectorError, mode };
+    const recentCount = clampInt(recentMemoryCount, 0, 4, 0);
+    if (recentCount) {
+      const existing = new Set(entries.map((item) => item.id));
+      const recent = this.store.listMemories({ scopeKeys, status: 'active', limit: recentCount * 4 }).entries
+        .filter((item) => now() - item.updatedAt <= 72 * 3600000 && !existing.has(item.id)).slice(0, recentCount);
+      entries.push(...recent.map((item) => ({ ...item, retrieval: { score: 0, semantic: 0, lexical: 0, rrf: 0, recency: 1, recentFallback: true } })));
+    }
+    return { entries: entries.slice(0, maxItems + recentCount), vectorError, mode };
   }
 
   /**
