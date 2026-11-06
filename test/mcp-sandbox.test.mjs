@@ -58,6 +58,12 @@ test('docker：privileged / host 网络 / 挂载 / docker.sock 一律拒绝', ()
     ['run', '--mount', 'type=bind,src=/etc,dst=/etc', 'img'],
     ['run', '--device', '/dev/sda', 'img'],
     ['run', '--cap-add=SYS_ADMIN', 'img'],
+    ['run', '-itv', '/:/host', 'img'],
+    ['run', '-itv/:/host', 'img'],
+    ['run', '--read-only=false', 'img'],
+    ['run', '--pids-limit=-1', 'img'],
+    ['run', '--memory=8g', 'img'],
+    ['run', '--tmpfs', '/data:rw', 'img'],
     ['run', '-v', '/var/run/docker.sock:/var/run/docker.sock', 'img']
   ]) {
     assert.throws(() => buildMcpLaunchSpec({ ...base, args }), /隔离配置不成立/, args.join(' '));
@@ -90,6 +96,11 @@ test('bwrap：cwd/writablePaths 不能与数据目录重叠（含父目录与软
     () => buildMcpLaunchSpec({ ...base, cwd: root }),
     /cwd 不能与数据目录重叠/,
     '数据目录本身不能当 cwd'
+  );
+  assert.throws(
+    () => buildMcpLaunchSpec({ ...base, cwd: path.parse(root).root }),
+    /cwd 不能与数据目录重叠/,
+    '文件系统根目录会把整个宿主只读挂进沙箱'
   );
   assert.throws(
     () => buildMcpLaunchSpec({ ...base, sandbox: { mode: 'required', network: 'none', writablePaths: [os.tmpdir()] } }),

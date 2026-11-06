@@ -55,8 +55,8 @@ test('app.stop 顺序：producer drain → 子进程/run → living memory → s
   };
   const producerDrain = at('await settleWithDeadline([\n      dailyMoments.abort()');
   const pluginStop = at('await pluginRegistry.stop();');
-  const orchestratorAbort = at('await orchestrator.abortAll();');
-  const livingDrain = at('await livingMemory.drain();');
+  const orchestratorAbort = at('await settleWithDeadline([orchestrator.abortAll()], 5000);');
+  const livingDrain = at('await settleWithDeadline([livingMemory.drain()], 5000);');
   const senderDrain = at('await sender.drain({ timeoutMs: 3000 });');
   const onebotClose = at('onebot.close();');
   const storeClose = at('store.close();');

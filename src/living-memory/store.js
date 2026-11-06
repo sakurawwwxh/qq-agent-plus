@@ -22,7 +22,18 @@ function jsonObject(value) {
 }
 
 function normalizeDuplicateText(value) {
-  return String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').slice(0, 400);
+  // 不能只比前 400 字：长项目状态前 400 字相同、后面不同，会被误判为同一张卡并覆盖。
+  return String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').slice(0, 6000);
+}
+
+function sameSubject(left, right) {
+  const collect = (value) => new Set((Array.isArray(value) ? value : [])
+    .map((item) => asText(item, 120).toLowerCase().trim()).filter(Boolean));
+  const a = collect(left);
+  const b = collect(right);
+  if (!a.size || !b.size) return true;
+  for (const item of a) if (b.has(item)) return true;
+  return false;
 }
 
 function cappedJson(value, max = MAX_TURN_PAYLOAD_CHARS) {
@@ -267,11 +278,14 @@ export class LivingMemoryStore {
     return row ? { blob: row.blob ?? null, dimensions: Number(row.dimensions) || 0 } : null;
   }
 
-  /** 同一 scope + 类型下，摘要或正文归一化后完全相同的卡片视为重复。 */
-  findDuplicate({ scopeKey, type = '', summary = '', content = '' } = {}) {
+  /**
+   * 同一 scope + 类型下，摘要归一化后完全相同、且主体不冲突的卡片视为重复。
+   * 不再只凭正文相同合并：不同人/不同对象的短事实可能共用同一句正文，
+   * 合并会把其中一张的摘要、来源和实体整体覆盖掉。
+   */
+  findDuplicate({ scopeKey, type = '', summary = '', participants = [], entities = [] } = {}) {
     const targetSummary = normalizeDuplicateText(summary);
-    const targetContent = normalizeDuplicateText(content);
-    if (!targetSummary && !targetContent) return null;
+    if (!targetSummary) return null;
     const rows = this.db.prepare(`
       SELECT * FROM memories
       WHERE scope_key = ? AND status = 'active' AND type = ?
@@ -279,8 +293,10 @@ export class LivingMemoryStore {
     `).all(asText(scopeKey, 80), MEMORY_TYPES.has(type) ? type : 'episode');
     for (const row of rows) {
       const memory = rowToMemory(row);
-      if (targetSummary && normalizeDuplicateText(memory.summary) === targetSummary) return memory;
-      if (targetContent && normalizeDuplicateText(memory.content) === targetContent) return memory;
+      if (normalizeDuplicateText(memory.summary) !== targetSummary) continue;
+      const subjects = [...(Array.isArray(participants) ? participants : []), ...(Array.isArray(entities) ? entities : [])];
+      if (!sameSubject(subjects, [...(memory.participants || []), ...(memory.entities || [])])) continue;
+      return memory;
     }
     return null;
   }

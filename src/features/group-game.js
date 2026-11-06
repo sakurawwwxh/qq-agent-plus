@@ -737,6 +737,7 @@ export class GroupGameManager {
     // 先补发上一轮失败的阶段播报，再推进状态机；同群保持入队顺序。
     await this.#flushDeliveries();
     for (const [chatKey, g] of [...this.games.entries()]) {
+      if (this.stopped) break;
       try {
         if (g.recruiting) { await this.#collectRecruiting(chatKey); continue; }
         if (!cfg.chats.includes(chatKey)) {
@@ -859,6 +860,7 @@ export class GroupGameManager {
   }
 
   async #applyEffects(chatKey, effects) {
+    if (this.stopped) return;
     const cfg = this.#cfg();
     let privateFailed = 0;
     let privateOk = 0;
@@ -1095,10 +1097,11 @@ export class GroupGameManager {
 
   /** 刷新所有到期队列项；同群遇到失败/在途就停止该群后续项，保证顺序。 */
   async #flushDeliveries({ chatKey = '', force = false } = {}) {
-    if (!this.pendingBroadcasts.length) return;
+    if (this.stopped || !this.pendingBroadcasts.length) return;
     this.#pruneBroadcasts(this.now());
     const blocked = new Set();
     for (const item of [...this.pendingBroadcasts]) {
+      if (this.stopped) break;
       if (chatKey && item.chatKey !== chatKey) continue;
       if (!this.pendingBroadcasts.some((x) => x.deliveryId === item.deliveryId)) continue;
       if (blocked.has(item.chatKey)) continue;
@@ -1112,6 +1115,7 @@ export class GroupGameManager {
   /** private 阶段播报：只记账本，不进入重试队列（避免重复发身份/词语/行动提示）。 */
   async #deliverPrivateEffect(chatKey, effect, cfg) {
     const uid = String(effect.userId || '');
+    if (this.stopped) return { ok: false, userId: uid };
     if (!cfg.allowPrivateInvite) {
       this.log('[group-game] 跳过私聊消息（未开启「允许私聊发身份」）');
       return { ok: false, userId: uid };

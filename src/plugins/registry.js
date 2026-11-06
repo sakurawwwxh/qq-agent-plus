@@ -1042,7 +1042,13 @@ export class PluginRegistry {
     if (!tool || tool.action !== pending.action) return { ok: false, message: '插件工具或动作已变化，未重试' };
     const targetKeys = Array.isArray(tool.actionTarget) ? tool.actionTarget : (tool.actionTarget ? [tool.actionTarget] : []);
     const values = [...new Set(targetKeys.map((key) => normalizeTarget(retry.args?.[key])).filter(Boolean))];
-    if (values.length !== 1 || values[0] !== pending.target) {
+    // 没有声明 actionTarget 的动作级写：pending.target 本来就是空，允许按原请求重放。
+    // 旧逻辑要求 values.length === 1，会把这类写永远判成“目标不一致”，
+    // 但批准文案已经告诉管理员“正在自动执行一次”。
+    const targetMatches = targetKeys.length === 0
+      ? !String(pending.target || '')
+      : (values.length === 1 && values[0] === pending.target);
+    if (!targetMatches) {
       return { ok: false, message: '原始请求的目标与待批不一致，未重试' };
     }
     try {

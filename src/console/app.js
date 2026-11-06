@@ -3681,12 +3681,12 @@ function buildApp({
     // 插件子进程要在 onebot 关闭之前停掉：停机后不该再有插件在读消息。
     await pluginRegistry.stop();
     await settleWithDeadline([mcpManager.close()], 5000);
-    await orchestrator.abortAll();
+    await settleWithDeadline([orchestrator.abortAll()], 5000);   // 等 runTasks 收官，但别让 25s 强杀跳过 Phase 4
     // 对话 run 可能还在用 living-memory；等它们结束后再关库。
-    await livingMemory.drain();
-    await slangPilot?.stop();
+    await settleWithDeadline([livingMemory.drain()], 5000);
+    await settleWithDeadline([slangPilot?.stop()], 3000);
     slangPilot = null;
-    await incidentPilot?.stop();
+    await settleWithDeadline([incidentPilot?.stop()], 5000);
     incidentPilot = null;
 
     // Phase 4：发送队列是 appendSelf/onSent 的最后一道屏障，必须在 store.close() 前 drain。

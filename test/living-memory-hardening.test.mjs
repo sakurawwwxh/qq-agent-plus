@@ -59,6 +59,74 @@ test('capture dedupes identical cards and preserves a ready vector when re-embed
   store.close();
 });
 
+test('same summary with different people must not overwrite each other', async () => {
+  const store = new LivingMemoryStore({ file: tempFile() });
+  const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });
+  const zhang = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '喜欢猫', content: '张三说自己喜欢猫。',
+    participants: ['张三']
+  });
+  const li = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '喜欢猫', content: '李四说自己喜欢猫。',
+    participants: ['李四']
+  });
+  assert.notEqual(li.id, zhang.id, '相同摘要但主体不同必须新建卡片');
+  assert.equal(store.stats().total, 2);
+  assert.equal(store.getMemory(zhang.id).content, '张三说自己喜欢猫。');
+  service.close();
+});
+
+test('merging an updated card keeps all source turns, and delete clears them', async () => {
+  const store = new LivingMemoryStore({ file: tempFile(), turnRetentionDays: 0 });
+  const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });
+  const firstTurn = store.recordTurn({ scopeKey: 'group:1', payload: { lines: [{ text: '第一段原文' }] } });
+  const secondTurn = store.recordTurn({ scopeKey: 'group:1', payload: { lines: [{ text: '第二段原文' }] } });
+  const card = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '项目进度', content: '第一版',
+    source: { turnIds: [firstTurn.id], turnCount: 1 }
+  });
+  await service.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '项目进度', content: '第二版',
+    source: { turnIds: [secondTurn.id], turnCount: 1 }
+  });
+  const merged = store.getMemory(card.id);
+  assert.deepEqual(new Set(merged.source.turnIds), new Set([firstTurn.id, secondTurn.id]), '来源回合要取并集');
+  service.removeMemory(card.id);
+  assert.equal(store.stats().turns, 0, '删卡要把合并前后的来源回合都清掉');
+  service.close();
+});
+
+test('invalid card type is normalized before duplicate lookup', async () => {
+  const store = new LivingMemoryStore({ file: tempFile() });
+  const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });
+  const profile = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'profile', summary: '常驻城市', content: '上海'
+  });
+  const invalid = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'Profile', summary: '常驻城市', content: '杭州'
+  });
+  assert.notEqual(invalid.id, profile.id, '大小写错误不能被当成同类型覆盖');
+  assert.equal(invalid.type, 'episode');
+  assert.equal(store.getMemory(profile.id).content, '上海');
+  service.close();
+});
+
+test('CJK near-duplicate cards merge even when a few words change', async () => {
+  const store = new LivingMemoryStore({ file: tempFile() });
+  const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });
+  const first = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '项目复盘安排',
+    content: '周五下午三点在会议室A开项目复盘会。'
+  });
+  const second = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'project', summary: '复盘地点变更',
+    content: '周五下午三点在会议室B开项目复盘会。'
+  });
+  assert.equal(second.id, first.id, '中文只改一两个词也要能识别为近重复');
+  assert.equal(store.stats().total, 1);
+  service.close();
+});
+
 test('sensitive tags are rejected and delete removes the source turns', () => {
   const store = new LivingMemoryStore({ file: tempFile(), turnRetentionDays: 7 });
   const turn = store.recordTurn({ scopeKey: 'group:1', sessionId: 's1', payload: { lines: [{ role: 'user', text: '原始聊天' }] } });
@@ -167,6 +235,14 @@ test('owner-global recall test works only when global knowledge is enabled', asy
   });
   await assert.rejects(() => disabled.recallTest({ chatKey: 'owner-global', query: 'x' }), /未启用/);
   disabled.stop();
+
+  const off = new LivingMemoryRuntime({
+    dataDir: root,
+    getConfig: () => ({ livingMemory: { enabled: false, allowGlobal: true } }),
+    service
+  });
+  await assert.rejects(() => off.recallTest({ chatKey: 'owner-global', query: 'x' }), /未启用/);
+  off.stop();
 
   const enabled = new LivingMemoryRuntime({
     dataDir: root,

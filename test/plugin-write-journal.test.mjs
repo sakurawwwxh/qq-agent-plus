@@ -10,7 +10,7 @@ import { rmDirBestEffort } from './helpers/cleanup.mjs';
 const {
   admitWrite, settleWriteOp, recoverWriteOps, resolveWriteOp, listWriteOps,
   grantApproval, checkApproval, refundApproval, revokeApproval, requestPendingApproval, approvePendingApproval,
-  clearPluginGrants, resetPluginGrants, listPendingApprovals
+  rejectPendingApproval, clearPluginGrants, resetPluginGrants, listPendingApprovals
 } = await import('../src/plugins/grants.js');
 
 function makeDir(t, label = 'journal-') {
@@ -147,6 +147,21 @@ test('待批批准幂等：grant 已写但待批未删，重试不重复发通�
   const again = approvePendingApproval(dir, pending.id, { uses: 2, ttlMs: 60_000 });
   assert.equal(again.duplicate, true);
   assert.equal(again.grant.usesLeft, 2, '重试不能把 2 次额度变成 4 次');
+  assert.equal(listPendingApprovals(dir).length, 0);
+});
+
+test('拒绝待批要撤销已落盘的同源通行证', (t) => {
+  const dir = makeDir(t);
+  const pending = requestPendingApproval(dir, {
+    pluginId: 'p', action: 'write', label: '写', target: 'A', preview: 'hello'
+  });
+  approvePendingApproval(dir, pending.id, { uses: 2, ttlMs: 60_000 });
+  // 模拟"grant 已写、pending 未删"的崩溃现场
+  fs.writeFileSync(path.join(dir, 'plugin-grants', 'pending.json'), JSON.stringify([pending]));
+  const rejected = rejectPendingApproval(dir, pending.id);
+  assert.equal(rejected.revokedGrants, 1);
+  assert.equal(checkApproval(dir, 'p', 'write', { target: 'A', preview: 'hello' }).approved, false,
+    '拒绝后不能还留着可用通行证');
   assert.equal(listPendingApprovals(dir).length, 0);
 });
 

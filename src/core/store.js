@@ -606,8 +606,16 @@ export class ChatStore {
     });
   }
 
-  markAllRead(chatKey) {
-    return this.db.prepare(`UPDATE messages SET state='acked' WHERE chat_key=? AND state='pending'`).run(chatKey).changes;
+  /** 把未读全部标记已读；includeDeferred 用于“丢弃积压”，在途 deferred 也要一并收口。 */
+  markAllRead(chatKey, { includeDeferred = false } = {}) {
+    return this.#transaction(() => {
+      let changes = this.db.prepare(`UPDATE messages SET state='acked' WHERE chat_key=? AND state='pending'`).run(chatKey).changes;
+      if (includeDeferred) {
+        changes += this.db.prepare(`UPDATE messages SET state='acked', release_state='', deferred_at=0
+          WHERE chat_key=? AND state='deferred'`).run(chatKey).changes;
+      }
+      return changes;
+    });
   }
 
   keepLatestPending(chatKey, { limit = 100, maxChars = 32000 } = {}) {

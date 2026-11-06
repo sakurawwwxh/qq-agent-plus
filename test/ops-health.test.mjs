@@ -688,23 +688,26 @@ test('mcp-isolation：要求隔离却没隔离 → 报红；显式信任的未�
   });
 
   const bad = (await run([
-    { id: 'ok', enabled: true, sandboxKind: 'bwrap', unsandboxed: false },
-    { id: 'bad', enabled: true, sandboxError: 'E_MCP_ISOLATION：没有 bwrap', unsandboxed: false },
-    { id: 'trusted', enabled: true, unsandboxed: true, allowUnsandboxed: true }
+    { id: 'ok', enabled: true, ready: true, sandboxKind: 'bwrap', unsandboxed: false },
+    { id: 'bad', enabled: true, ready: true, sandboxError: 'E_MCP_ISOLATION：没有 bwrap', unsandboxed: false },
+    { id: 'trusted', enabled: true, ready: true, unsandboxed: true, allowUnsandboxed: true }
   ])).checks.find((c) => c.name === 'mcp-isolation');
   assert.ok(bad, '巡检必须包含 mcp-isolation 一项');
   assert.equal(bad.ok, false, '配置要求隔离却没隔离必须报红');
   assert.match(String(bad.detail), /bad/);
 
   const down = (await run([
-    { id: 'down', enabled: true, ready: false, error: 'spawn ENOENT', unsandboxed: false }
+    { id: 'down', enabled: true, ready: false, error: 'spawn ENOENT', unsandboxed: false },
+    { id: 'silent-down', enabled: true, ready: false, error: '', stderr: '', unsandboxed: false }
   ])).checks.find((c) => c.name === 'mcp-isolation');
   assert.equal(down.ok, false, 'MCP 根本没起来也必须报红，不能只看隔离错误');
   assert.match(String(down.detail), /down/);
+  assert.match(String(down.detail), /silent-down/, '没有 error 的未启动行也要报出来');
 
   const good = (await run([
-    { id: 'ok', enabled: true, sandboxKind: 'bwrap', unsandboxed: false },
-    { id: 'trusted', enabled: true, unsandboxed: true, allowUnsandboxed: true }
+    { id: 'ok', enabled: true, ready: true, sandboxKind: 'bwrap', unsandboxed: false },
+    { id: 'trusted', enabled: true, ready: true, unsandboxed: true, allowUnsandboxed: true },
+    { id: 'off', enabled: true, ready: true, sandboxMode: 'off', unsandboxed: true }
   ])).checks.find((c) => c.name === 'mcp-isolation');
   assert.equal(good.ok, true, good.detail);
   assert.match(String(good.detail), /显式未沙箱/);

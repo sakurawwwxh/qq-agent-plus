@@ -35,7 +35,7 @@ export function registerChatRoutes(router, deps = {}) {
       for (const controller of orchestrator.controllers.values()) controller.abort(new Error('Run cancelled'));
       getSlangPilot()?.abortResearch('机器人已切换到观察模式');
     }
-    if (body.skipBacklog === true) for (const key of store.listChats()) store.markAllRead(key);
+    if (body.skipBacklog === true) for (const key of store.listChats()) store.markAllRead(key, { includeDeferred: true });
     updateConfig({ runtime: { mode: body.mode } });
     // 观察/暂停会挡住日报/早报；切回 active 时立刻重排并补跑当天错过的（否则要等重启）。
     groupDigest.reconfigure();

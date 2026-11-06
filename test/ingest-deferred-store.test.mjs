@@ -94,6 +94,32 @@ test('长跑进程的兜底只放行超过年龄阈值的 deferred', (t) => {
   assert.equal(store.getMessage('group:7', stale.id).state, 'pending');
 });
 
+test('markAllRead 默认不动 deferred，includeDeferred 时一并收口', (t) => {
+  const store = new ChatStore(0, { dataDir: root, filename: 'messages.sqlite' });
+  t.after(() => store.close());
+  store.appendIncoming('group:10', {
+    mid: 10, ts: Date.now(), senderId: '1', senderName: 'A', text: '未读', media: []
+  });
+  const deferred = store.appendIncoming('group:10', {
+    mid: 11, ts: Date.now(), senderId: '1', senderName: 'A', text: '[引用消息]', media: []
+  }, { deferred: true });
+
+  assert.equal(store.markAllRead('group:10'), 1);
+  assert.equal(store.getMessage('group:10', deferred.id).state, 'deferred');
+  // 普通 markAllRead 不改变在途富化的放行结果
+  assert.equal(store.finalizeDeferred('group:10', deferred.id), 'pending');
+
+  const pending = store.appendIncoming('group:10', {
+    mid: 12, ts: Date.now(), senderId: '1', senderName: 'A', text: '又一条', media: []
+  }, { deferred: true });
+  assert.equal(store.markAllRead('group:10', { includeDeferred: true }), 2);
+  assert.equal(store.getMessage('group:10', pending.id).state, 'acked');
+  // 富化任务随后 update/finalize 都是空操作，不会把已丢弃的积压放回 pending
+  assert.equal(store.updateDeferredMessage('group:10', pending.id, { text: '迟到的富化正文' }), 0);
+  assert.equal(store.finalizeDeferred('group:10', pending.id), '');
+  assert.equal(store.unreadCount('group:10'), 0);
+});
+
 test('queueStats 覆盖 deferred，并有独立队列索引', (t) => {
   const store = new ChatStore(0, { dataDir: root, filename: 'messages.sqlite' });
   t.after(() => store.close());

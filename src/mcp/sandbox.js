@@ -19,8 +19,9 @@ import { isNodeCommand, mcpPermissionSpec, stripIsolationEnv } from './isolation
 const NETWORKS = new Set(['none', 'loopback', 'host']);
 const MODES = new Set(['off', 'auto', 'required']);
 // 只做黑名单也要把短参数和容易漏的口子全列上：`-v/:/host`（无空格挂载）、
-// `--volumes-from`、`--security-opt`（可关 seccomp/apparmor）、`-p` 发布端口。
-const DOCKER_UNSAFE_RE = /^(?:--privileged|--volume(?:=|$)|--mount(?:=|$)|--device(?:=|$)|--cap-add(?:=|$)|--pid(?:=|$)|--ipc(?:=|$)|--userns(?:=|$)|--uts(?:=|$)|--cgroupns(?:=|$)|--security-opt(?:=|$)|--volumes-from(?:=|$)|--entrypoint(?:=|$)|--runtime(?:=|$)|--network(?:=|$)|--net(?:=|$)|--publish(?:=|$)|--expose(?:=|$)|-v.*|-p.*)/i;
+// 组合短参数 `-itv`（pflag 会拆成 -i -t -v）、`--volumes-from`、
+// `--security-opt`（可关 seccomp/apparmor）、`-p` 发布端口，以及会覆盖宿主硬化参数的 flag。
+const DOCKER_UNSAFE_RE = /^(?:--privileged|--volume(?:=|$)|--mount(?:=|$)|--device(?:=|$)|--cap-add(?:=|$)|--cap-drop(?:=|$)|--pid(?:=|$)|--ipc(?:=|$)|--userns(?:=|$)|--uts(?:=|$)|--cgroupns(?:=|$)|--security-opt(?:=|$)|--volumes-from(?:=|$)|--entrypoint(?:=|$)|--runtime(?:=|$)|--network(?:=|$)|--net(?:=|$)|--publish(?:=|$)|--expose(?:=|$)|--read-only(?:=|$)|--pids-limit(?:=|$)|--memory(?:=|$)|--memory-swap(?:=|$)|--tmpfs(?:=|$)|--cidfile(?:=|$)|-[^-]*[vp].*)/i;
 const DOCKER_IMAGE_RE = /^[a-zA-Z0-9][\w./:@-]*$/;
 
 function baseName(command) {
@@ -55,9 +56,12 @@ function isolationError(id, message) {
 
 /** 两个路径是否互为祖先/相等（用于挡住“传数据目录的父目录”这种绕过）。 */
 function overlaps(left, right) {
-  return left === right
-    || left.startsWith(`${right}${path.sep}`)
-    || right.startsWith(`${left}${path.sep}`);
+  const l = path.resolve(String(left || ''));
+  const r = path.resolve(String(right || ''));
+  if (l === r) return true;
+  // 根目录与任何路径都重叠：用 startsWith('//') 判断会漏掉 `/`，之前 cwd='/' 能把整个宿主挂进沙箱。
+  if (l === path.parse(l).root || r === path.parse(r).root) return true;
+  return l.startsWith(`${r}${path.sep}`) || r.startsWith(`${l}${path.sep}`);
 }
 
 function realOrResolved(target) {

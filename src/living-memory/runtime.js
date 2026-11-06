@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chatCompletion } from '../llm/llm.js';
 import { safeSlice, settleWithDeadline } from '../core/util.js';
-import { redactionReason } from './util.js';
+import { redactionReason, similarityTokens } from './util.js';
 import { readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from './config.js';
 import { LivingMemoryService } from './service.js';
@@ -117,21 +117,14 @@ function renderContext(entries, maxChars) {
     + lines.join('\n');
 }
 
-function memoryTokens(entry) {
-  const text = cleanText(`${entry?.summary || ''} ${entry?.content || ''}`, 1600).toLowerCase();
-  const words = text.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 1);
-  if (words.length >= 3) return new Set(words);
-  const compact = text.replace(/\s+/g, '');
-  return new Set(Array.from({ length: Math.max(0, compact.length - 1) }, (_, index) => compact.slice(index, index + 2)));
-}
-
 function overlapRatio(left, right) {
-  const a = memoryTokens(left);
-  const b = memoryTokens(right);
+  const a = similarityTokens(`${left?.summary || ''}\n${left?.content || ''}`, 1600);
+  const b = similarityTokens(`${right?.summary || ''}\n${right?.content || ''}`, 1600);
   if (!a.size || !b.size) return 0;
   let shared = 0;
   for (const token of a) if (b.has(token)) shared += 1;
-  return shared / Math.max(a.size + b.size - shared, 1);
+  // 与 service 的近重复判据同一口径（Dice），否则中英文改写会在两处得到不同结论。
+  return (2 * shared) / (a.size + b.size);
 }
 
 function selectDiverseMemories(entries, { maxItems, minScore, diversity }) {
@@ -468,8 +461,12 @@ export class LivingMemoryRuntime {
   async recallTest({ chatKey, query, limit } = {}) {
     const cfg = this.config();
     const key = String(chatKey || '');
-    if (key !== 'owner-global' && !this.applies(key)) throw new Error('长期记忆未启用或当前会话不在范围内');
-    if (key === 'owner-global' && cfg.allowGlobal !== true) throw new Error('管理员全局知识未启用');
+    // 与自动召回/采集同一套门禁：总开关关闭时，手动召回测试也不该例外。
+    if (!this.applies(key)) {
+      throw new Error(key === 'owner-global'
+        ? '长期记忆未启用或管理员全局知识未开启'
+        : '长期记忆未启用或当前会话不在范围内');
+    }
     const service = this.#service();
     if (!service) throw new Error('长期记忆已停止');
     const result = await service.recall({

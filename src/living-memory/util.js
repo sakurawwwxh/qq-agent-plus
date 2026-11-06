@@ -63,6 +63,38 @@ export function lexicalScore(query, candidate) {
   return score;
 }
 
+/**
+ * 文本相似度用的 token 集：中文按字符 bigram，西文按词。
+ * 不能只按标点切段：一整句中文会被当成一个 token，改一两个词的近重复卡
+ * 相似度仍然很低，去重阈值形同虚设。
+ */
+export function similarityTokens(value, maxChars = 3000) {
+  const text = asText(value, maxChars).toLowerCase();
+  const tokens = new Set();
+  for (const word of text.split(/[^\p{L}\p{N}]+/u)) {
+    if (!word) continue;
+    const latin = word.replace(/[\u3400-\u9fff]+/g, '');
+    if (latin.length > 1) tokens.add(latin);
+    for (const run of word.match(/[\u3400-\u9fff]+/g) || []) {
+      for (let index = 0; index < run.length - 1; index += 1) tokens.add(run.slice(index, index + 2));
+    }
+  }
+  return tokens;
+}
+
+/**
+ * 取当前批次之外的最近几句，供“那个/上次”这类指代扩展检索。
+ * store.recent() 由调用方注入，避免 living-memory 反向依赖消息库。
+ */
+export function recentContextFor(store, chatKey, triggerEntries = [], { limit = 6, keep = 3 } = {}) {
+  if (typeof store?.recent !== 'function') return [];
+  const currentIds = new Set((triggerEntries || []).map((entry) => String(entry?.id ?? '')));
+  return (store.recent(chatKey, { limit }) || [])
+    .filter((entry) => !currentIds.has(String(entry?.id ?? '')) && String(entry?.text || '').trim())
+    .slice(-keep)
+    .map((entry) => ({ text: String(entry.text).slice(0, 360) }));
+}
+
 export function redactionReason(value) {
   const text = String(value || '');
   if (/(?:密码|口令|验证码|密钥|token|api[ _-]?key|access[ _-]?key|secret|pass(?:word)?|cvv|银行卡|卡号|身份证|护照|家庭住址|详细地址|病历|诊断|病情|政治立场|投票意向)/i.test(text)) {

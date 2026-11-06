@@ -26,15 +26,13 @@ import {
 import { cappedByTokenSaver, effectiveRunLimits, tokenSaverCapsOf } from './token-saver.js';
 import { filterBlockedHistory } from './blocklist.js';
 import { redactText } from './redact.js';
+import { recentContextFor } from '../living-memory/util.js';
 // ── 主动开话题的时间段：窗口外不主动开口（聊天回复不受影响）──
 
-// 主动开话题的"上次判定时间"要落盘：否则服务一重启，15 秒后的第一个 tick 就又能开一次话题，
-// 表现就是"重启一下群里就多一次开话题"，跟"约 5 小时概率一次"的设定不符。
+// 主动开话题的"上次判定时间"要落盘，否则重启后 15 秒就能再开一次，与“约 5 小时一次”不符。
 const PROACTIVE_STATE_FILE = path.join(DATA_DIR, 'proactive-state.json');
-// 一次 tick 里合并多条到点提醒时，note 正文的总长度上限。note 进提示词时会被
-// safeSlice(…, 600) 截一次，超过它的条目内容会被整段切掉、却已经在下面标记 fired。
-// 400 给"【定时提醒】"前缀、迟到提示与尾句留足余量；放不下的条目继续留在 pending，
-// 下一个 30 秒 tick 再派发（2026-09-29 审查 P1）。
+// 一次 tick 合并多条提醒时的 note 总长上限；放不下的条目留在 pending 等下一个 tick，
+// 避免已标记 fired 的内容被后续 safeSlice(…, 600) 整段切掉。
 const REMINDER_NOTE_BODY_MAX = 400;
 // 主动唤醒被"接不了"（会话在跑 / 并发满 / 没配模型）时的重试间隔：
 // 不设这个的话模型自安排的唤醒会在那些时刻被静默丢掉（2026-09-29 审查 P2）。
@@ -546,6 +544,7 @@ export class Orchestrator {
     this.firstPendingAt = new Map();
     this.controllers = new Map();
     this.runTasks = new Set();
+    this.memoryAbort = new AbortController();   // 记忆整理的后台模型调用也要随停机中止
     this.retryTimer = null;
     this.consolidating = new Set();    // 正在整理记忆的 chatKey
     this.runningChats = new Set();     // 正在运行的 chatKey
@@ -1244,7 +1243,8 @@ export class Orchestrator {
   async #maybeSayFailureNotice(chatKey, {
     triggerEntries = [], sentCount = 0, proactive = false, manual = false, timeClosed = false
   } = {}) {
-    if (proactive || manual || timeClosed || sentCount > 0) return;
+    // 停服/暂停触发的 abort 不是模型失败，不能给正在等的人发“卡了一下”。
+    if (this.aborted || proactive || manual || timeClosed || sentCount > 0) return;
     const cfg = getConfig().failureNotice || {};
     if (cfg.enabled === false) return;
     const direct = chatKey.startsWith('private:')
@@ -2328,7 +2328,8 @@ export class Orchestrator {
     // lifecycle 线程与前缀缓存失效。服务不可用时仅跳过召回，聊天主链路照常。
     let livingRecall = { text: '', entries: [], mode: 'disabled' };
     try {
-      livingRecall = await this.livingMemory?.recall?.({ chatKey, triggerEntries, signal }) || livingRecall;
+      const recentContext = this.livingMemory ? recentContextFor(this.store, chatKey, triggerEntries) : [];
+      livingRecall = await this.livingMemory?.recall?.({ chatKey, triggerEntries, recentContext, signal }) || livingRecall;
     } catch (error) {
       log.warn(`[living-memory] ${chatKey} 召回异常，已跳过：`, error?.message ?? error);
     }
@@ -3443,8 +3444,7 @@ export class Orchestrator {
       if (!cfg.api?.model || !cfg.api?.baseUrl) return;   // 没选模型就不整理
       if (this.consolidating.has(chatKey)) return;
       const st = this.memory.consolidationState(chatKey);
-      // 阈值可配置：config.memory.consolidateMinImpressions（默认取类常量）
-      // 注意：这里原先误写成裸标识符 T，运行时会抛 ReferenceError 导致自动整理彻底失效。
+      // 阈值可配置；这里曾误写成裸标识符 T，导致自动整理彻底失效。
       const minImpressions = Math.max(1,
         Number(cfg.memory?.consolidateMinImpressions) || Orchestrator.MEMORY_THRESHOLDS.memberImpression);
       // 触发条件二选一：
@@ -3810,7 +3810,7 @@ export class Orchestrator {
     const res = await this.#memoryChat([
       { role: 'system', content: system },
       { role: 'user', content: user }
-    ]);
+    ], this.memoryAbort.signal);
     assertTimeAllowed();
 
     const parsed = extractJsonObject(String(res?.message?.content ?? ''));
@@ -4041,12 +4041,12 @@ export class Orchestrator {
    * useChatModel=true 时跟随聊天模型（cfg.api.*）；
    * false 时使用 cfg.memory.provider/model 指向的目录模型（端点/密钥取自 providers）。
    */
-  async #memoryChat(messages) {
+  async #memoryChat(messages, signal = null) {
     const cfg = getConfig();
     const mem = cfg.memory || {};
     if (mem.useChatModel !== false) {
       // 记忆整理 = 判断/总结类任务（与聊天、写作可各自设思考档位）。
-      const response = await chatCompletion({ messages, temperature: 0.2, purpose: 'judge' });
+      const response = await chatCompletion({ messages, temperature: 0.2, purpose: 'judge', signal });
       this.#recordExternalUsage(response);
       return response;
     }
@@ -4059,6 +4059,7 @@ export class Orchestrator {
       messages,
       temperature: 0.2,
       purpose: 'judge',
+      signal,
       overrides: { baseUrl: p.baseURL, apiKey: p.apiKey, model: mem.model, timeoutMs: 180000 }
     });
     this.#recordExternalUsage(response, mem.model);
@@ -4104,7 +4105,7 @@ export class Orchestrator {
   async abortAll() {
     this.aborted = true;
     clearInterval(this.retryTimer);
-    for (const controller of this.controllers.values()) controller.abort(new Error('Run cancelled'));
+    for (const controller of [...this.controllers.values(), this.memoryAbort]) controller.abort(new Error('Run cancelled'));
     for (const timer of this.wakeTimers.values()) clearTimeout(timer);
     this.wakeTimers.clear();
     this.pendingWake.clear();
@@ -4112,8 +4113,7 @@ export class Orchestrator {
     for (const sessionId of this.pendingSessions.values()) this.#finishWaiting(sessionId, 'aborted');
     this.pendingSessions.clear();
     this.stopProactiveLoop();
-    // 提醒循环与自安排唤醒 ticker 也是常驻 interval：不停掉的话 abortAll 之后它们还在跑
-    //（测试里表现为进程被定时器吊着、状态被悄悄推进；2026-10-12 审查）。
+    // 提醒循环与自安排唤醒 ticker 也是常驻 interval，不停掉会在 abortAll 之后继续跑。
     this.stopReminderLoop();
     if (this.scheduledWakeTicker) clearInterval(this.scheduledWakeTicker);
     this.scheduledWakeTicker = null;
