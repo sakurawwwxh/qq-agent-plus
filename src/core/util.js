@@ -359,8 +359,11 @@ export async function settleWithDeadline(tasks, timeoutMs = 5000) {
     await Promise.race([
       Promise.allSettled(list),
       new Promise((resolve) => {
+        // 不要 unref：停机等待的定时器必须能把事件循环撑到 deadline。
+        // unref 后若在途任务本身就是不落地的 promise，进程会在超时触发前
+        // "自然退出"，调用方拿到的是永远 pending 的 await（Node 测试里表现为
+        // cancelledByParent）。
         timer = setTimeout(resolve, Math.max(0, Number(timeoutMs) || 0));
-        if (timer.unref) timer.unref();
       })
     ]);
   } finally {
