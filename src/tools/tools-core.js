@@ -594,17 +594,11 @@ async function currentMessageImageUrls(ctx, entry) {
   const viewable = [];
   for (const item of media) {
     if (item?.kind !== 'image' && item?.kind !== 'video') continue;
-    let url = String(item.url || item.file || '').trim();
-    // 自发图片/表情落库时只存了 stickerId（Issue #99）：按 id 回表情库取本地文件或
-    // 刷新过的链接。表情已被删除/文件丢失时当作没有这张图，不要让整次看图失败。
+    let url = String(item.url || item.file || '').trim();   // 自发图只存 stickerId（Issue #99）
     if (!url && item.stickerId && typeof ctx.stickers?.findForSend === 'function') {
-      try {
-        const sticker = await ctx.stickers.findForSend(item.stickerId);
-        url = String(sticker?.url || '').trim();
-      } catch { /* 表情库读取失败：按没有图处理 */ }
+      try { url = String((await ctx.stickers.findForSend(item.stickerId))?.url || '').trim(); } catch { /* 无图 */ }
     }
-    if (url) viewable.push({ kind: item.kind, url });
-    if (viewable.length >= 4) break;
+    if (url && viewable.push({ kind: item.kind, url }) >= 4) break;
   }
   return viewable;
 }
