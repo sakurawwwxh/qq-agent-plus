@@ -78,6 +78,11 @@ test('web_fetch：空 main 不遮住有效 article', async (t) => {
   assert.equal(page.content, '有效正文');
 });
 
+test('web_fetch：空 article 回退到 body 正文', async (t) => {
+  const page = await read(t, '<html><body><article><script>boot()</script></article><p>正文</p></body></html>');
+  assert.equal(page.content, '正文');
+});
+
 test('web_fetch：多个 article 与没有语义容器时保守保留文本', async (t) => {
   const page = await read(t, '<html><body><header>页头说明</header><article>文章甲</article><article>文章乙</article><p>补充说明</p></body></html>');
   for (const text of ['页头说明', '文章甲', '文章乙', '补充说明']) assert.ok(page.content.includes(text));
@@ -147,8 +152,11 @@ test('web_fetch：HTML 类型大小写与 XHTML 均可读取', async (t) => {
 });
 
 test('web_fetch：代码保护标记与页面文字不碰撞', async (t) => {
-  const page = await read(t, '<html><body><main><p>&#0;QQ_WEB_CODE_0&#0;</p><pre>  literal &amp;lt; text\n    next</pre></main></body></html>');
-  assert.ok(page.content.includes('QQ_WEB_CODE_0'));
+  // 原始 NUL + 超长下划线：旧实现会逐字符扩展标记并对整页反复扫描（O(n²)）；
+  // `&#0;` 会被解析器替换成 U+FFFD，覆盖不到这条路径。
+  const literal = `\u0000QQ_WEB_CODE_${'_'.repeat(50000)}\u0000`;
+  const page = await read(t, `<html><body><main><pre>  literal &amp;lt; text\n    next</pre><p>${literal}</p></main></body></html>`);
+  assert.ok(page.content.includes('QQ_WEB_CODE_'));
   assert.ok(page.content.includes('  literal &lt; text\n    next'));
 });
 

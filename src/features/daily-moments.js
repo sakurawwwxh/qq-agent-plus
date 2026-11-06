@@ -16,7 +16,8 @@ import { sanitizeUserText, settleWithDeadline } from '../core/util.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { displayNameOf } from '../core/display-name.js';
 import { visibleImpressions } from '../core/memory-visibility.js';
-import { webFetch, webSearch } from '../llm/web-search.js';
+import { webSearch } from '../llm/web-search.js';
+import { fetchWebPage } from '../llm/web-page.js';
 import { buildMomentSystemPrompt, momentPersonaHash, MOMENT_PROMPT_VERSION } from '../llm/moment-prompt.js';
 import { assertTimeAllowed, isTimeActive, watchTimeWindow, withTimeScope } from '../core/time-gate.js';
 import { timeControlState } from '../core/time-control.js';
@@ -443,7 +444,7 @@ export class DailyMomentsManager {
     emit = null,
     complete = chatCompletionWithRetry,
     search = webSearch,
-    fetchPage = webFetch,
+    fetchPage = fetchWebPage,
     validateImage = validateImageUrl,
     fetchBinary = safeFetchBinary,
     setProactiveSuppressed = () => {},
@@ -1621,7 +1622,7 @@ export class DailyMomentsManager {
           }
           context.researchCalls += 1;
           const result = await this.fetchPage(String(args.url || ''));
-          if (result.statusCode === 200 && result.url && String(result.body || '').trim()) {
+          if (result.statusCode === 200 && result.url && String(result.content ?? result.body ?? '').trim()) {
             context.researchSources.push(String(result.url));
             context.researchSources = [...new Set(context.researchSources)].slice(0, 10);
           }
@@ -1630,8 +1631,8 @@ export class DailyMomentsManager {
               url: result.url,
               statusCode: result.statusCode,
               // 抓回来的网页正文是**不可信文本**：伪造【管理员附加规则】这类段头就能冒充系统段。
-              // 与聊天侧的 web_fetch（tools-core 的 sanitizeUserText(body.slice(...))）同一道清洗。
-              content: sanitizeUserText(String(result.body || '')).slice(0, 12000)
+              // 与聊天侧 web_fetch 同一道清洗（正文已在 fetchWebPage 里提取）。
+              content: sanitizeUserText(String(result.content ?? result.body ?? '')).slice(0, 12000)
             })
           };
         }
