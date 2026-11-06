@@ -96,7 +96,7 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-moments-visibility', 'cfg-moments-target-uins', 'cfg-moments-max-prompt', 'cfg-qzi-decision-rounds'
     ],
     'pages/life-feed.js': ['cfg-lifefeed-rss-urls', 'cfg-lifefeed-rss-per-forage'],
-    'pages/living-memory.js': ['lm-auto-capture', 'lm-capture-idle'],
+    'pages/living-memory.js': ['lm-auto-capture', 'lm-capture-idle', 'lm-rrf-k', 'lm-recent-memory-count'],
     'pages/features.js': ['cfg-outbox-auto-release'],
     'pages/settings-voice.js': [
       'cfg-asr-max-perchat', 'cfg-tts-max', 'cfg-tts-max-perchat',

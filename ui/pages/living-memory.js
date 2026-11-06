@@ -391,6 +391,8 @@ function settingsHtml() {
       </select></label>
       <label class="lm-field">每轮最多召回<input id="lm-max-items" type="number" min="1" max="16" value="${num(cfg.maxRecallItems) || 6}" /></label>
       <label class="lm-field">注入上限（字符）<input id="lm-max-chars" type="number" min="300" max="8000" value="${num(cfg.maxInjectChars) || 2400}" /></label>
+      <label class="lm-field">检索融合系数（RRF）<input id="lm-rrf-k" type="number" min="10" max="200" value="${num(cfg.rrfK) || 60}" /><small>值越大越平滑地融合关键词与向量排序</small></label>
+      <label class="lm-field">近期记忆保留（条）<input id="lm-recent-memory-count" type="number" min="0" max="4" value="${num(cfg.recentMemoryCount)}" /><small>检索不命中时补入近期活跃记忆；填 0 关闭</small></label>
     </div>
   </section>
   <section class="lm-card">
@@ -544,8 +546,8 @@ async function saveConfig(button) {
       return el ? el.checked : fallback;
     };
     const modeBox = $('#lm-mode');
-     const retentionFallback = Number.isFinite(Number(cfg.turnRetentionDays))
-       ? Number(cfg.turnRetentionDays) : 7;
+    const retentionFallback = Number.isFinite(Number(cfg.turnRetentionDays))
+      ? Number(cfg.turnRetentionDays) : 7;
     const patch = {
       enabled: checkedValue('#lm-enabled', cfg.enabled === true),
       graduated: cfg.graduated === true,
@@ -554,11 +556,13 @@ async function saveConfig(button) {
       captureIdleMs: Math.round(captureIdleSec * 1000),
       allowPrivate: checkedValue('#lm-private', cfg.allowPrivate === true),
       allowGlobal: checkedValue('#lm-global', cfg.allowGlobal === true),
-       captureAllMessages: checkedValue('#lm-capture-all', cfg.captureAllMessages === true),
+      captureAllMessages: checkedValue('#lm-capture-all', cfg.captureAllMessages === true),
       shadowSemantic: checkedValue('#lm-shadow-semantic', cfg.shadowSemantic === true),
-       turnRetentionDays: Math.max(0, Math.min(3650, intValue('#lm-turn-retention', retentionFallback))),
+      turnRetentionDays: Math.max(0, Math.min(3650, intValue('#lm-turn-retention', retentionFallback))),
       maxInjectChars: Math.max(300, Math.min(8000, intValue('#lm-max-chars', num(cfg.maxInjectChars) || 2400))),
       maxRecallItems: Math.max(1, Math.min(16, intValue('#lm-max-items', num(cfg.maxRecallItems) || 6))),
+      rrfK: Math.max(10, Math.min(200, intValue('#lm-rrf-k', num(cfg.rrfK) || 60))),
+      recentMemoryCount: Math.max(0, Math.min(4, intValue('#lm-recent-memory-count', num(cfg.recentMemoryCount)))),
       recallTimeoutMs: Math.max(300, Math.min(5000, intValue('#lm-recall-timeout', num(cfg.recallTimeoutMs) || 1800))),
       captureMinMessages: Math.max(2, Math.min(60, intValue('#lm-capture-min', num(cfg.captureMinMessages) || 6))),
       groups: parseGroups($('#lm-groups')?.value)
