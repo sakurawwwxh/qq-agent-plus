@@ -22,8 +22,7 @@ const searchBody = { code: 0, data: { result: [{
   title: '合成结果', bvid: 'BV1xx411c7mD', description: '合成摘要'
 }] } };
 const response = (body) => ({ ok: true, json: async () => body });
-let moduleId = 0;
-const freshSearch = () => import(`../src/llm/web-search.js?bili-cancel=${moduleId++}`);
+const { webSearch, bilibiliSearch, resetBilibiliMixinCacheForTest } = await import('../src/llm/web-search.js');
 
 function mockFetch(t, handler) {
   const original = globalThis.fetch;
@@ -32,7 +31,7 @@ function mockFetch(t, handler) {
 }
 
 test('B 站搜索：已取消的统一入口不发送签名或搜索请求', async (t) => {
-  const { webSearch } = await freshSearch();
+  resetBilibiliMixinCacheForTest();
   const calls = [];
   mockFetch(t, async (url, { signal }) => {
     calls.push(String(url));
@@ -47,7 +46,7 @@ test('B 站搜索：已取消的统一入口不发送签名或搜索请求', asy
 
 for (const stage of ['headers', 'body']) {
   test(`B 站搜索：签名请求等待 ${stage} 时取消，不等待内部超时或继续无签名搜索`, async (t) => {
-    const { bilibiliSearch } = await freshSearch();
+    resetBilibiliMixinCacheForTest();
     const ac = new AbortController();
     const reason = new Error('synthetic-stop');
     const calls = [];
@@ -81,7 +80,7 @@ for (const stage of ['headers', 'body']) {
 }
 
 test('B 站搜索：签名返回时取消，不缓存取消结果或继续发请求', async (t) => {
-  const { bilibiliSearch } = await freshSearch();
+  resetBilibiliMixinCacheForTest();
   const ac = new AbortController();
   const reason = new Error('synthetic-stop');
   const calls = [];
@@ -105,7 +104,7 @@ test('B 站搜索：签名返回时取消，不缓存取消结果或继续发请
 
 for (const failure of ['HTTP', 'JSON', 'timeout']) {
   test(`B 站搜索：普通签名 ${failure} 失败仍允许无签名搜索`, async (t) => {
-    const { bilibiliSearch } = await freshSearch();
+    resetBilibiliMixinCacheForTest();
     const calls = [];
     mockFetch(t, async (url) => {
       calls.push(String(url));
@@ -122,7 +121,7 @@ for (const failure of ['HTTP', 'JSON', 'timeout']) {
 }
 
 test('B 站搜索：成功缓存照常复用，取消调用不影响下一轮正常搜索', async (t) => {
-  const { bilibiliSearch } = await freshSearch();
+  resetBilibiliMixinCacheForTest();
   const calls = [];
   mockFetch(t, async (url, { signal }) => {
     calls.push(String(url));
@@ -143,7 +142,7 @@ test('B 站搜索：成功缓存照常复用，取消调用不影响下一轮正
 });
 
 test('B 站搜索：并发查询取消其中一个不取消另一个签名请求', async (t) => {
-  const { bilibiliSearch } = await freshSearch();
+  resetBilibiliMixinCacheForTest();
   const navRequests = [];
   let searchCount = 0;
   mockFetch(t, async (url, { signal }) => {

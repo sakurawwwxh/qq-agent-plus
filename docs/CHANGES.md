@@ -2415,4 +2415,4 @@ QQ 语音音色）与**协议端 SnowLuma v1.14.22 的能力接入**（表情回
 - **控制台核对联动**：outbox unknown 核对为已发送后，同步回写 `admin-actions.json` 的目标结果并补 messageId；核对后的消息可按动作 ID 撤回。
 - **安全**：仅 owner 私聊可见/可调用；固定命令只认真实消息、忽略 `message_sent` 回显；模型只能创建待确认动作，不能直接发送；媒体只接受已有消息或公网 URL，拒绝本地路径；发送/撤回/审批全部写审计。
 - **文档**：新增 `docs/ADMIN.md`。
-- **验证**：本地全量 2807 条（2750 pass / 0 fail / 57 skip）、回归 38、Playwright 31、覆盖率 68.39/69.76/73.78（门槛 67/69/72）、ESLint、`ops scan --strict`、`release-check` 全通过。
+- **验证**：本地全量 2816 条（2759 pass / 0 fail / 57 skip）、回归 38、Playwright 31、覆盖率 68.49/69.87/73.82（门槛 67/69/72）、ESLint、`ops scan --strict`、`release-check` 全通过。

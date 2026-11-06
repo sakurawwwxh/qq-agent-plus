@@ -33,6 +33,12 @@ let biliMixinCache = { mix: '', at: 0 };
 
 const biliEnc = (value) => encodeURIComponent(String(value)).replace(/[!'()*]/g, '');
 
+// 测试用：清空进程级签名缓存。用例必须从正常路径 import 本模块（带 query 的
+// 动态 import 会产生独立的模块实例，Node 覆盖率会把后加载实例的未执行行算进来）。
+export function resetBilibiliMixinCacheForTest() {
+  biliMixinCache = { mix: '', at: 0 };
+}
+
 async function biliMixinKey(signal) {
   signal?.throwIfAborted();
   if (biliMixinCache.mix && Date.now() - biliMixinCache.at < 30 * 60 * 1000) return biliMixinCache.mix;
