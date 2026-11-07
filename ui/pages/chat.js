@@ -252,15 +252,15 @@ return `
     <div class="field-row">
       <div class="field"><label>未思考等待最短值（毫秒）</label><input type="number" id="cfg-wakedelay-min" min="0" max="20000" value="${esc(c.wakeDelayMinMs ?? c.wakeDelayMs ?? 8000)}" /></div>
       <div class="field"><label>未思考等待最长值（毫秒）</label><input type="number" id="cfg-wakedelay-max" min="0" max="20000" value="${esc(c.wakeDelayMaxMs ?? c.wakeDelayMs ?? 12000)}" /></div>
-      <div class="field"><label>批次间隔（毫秒）—— 上轮结束到下轮处理的间隔</label><input type="number" id="cfg-draindelay" min="0" value="${esc(c.drainDelayMs)}" /></div>
+      <div class="field"><label>批次间隔（毫秒，上轮→下轮）</label><input type="number" id="cfg-draindelay" min="0" value="${esc(c.drainDelayMs)}" /></div>
       <div class="field"><label>同时处理几个会话</label><input type="number" id="cfg-maxruns" min="1" max="8" value="${esc(c.maxConcurrentRuns)}" /></div>
     </div>
     <details class="collapsible settings-advanced" id="wake-batch-advanced">
       <summary>高级：直接互动与攒批窗口</summary>
       <div class="field-row" style="margin-top:8px">
-        <div class="field"><label for="cfg-direct-wake-delay">被 @ / 私聊 / 引用后的合并窗口（毫秒）</label>
+        <div class="field"><label for="cfg-direct-wake-delay">直接互动合并窗口（毫秒）</label>
           <input type="number" id="cfg-direct-wake-delay" min="0" max="2000" step="50" value="${esc(c.directWakeDelayMs ?? 300)}" />
-          <div class="hint">直接互动不再等常规 8–12 秒，只留这点时间合并连发；默认 300，最大 2000。</div></div>
+          <div class="hint">被 @ / 私聊 / 引用时不再等常规 8–12 秒，只留这点时间合并连发；默认 300，最大 2000。</div></div>
         <div class="field"><label for="cfg-max-batch-wait">普通消息最长攒批（毫秒）</label>
           <input type="number" id="cfg-max-batch-wait" min="100" max="20000" step="100" value="${esc(c.maxBatchWaitMs ?? 20000)}" />
           <div class="hint">连续来消息时最多等这么久就处理，默认 20000；调小更跟手，调大更容易合并。</div></div>
@@ -442,7 +442,7 @@ return `
         <input type="number" id="cfg-store-keepsessions" min="0" max="100000" value="${esc(st.keepSessionFiles ?? 2000)}" /></div>
     </div>
     <div class="field-row" style="margin-top:12px">
-      <div class="field"><label for="cfg-store-compressdays">留档压缩：多少天前结束的压成 .gz（0 = 不压缩）</label>
+      <div class="field"><label for="cfg-store-compressdays">留档压缩（天，0 = 不压缩）</label>
         <input type="number" id="cfg-store-compressdays" min="0" max="3650" value="${esc(st.sessionCompressAfterDays ?? 30)}" /></div>
       <div class="field"><label for="cfg-store-sessionmb">留档总量上限（MB，0 = 不限）</label>
         <input type="number" id="cfg-store-sessionmb" min="0" max="1048576" value="${esc(st.sessionMaxTotalMb ?? 1024)}" /></div>

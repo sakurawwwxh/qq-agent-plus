@@ -1,4 +1,4 @@
-/* global document */
+/* global document, getComputedStyle */
 import { test, expect } from '@playwright/test';
 import { E2E_PLUGIN_ID, E2E_TOKEN } from './constants.mjs';
 import { collectPageErrors, login, switchTo, tabNames } from './helpers.mjs';
@@ -831,5 +831,76 @@ test('窄屏 390×844：15 个页签都没有横向溢出', async ({ page }) => 
     await page.locator(`.settings-menu-item[data-section="${section}"]`).click();
     await page.waitForTimeout(150);
     await assertNoOverflow(`settings/${section}`);
+  }
+});
+
+test('设置表单：同一行的控件顶边对齐（标签换行不能把输入框挤下去）', async ({ page }) => {
+  // 800 是窄屏但仍保留三轨的临界宽度：标签更容易换行，最容易暴露错位。
+  for (const width of [800, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await login(page);
+    await page.goto('/');
+    await switchTo(page, 'settings');
+
+    const sections = await page.locator('.settings-menu-item[data-section]')
+      .evaluateAll((items) => items.map((item) => item.dataset.section));
+
+    for (const section of sections) {
+      await page.locator(`.settings-menu-item[data-section="${section}"]`).click();
+      await page.waitForTimeout(150);
+      const issues = await page.evaluate(() => {
+        const visible = (el) => {
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0
+            && style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const found = [];
+        const seen = new Set();
+        for (const field of document.querySelectorAll('#settings-form .field')) {
+          const parent = field.parentElement;
+          if (!parent || seen.has(parent)) continue;
+          seen.add(parent);
+          const fields = [...parent.children]
+            .filter((el) => el.classList?.contains('field') && visible(el));
+          if (fields.length < 2) continue;
+          // 同一 grid/flex 行里的字段：字段顶边相同，控件顶边也应相同。
+          const groups = [];
+          for (const item of fields) {
+            const top = item.getBoundingClientRect().top;
+            let group = groups.find((candidate) => Math.abs(candidate.top - top) <= 2);
+            if (!group) {
+              group = { top, items: [] };
+              groups.push(group);
+            }
+            group.items.push(item);
+          }
+          for (const group of groups) {
+            if (group.items.length < 2) continue;
+            const controls = group.items.map((item) => {
+              const label = item.querySelector(':scope > label');
+              const control = item.querySelector(':scope > input, :scope > select, :scope > textarea');
+              if (!label || !control || !visible(control)) return null;
+              return {
+                label: label.textContent.trim().replace(/\s+/g, ' ').slice(0, 40),
+                id: control.id || control.className || '',
+                top: control.getBoundingClientRect().top
+              };
+            }).filter(Boolean);
+            if (controls.length < 2) continue;
+            const tops = controls.map((item) => item.top);
+            const delta = Math.max(...tops) - Math.min(...tops);
+            if (delta > 2) {
+              found.push({
+                delta: Math.round(delta * 10) / 10,
+                fields: controls.map((item) => `${item.label}${item.id ? ` (#${item.id})` : ''}`)
+              });
+            }
+          }
+        }
+        return found;
+      });
+      expect(issues, `settings/${section} 控件错位：${JSON.stringify(issues)}`).toEqual([]);
+    }
   }
 });

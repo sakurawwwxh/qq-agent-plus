@@ -262,7 +262,7 @@ function renderDailyMomentsSection(c) {
           <option value="64" ${visibility === 64 ? 'selected' : ''}>仅自己可见</option>
           <option value="128" ${visibility === 128 ? 'selected' : ''}>指定好友不可见</option>
         </select></div>
-      <div class="field"><label>指定好友 QQ（逗号分隔，仅在 16 / 128 时使用）</label>
+      <div class="field"><label>指定好友 QQ（逗号分隔）</label>
         <input type="text" id="cfg-moments-target-uins" value="${esc(targetUins.join(','))}" placeholder="123456789,987654321" />
         <div class="hint">16 = 仅名单内好友可见；128 = 名单内好友不可见。留空时按 QQ 空间默认范围处理。</div></div>
     </div>
@@ -352,15 +352,15 @@ function renderGroupGameSection(c) {
         <input type="number" id="cfg-game-maxplayers" min="2" max="30" value="${esc(c.groupGame?.maxPlayers ?? 10)}" /></div>
       <div class="field"><label for="cfg-game-round">单回合超时（秒，0=插件默认）</label>
         <input type="number" id="cfg-game-round" min="0" max="600" value="${esc(c.groupGame?.roundSeconds ?? 0)}" /></div>
-      <div class="field"><label for="cfg-game-discuss">白天讨论时长（秒，0=插件默认 120）</label>
+      <div class="field"><label for="cfg-game-discuss">白天讨论时长（秒）</label>
         <input type="number" id="cfg-game-discuss" min="0" max="600" value="${esc(c.groupGame?.discussSeconds ?? 0)}" /></div>
-      <div class="field"><label for="cfg-game-recruit">开局报名时长（秒，0=不报名直接发牌）</label>
+      <div class="field"><label for="cfg-game-recruit">开局报名时长（秒）</label>
         <input type="number" id="cfg-game-recruit" min="0" max="300" value="${esc(c.groupGame?.recruitSeconds ?? 45)}" /></div>
     </div>
     <div class="hint">需要私聊的游戏（谁是卧底/狼人杀）默认先<strong>报名</strong>：想玩的在群里发一句「我玩」或「报名」，
-      够人数才发牌、发牌才发私聊——不会把只是在群里插话的围观者拉进局（把报名时长设 0 就回到"按最近发言者直接发牌"）。</div>
+      够人数才发牌、发牌才发私聊——不会把只是在群里插话的围观者拉进局（报名默认 45 秒；设 0 就回到"按最近发言者直接发牌"）。</div>
     <div class="hint">白天讨论到点会自动进投票；中途<strong>超过半数</strong>存活玩家说一句「投吧 / 直接投」也会立刻开投
-      （说「投 3」这种带目标的算投票，不算想开投）。讨论时长与单回合超时<strong>小于 30 秒按 30 秒生效</strong>（0 = 用插件默认）。</div>
+      （说「投 3」这种带目标的算投票，不算想开投）。讨论时长与单回合超时<strong>小于 30 秒按 30 秒生效</strong>（0 = 用插件默认，白天讨论默认 120 秒）。</div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-game-bomb" ${games.includes('number-bomb') ? 'checked' : ''} />
       <label for="cfg-game-bomb">允许「数字炸弹」</label></div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-game-undercover" ${games.includes('undercover') ? 'checked' : ''} />
