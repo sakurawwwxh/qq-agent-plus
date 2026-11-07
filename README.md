@@ -157,9 +157,9 @@ HTTP/1.1；SSRF/DNS 固定、逐跳重定向、凭据剥离、响应体与超时
 
 ```bash
 # 海外 / GitHub 可达
-docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.14
+docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.15
 # 国内（阿里云 ACR，公开，amd64/arm64）
-docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.14
+docker pull crpi-xejkraqtqkngfp11.cn-guangzhou.personal.cr.aliyuncs.com/wangxinhong/qq-agent-plus:0.9.15
 
 git clone https://github.com/sakurawwwxh/qq-agent-plus.git
 cd qq-agent-plus

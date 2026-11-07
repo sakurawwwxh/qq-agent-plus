@@ -28,7 +28,7 @@ ffmpeg 及其依赖（约 470MB 的层）；不提供精简变体，以保证语
 docker compose up -d
 ```
 
-compose 默认已经按国内网络配好：应用镜像走阿里云 ACR 的公开 `0.9.14`，协议端走
+compose 默认已经按国内网络配好：应用镜像走阿里云 ACR 的公开 `0.9.15`，协议端走
 `docker.m.daocloud.io` 镜像站。升级时改 compose 里的默认值，或设
 `QQ_AGENT_IMAGE=<镜像>:<版本>`。不要用 `latest` 当默认值——首次发布前它不存在，会拉取失败。
 海外用户可以把 `QQ_AGENT_IMAGE` 换成 GHCR、`SNOWLUMA_IMAGE` 换成官方 Docker Hub 镜像。
@@ -206,7 +206,7 @@ QQ_AGENT_IMAGE=ghcr.io/sakurawwwxh/qq-agent-plus:<上一个版本> docker compos
    `docker compose pull && docker compose up -d`；数据卷不动，不需要迁移数据。
 3. 如果升级前控制台显示“观察模式”，到 控制 → 运行模式 切到**活跃**（旧配置不会被自动改成 active）。
 4. 如果 noVNC 密码变了，看 `docker compose logs snowluma`（`VNC_PASSWD` 留空时是随机生成的）。
-5. 固定了旧镜像 digest 的，把 `QQ_AGENT_IMAGE` 改回 `...:0.9.14` 或新 digest 后再 pull。
+5. 固定了旧镜像 digest 的，把 `QQ_AGENT_IMAGE` 改回 `...:0.9.15` 或新 digest 后再 pull。
 
 **裸机 systemd 部署不受影响**：这次只改了 Docker 路径，服务器上的 `qq-agent-linux.service`
 继续按原来的方式升级即可；只有想迁到 Docker 时才需要处理数据目录与旧协议端容器。
@@ -233,7 +233,7 @@ QQ_AGENT_IMAGE=ghcr.io/sakurawwwxh/qq-agent-plus:<上一个版本> docker compos
 | 国内镜像 | 阿里云 ACR 个人版 / 腾讯云 TCR | 国内用户拉得快；CI 复制 GHCR 的 manifest，不重新构建 |
 | 离线包 | GitHub Release 的 `docker save` 压缩包（可选） | 完全离线/内网；体积大，按需生成 |
 
-**每次发版推这些 tag**：`0.9.14`、`0.9`、`sha-<短哈希>`、`latest`。
+**每次发版推这些 tag**：`0.9.15`、`0.9`、`sha-<短哈希>`、`latest`。
 长期部署请固定版本号，不要依赖 `latest`。
 
 ### 配置国内镜像（可选）
@@ -254,8 +254,8 @@ QQ_AGENT_IMAGE=ghcr.io/sakurawwwxh/qq-agent-plus:<上一个版本> docker compos
 4. 用户拉取：
 
 ```bash
-docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.14
-docker pull <CN_REGISTRY>/<命名空间>/qq-agent-plus:0.9.14
+docker pull ghcr.io/sakurawwwxh/qq-agent-plus:0.9.15
+docker pull <CN_REGISTRY>/<命名空间>/qq-agent-plus:0.9.15
 ```
 
 腾讯云 TCR 同理，把 `CN_REGISTRY` 换成 `ccr.ccs.tencentyun.com`。
@@ -267,7 +267,7 @@ docker pull <CN_REGISTRY>/<命名空间>/qq-agent-plus:0.9.14
 ### Compose 使用国内镜像
 
 ```bash
-QQ_AGENT_IMAGE=<CN_REGISTRY>/<命名空间>/qq-agent-plus:0.9.14 \
+QQ_AGENT_IMAGE=<CN_REGISTRY>/<命名空间>/qq-agent-plus:0.9.15 \
 SNOWLUMA_IMAGE=docker.m.daocloud.io/motricseven7/snowluma:v1.14.22 \
 docker compose up -d
 ```
@@ -276,7 +276,7 @@ docker compose up -d
 
 ### 发版流程（每版一次）
 
-1. 按现有 Release 流程改版本号、提交、打 tag（例如 `v0.9.14`）并推送。
+1. 按现有 Release 流程改版本号、提交、打 tag（例如 `v0.9.15`）并推送。
    **tag 推送并触发镜像构建后不要再移动它**：GHCR 与国内镜像都拒绝覆盖已存在的精确版本 tag；
    前移 tag 会让这次 tag 的 Docker 构建永久变红，而线上镜像仍指向旧提交。发现镜像内容有问题，
    正确做法是发一个补丁版本，而不是重打同名 tag。
@@ -301,7 +301,7 @@ ffmpeg 层有构建缓存，后续版本主要重新传应用层；首次推送�
    - `version`：留空只推 `sha-...`；要推版本就填一个**新**版本号（已存在的 tag 默认拒绝覆盖；
      确需覆盖勾选 `overwrite`）；
    - `push_cn`：勾选（填了版本才会复制到国内镜像）。
-3. CI 会跑 verify/smoke，构建 amd64+arm64，推 GHCR 的 `0.9.14`/`sha-...`；
+3. CI 会跑 verify/smoke，构建 amd64+arm64，推 GHCR 的 `0.9.15`/`sha-...`；
    正式稳定 tag 才会有 `0.9` 与 `latest`。**手动运行不会移动 `latest`**，
    避免把未发布的构建变成默认版本。
 
@@ -315,7 +315,7 @@ ffmpeg 层有构建缓存，后续版本主要重新传应用层；首次推送�
 
 | 服务 | 默认 | 来源 |
 | --- | --- | --- |
-| `agent` | `crpi-.../wangxinhong/qq-agent-plus:0.9.14` | 阿里云 ACR（国内可直连） |
+| `agent` | `crpi-.../wangxinhong/qq-agent-plus:0.9.15` | 阿里云 ACR（国内可直连） |
 | `snowluma` | `docker.m.daocloud.io/motricseven7/snowluma:v1.14.22` | 镜像站（官方在 Docker Hub） |
 
 compose 默认已经走国内可访问的地址；Docker Hub 在国内通常不可直连，GHCR 也可能很慢。
