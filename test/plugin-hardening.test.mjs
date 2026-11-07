@@ -193,7 +193,9 @@ test('内存上限：超了就重启该插件进程（并留下计数），堆�
   const killed = await waitFor(() => host.stats.memoryKills >= 1, 6000);
   assert.equal(killed, true, `内存超限应触发重启，实际 rssKb=${host.rssKb} memoryKills=${host.stats.memoryKills}`);
   assert.ok(host.rssKb > 24 * 1024, `采样到的常驻内存应当是真实值（>24MB），实际 ${host.rssKb}KB`);
-  assert.ok(host.restarts >= 1, '重启要计数（控制台能看到）');
+  // memoryKills 在杀进程时先加，restarts 要等子进程退出后才加；这里等它落账，别抢跑。
+  const restarted = await waitFor(() => host.restarts >= 1, 6000);
+  assert.equal(restarted, true, `重启要计数（控制台能看到），实际 restarts=${host.restarts}`);
 });
 
 // ── 懒启动 ──────────────────────────────────────────────────────────────────
