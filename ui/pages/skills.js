@@ -157,6 +157,8 @@ function skillsRenderDetail() {
     </section>
     <section class="skills-chat-block">
       <h4>按会话启用</h4>
+      ${skillsState.enabled === true || !Object.keys(skillsState.perChat || {}).length ? ''
+        : '<p class="skills-muted" style="color:var(--warning, #e6a700)">全局技能包未启用，下面的按会话覆盖目前不会生效；请先打开上方「启用技能包」。</p>'}
       <p class="skills-muted">全局=${on ? '启用' : '停用'}。下面勾选多个群/私聊后一次保存；勾选状态和全局相同就回退为“跟随全局”，不同才建立覆盖。</p>
       ${chatKeys.length ? `
         <div class="skills-chat-tools"><button type="button" class="btn btn-small" data-skill-chat-all="1">全选</button><button type="button" class="btn btn-small" data-skill-chat-all="0">全不选</button><button type="button" class="btn btn-small btn-primary" id="skill-chat-save-all">保存勾选</button></div>

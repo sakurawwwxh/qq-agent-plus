@@ -34,6 +34,8 @@ function mcpServerRowHtml(server = {}, { open = false } = {}) {
         <div class="field"><label>参数（JSON 数组）</label><input class="mcp-args" type="text" value="${args}" placeholder='["-y","@modelcontextprotocol/server-filesystem","/data"]' /></div>
         <div class="field"><label>工作目录（可选）</label><input class="mcp-cwd" type="text" value="${esc(server.cwd || '')}" placeholder="/srv/workspace" /></div>
         <div class="field"><label>环境变量（JSON 对象，可留空）</label><input class="mcp-env" type="text" value="${env}" placeholder='{"TOKEN":"..."}' /></div>
+        <div class="field"><label>额外可写目录（JSON 数组，可留空）</label><input class="mcp-writable-paths" type="text" value="${esc(JSON.stringify(Array.isArray(sandbox.writablePaths) ? sandbox.writablePaths : []))}" placeholder='["/srv/workspace"]' />
+          <div class="hint">仅 bwrap 沙箱生效；不能与数据目录重叠，根目录会被拒绝。</div></div>
         <div class="field-row">
           <div class="field"><label><input class="mcp-network-isolation" type="checkbox" ${server.networkIsolation === true ? 'checked' : ''} /> 网络隔离（禁网）</label></div>
           <div class="field"><label><input class="mcp-permission-isolation" type="checkbox" ${server.permissionIsolation === true ? 'checked' : ''} /> Node 权限隔离（只读入口目录）</label></div>

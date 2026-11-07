@@ -1845,8 +1845,62 @@ try {
 
     useCfg({ qzoneInteractions: { ...(cfg.qzoneInteractions || {}), maxDecisionRounds: 3 } });
     setVal('#cfg-qzi-decision-rounds', '4');
+    setVal('#cfg-qzi-active-start', '08:00');
+    setVal('#cfg-qzi-active-end', '02:00');
     const qzone = await saveIn('qzone-interactions');
     checks.push(['空间互动决策轮数', qzone.qzoneInteractions?.maxDecisionRounds === 4, String(qzone.qzoneInteractions?.maxDecisionRounds)]);
+    checks.push(['空间互动活跃时段', qzone.qzoneInteractions?.activeHours?.start === '08:00'
+      && qzone.qzoneInteractions?.activeHours?.end === '02:00', JSON.stringify(qzone.qzoneInteractions?.activeHours)]);
+    // 清空/半填/起止相同都在保存层回退或清空：先模拟服务端已保存一份非空值。
+    useCfg({ qzoneInteractions: { ...(cfg.qzoneInteractions || {}), maxDecisionRounds: 4, activeHours: { start: '08:00', end: '02:00' } } });
+    setVal('#cfg-qzi-active-start', '');
+    setVal('#cfg-qzi-active-end', '');
+    const qzoneAllDay = await saveIn('qzone-interactions');
+    checks.push(['空间互动时段留空=全天', qzoneAllDay.qzoneInteractions?.activeHours === null,
+      JSON.stringify(qzoneAllDay.qzoneInteractions?.activeHours)]);
+    useCfg({ qzoneInteractions: { ...(cfg.qzoneInteractions || {}), maxDecisionRounds: 4, activeHours: { start: '09:00', end: '18:00' } } });
+    setVal('#cfg-qzi-active-start', '10:00');
+    setVal('#cfg-qzi-active-end', '');
+    const qzoneHalf = await saveIn('qzone-interactions');
+    checks.push(['空间互动时段半填保留', qzoneHalf.qzoneInteractions?.activeHours?.start === '09:00'
+      && qzoneHalf.qzoneInteractions?.activeHours?.end === '18:00', JSON.stringify(qzoneHalf.qzoneInteractions?.activeHours)]);
+    useCfg({ qzoneInteractions: { ...(cfg.qzoneInteractions || {}), maxDecisionRounds: 4, activeHours: { start: '09:00', end: '18:00' } } });
+    setVal('#cfg-qzi-active-start', '10:00');
+    setVal('#cfg-qzi-active-end', '10:00');
+    const qzoneSame = await saveIn('qzone-interactions');
+    checks.push(['空间互动起止相同保留', qzoneSame.qzoneInteractions?.activeHours?.start === '09:00'
+      && qzoneSame.qzoneInteractions?.activeHours?.end === '18:00', JSON.stringify(qzoneSame.qzoneInteractions?.activeHours)]);
+
+    useCfg({ groupDigest: { ...(cfg.groupDigest || {}), maxChars: 300 } });
+    setVal('#cfg-digest-max', '450');
+    const digest = await saveIn('moments');
+    checks.push(['群日报最长字符', digest.groupDigest?.maxChars === 450, String(digest.groupDigest?.maxChars)]);
+
+    useCfg({ lifeFeed: { ...(cfg.lifeFeed || {}), cooldownDays: 7 } });
+    setVal('#cfg-lifefeed-cooldown', '14');
+    const life = await saveIn('life-feed');
+    checks.push(['见闻冷却天数', life.lifeFeed?.cooldownDays === 14, String(life.lifeFeed?.cooldownDays)]);
+    useCfg({ lifeFeed: { ...(cfg.lifeFeed || {}), cooldownDays: 21 } });
+    setVal('#cfg-lifefeed-cooldown', '');
+    const lifeEmpty = await saveIn('life-feed');
+    checks.push(['见闻冷却清空保留', lifeEmpty.lifeFeed?.cooldownDays === 21, String(lifeEmpty.lifeFeed?.cooldownDays)]);
+    useCfg({ groupDigest: { ...(cfg.groupDigest || {}), maxChars: 300 } });
+    setVal('#cfg-digest-max', '');
+    const digestEmpty = await saveIn('moments');
+    checks.push(['群日报长度清空保留', digestEmpty.groupDigest?.maxChars === 300, String(digestEmpty.groupDigest?.maxChars)]);
+
+    useCfg({ memory: { ...(cfg.memory || {}), handoffTtlMinutes: 1440, handoffMaxChars: 4000 } });
+    setVal('#cfg-mem-handoff-ttl', '60');
+    setVal('#cfg-mem-handoff-max', '3000');
+    const memory = await saveIn('memory');
+    checks.push(['交接有效期/上限', memory.memory?.handoffTtlMinutes === 60
+      && memory.memory?.handoffMaxChars === 3000, JSON.stringify([memory.memory?.handoffTtlMinutes, memory.memory?.handoffMaxChars])]);
+    useCfg({ memory: { ...(cfg.memory || {}), handoffTtlMinutes: 90, handoffMaxChars: 2500 } });
+    setVal('#cfg-mem-handoff-ttl', '');
+    setVal('#cfg-mem-handoff-max', '');
+    const memoryEmpty = await saveIn('memory');
+    checks.push(['交接清空保留', memoryEmpty.memory?.handoffTtlMinutes === 90
+      && memoryEmpty.memory?.handoffMaxChars === 2500, JSON.stringify([memoryEmpty.memory?.handoffTtlMinutes, memoryEmpty.memory?.handoffMaxChars])]);
 
     useCfg({ onebot: { ...(cfg.onebot || {}), catchupHistoryCount: 100 } });
     setVal('#cfg-catchup-count', '250');

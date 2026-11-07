@@ -787,6 +787,10 @@ function renderMemorySettingsSection(c) {
       <label for="cfg-mem-consolidate">启用记忆自动整理</label></div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-mem-handoff" ${mem.handoffEnabled !== false ? 'checked' : ''} />
       <label for="cfg-mem-handoff">允许模型自动写「会话交接」（下次唤醒时带上）</label></div>
+    <div class="field-row">
+      <div class="field"><label>交接有效期（分钟）</label><input type="number" id="cfg-mem-handoff-ttl" min="5" max="10080" value="${esc(mem.handoffTtlMinutes ?? 1440)}" /></div>
+      <div class="field"><label>交接注入上限（字符）</label><input type="number" id="cfg-mem-handoff-max" min="500" max="12000" step="100" value="${esc(mem.handoffMaxChars ?? 4000)}" /></div>
+    </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-mem-usechat" ${useChat ? 'checked' : ''} />
       <label for="cfg-mem-usechat">使用与聊天机器人相同的模型</label></div>
     <div id="mem-model-box" style="${useChat ? 'display:none' : ''}">

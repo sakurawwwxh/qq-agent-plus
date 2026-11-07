@@ -595,6 +595,7 @@ export const DEFAULT_CONFIG = {
   qzoneInteractions: {
     enabled: false,
     startupCatchup: false,
+    activeHours: null,            // {start:'07:00',end:'01:00'}；null/相同 = 全天
     feedIntervalMinutes: 60,
     replyIntervalMinutes: 5,
     feedFetchCount: 30,

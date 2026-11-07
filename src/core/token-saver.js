@@ -96,7 +96,7 @@ export function tokenSaverEffective(cfg = {}) {
     { key: 'allCount', label: '全部响应时读多少条', user: count(cfg.store?.allCount), cap: caps?.allCount, layerCap },
     { key: 'maxRounds', label: '单次运行最大工具轮数', user: num(cfg.api?.maxRounds, 12), cap: caps?.maxRounds },
     { key: 'maxRunTokens', label: '单次运行累计 Token 上限', user: num(cfg.api?.maxRunTokens, 160000), cap: caps?.maxRunTokens },
-    { key: 'handoffMaxChars', label: '会话交接注入上限（字符，配置文件里改）', user: num(cfg.memory?.handoffMaxChars, 4000), cap: caps?.handoffMaxChars },
+    { key: 'handoffMaxChars', label: '会话交接注入上限（字符，记忆设置里改）', user: num(cfg.memory?.handoffMaxChars, 4000), cap: caps?.handoffMaxChars },
     { key: 'memoryBlockChars', label: '全局印象注入上限（字符，固定值）', user: 6000, cap: caps?.memoryBlockChars },
     // 表情清单的运行时读法是"非正数/坏值按默认 3"（prompt.js 里 `want > 0 ? want : 3`），
     // 所以手改成 -5 时这一行要说 3 —— 说 -5 或 0 都是运行时不会发生的事。

@@ -74,6 +74,7 @@ Linux 上优先 bubblewrap（只读根、独立 netns、npm/uv 缓存持久化�
 ## 控制台与运维
 
 - 控制台「设置 → 平台 → MCP」可以启用/停用、增删 server、填命令/参数/环境变量、选择 direct/meta、查看运行状态并重载。
+  沙箱模式/网络策略/「额外可写目录」（bwrap 的 `writablePaths`，JSON 数组）也在同一行 server 里配置；保存会保留已有的 `sandbox.kind` 等未在表单中展示的字段。
 - 同一页可以搜「常用预设」（filesystem / memory / git / GitHub / Playwright / Brave Search，离线内置），也可以尝试搜官方 MCP Registry；导入后还是要自己确认命令、目录和令牌。
 - 官方 Registry 只提供元数据，不托管包、也不等于安全审计；当前客户端只接 stdio，只支持远程 HTTP 的 server 会标成“不支持 stdio”。
 - `GET /api/mcp`：查看每个 server 是否就绪、工具列表、错误；

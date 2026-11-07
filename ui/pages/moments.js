@@ -291,6 +291,8 @@ function renderDailyMomentsSection(c) {
     <div class="field-row">
       <div class="field"><label for="cfg-digest-time">发送时间（北京时间 HH:MM）</label>
         <input type="text" id="cfg-digest-time" value="${esc(c.groupDigest?.time || '09:30')}" placeholder="09:30" /></div>
+      <div class="field"><label for="cfg-digest-max">日报最长字符</label>
+        <input type="number" id="cfg-digest-max" min="80" max="600" value="${esc(c.groupDigest?.maxChars ?? 300)}" /></div>
       <div class="field"><label>发到哪些群（勾选机器人已加入的群）</label>
         <div id="cfg-digest-chats-box"></div></div>
     </div>
@@ -482,6 +484,14 @@ function renderQzoneInteractionSection(c) {
       <label for="cfg-qzi-enabled">启用好友动态阅览、点赞评论与评论回复</label></div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-qzi-catchup" ${q.startupCatchup === true ? 'checked' : ''} />
       <label for="cfg-qzi-catchup">首次启用时处理已有内容</label></div>
+    <div class="field-row">
+      <div class="field"><label>活跃时段开始 / 结束（北京时间，留空 = 全天）</label>
+        <div style="display:flex;gap:8px">
+          <input type="time" id="cfg-qzi-active-start" value="${esc(q.activeHours?.start || '')}" />
+          <input type="time" id="cfg-qzi-active-end" value="${esc(q.activeHours?.end || '')}" />
+        </div>
+        <div class="hint">窗口外不阅览动态、不消耗检查间隔；结束可早于开始表示跨午夜。</div></div>
+    </div>
     <div class="field-row">
       <div class="field"><label>好友动态检查间隔（分钟）</label><input type="number" id="cfg-qzi-feed-interval" min="5" max="1440" value="${esc(q.feedIntervalMinutes ?? 60)}" /></div>
       <div class="field"><label>评论回复检查间隔（分钟）</label><input type="number" id="cfg-qzi-reply-interval" min="1" max="1440" value="${esc(q.replyIntervalMinutes ?? 5)}" /></div>
