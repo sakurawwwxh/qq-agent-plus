@@ -93,12 +93,25 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'mcp') {
     const servers = $$('#mcp-servers .mcp-server').map((row) => {
       const read = (sel) => String(row.querySelector(sel)?.value ?? '').trim();
+      const id = read('.mcp-id');
+      const originalId = String(row.dataset?.id || id);
       const args = parseJsonField(read('.mcp-args'), [], '参数');
       const env = parseJsonField(read('.mcp-env'), {}, '环境变量');
       if (!Array.isArray(args)) throw new Error('MCP 参数必须是 JSON 数组');
       if (!env || typeof env !== 'object' || Array.isArray(env)) throw new Error('MCP 环境变量必须是 JSON 对象');
+      // 未渲染可写目录控件的旧页面/旧快照不能把已配置的路径清空。
+      const previous = (Array.isArray(c.mcp?.servers) ? c.mcp.servers : [])
+        .find((item) => String(item?.id || '') === originalId);
+      const sandboxBase = previous?.sandbox && typeof previous.sandbox === 'object' ? previous.sandbox : {};
+      const writableField = row.querySelector('.mcp-writable-paths');
+      const writablePaths = writableField
+        ? parseJsonField(writableField.value, [], '可写目录')
+        : (Array.isArray(sandboxBase.writablePaths) ? sandboxBase.writablePaths : []);
+      if (!Array.isArray(writablePaths) || writablePaths.some((item) => typeof item !== 'string')) {
+        throw new Error('MCP 可写目录必须是字符串 JSON 数组');
+      }
       return {
-        id: read('.mcp-id'),
+        id,
         enabled: row.querySelector('.mcp-enabled')?.checked !== false,
         transport: 'stdio',
         command: read('.mcp-command'),
@@ -111,13 +124,15 @@ async function saveConfig({ quiet = false } = {}) {
         networkIsolation: row.querySelector('.mcp-network-isolation')?.checked === true,
         permissionIsolation: row.querySelector('.mcp-permission-isolation')?.checked === true,
         sandbox: {
+          // 保留 kind 等未在表单里的已有字段，避免一次保存把手工配置抹掉。
+          ...sandboxBase,
           mode: ['off', 'auto', 'required'].includes(read('.mcp-sandbox-mode'))
             ? read('.mcp-sandbox-mode')
             : 'off',
           network: ['none', 'loopback', 'host'].includes(read('.mcp-sandbox-network'))
             ? read('.mcp-sandbox-network')
             : 'host',
-          writablePaths: []
+          writablePaths
         },
         allowUnsandboxed: row.querySelector('.mcp-allow-unsandboxed')?.checked === true,
         memoryMb: clampInt(read('.mcp-memory'), 0, 4096, 0)
@@ -182,6 +197,8 @@ async function saveConfig({ quiet = false } = {}) {
       ...(c.memory || {}),
       consolidateEnabled: chk('#cfg-mem-consolidate', c.memory?.consolidateEnabled !== false),
       handoffEnabled: chk('#cfg-mem-handoff', c.memory?.handoffEnabled !== false),
+      handoffTtlMinutes: intKeepPositive(val('#cfg-mem-handoff-ttl', c.memory?.handoffTtlMinutes ?? 1440), c.memory?.handoffTtlMinutes, 5, 10080, 1440),
+      handoffMaxChars: intKeepPositive(val('#cfg-mem-handoff-max', c.memory?.handoffMaxChars ?? 4000), c.memory?.handoffMaxChars, 500, 12000, 4000),
       useChatModel: chk('#cfg-mem-usechat', c.memory?.useChatModel !== false),
       provider: val('#cfg-mem-provider', c.memory?.provider || '').trim(),
       model: val('#cfg-mem-model', c.memory?.model || '').trim(),
@@ -301,6 +318,7 @@ async function saveConfig({ quiet = false } = {}) {
       maxPerForage: lifeNum('#cfg-lifefeed-max-per-forage', c.lifeFeed?.maxPerForage ?? 30),
       maxOffersPerDay: lifeNum('#cfg-lifefeed-offers', c.lifeFeed?.maxOffersPerDay ?? 2),
       maxPicksPerDay: lifeNum('#cfg-lifefeed-picks', c.lifeFeed?.maxPicksPerDay ?? 10),
+      cooldownDays: intKeep(val('#cfg-lifefeed-cooldown', c.lifeFeed?.cooldownDays ?? 7), c.lifeFeed?.cooldownDays, 1, 30, 7),
       minDurationSec: lifeNum('#cfg-lifefeed-min-duration', c.lifeFeed?.minDurationSec ?? 60),
       maxDurationSec: lifeNum('#cfg-lifefeed-max-duration', c.lifeFeed?.maxDurationSec ?? 3600),
       extraKeywords: splitKeywords('#cfg-lifefeed-extra'),
@@ -320,6 +338,7 @@ async function saveConfig({ quiet = false } = {}) {
         const raw = String(val('#cfg-digest-time', '') || '').trim();
         return /^([01]?\d|2[0-3]):([0-5]\d)$/.test(raw) ? raw : (c.groupDigest?.time || '09:30');
       })(),
+      maxChars: intKeep(val('#cfg-digest-max', c.groupDigest?.maxChars ?? 300), c.groupDigest?.maxChars, 80, 600, 300),
       ...(digestChats ? { chats: digestChats } : {})
     };
     patch.adminBriefing = {
@@ -393,6 +412,15 @@ async function saveConfig({ quiet = false } = {}) {
       ...(c.qzoneInteractions || {}),
       enabled: chk('#cfg-qzi-enabled', c.qzoneInteractions?.enabled === true),
       startupCatchup: chk('#cfg-qzi-catchup', c.qzoneInteractions?.startupCatchup === true),
+      // 两个都空 = 全天；只填一个或格式不对时保留原值，避免一次误保存把时段清掉。
+      activeHours: (() => {
+        const start = String(val('#cfg-qzi-active-start', c.qzoneInteractions?.activeHours?.start || '')).trim();
+        const end = String(val('#cfg-qzi-active-end', c.qzoneInteractions?.activeHours?.end || '')).trim();
+        if (!start && !end) return null;
+        const valid = (value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+        if (!valid(start) || !valid(end) || start === end) return c.qzoneInteractions?.activeHours ?? null;
+        return { start, end };
+      })(),
       feedIntervalMinutes: clampInt(
         val('#cfg-qzi-feed-interval', c.qzoneInteractions?.feedIntervalMinutes),
         5, 1440, 60

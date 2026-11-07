@@ -79,7 +79,8 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-api-timeout', 'cfg-run-timeout',
       'cfg-denygroups', 'cfg-denyprivate',
       'cfg-mt-enrich-timeout', 'cfg-catchup-count',
-      'cfg-search-maxresults', 'cfg-ds-needcontent', 'cfg-tavily-depth'
+      'cfg-search-maxresults', 'cfg-ds-needcontent', 'cfg-tavily-depth',
+      'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max'
     ],
     'pages/chat.js': [
       'cfg-failure-notice', 'cfg-failure-notice-cooldown',
@@ -93,9 +94,10 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-direct-wake-delay', 'cfg-max-batch-wait'
     ],
     'pages/moments.js': [
-      'cfg-moments-visibility', 'cfg-moments-target-uins', 'cfg-moments-max-prompt', 'cfg-qzi-decision-rounds'
+      'cfg-moments-visibility', 'cfg-moments-target-uins', 'cfg-moments-max-prompt', 'cfg-qzi-decision-rounds',
+      'cfg-qzi-active-start', 'cfg-qzi-active-end', 'cfg-digest-max'
     ],
-    'pages/life-feed.js': ['cfg-lifefeed-rss-urls', 'cfg-lifefeed-rss-per-forage'],
+    'pages/life-feed.js': ['cfg-lifefeed-rss-urls', 'cfg-lifefeed-rss-per-forage', 'cfg-lifefeed-cooldown'],
     'pages/living-memory.js': ['lm-auto-capture', 'lm-capture-idle', 'lm-rrf-k', 'lm-recent-memory-count'],
     'pages/features.js': ['cfg-outbox-auto-release'],
     'pages/settings-voice.js': [
@@ -121,7 +123,10 @@ test('新增控件的保存代码读取同一个 id（渲染删了/保存改名�
   const saveIds = [
     'cfg-mt-enrich-timeout', 'cfg-lifefeed-rss-urls', 'cfg-lifefeed-rss-per-forage',
     'cfg-moments-visibility', 'cfg-moments-target-uins', 'cfg-moments-max-prompt',
-    'cfg-qzi-decision-rounds', 'cfg-api-timeout', 'cfg-run-timeout',
+    'cfg-qzi-decision-rounds', 'cfg-qzi-active-start', 'cfg-qzi-active-end',
+    'cfg-digest-max', 'cfg-lifefeed-cooldown',
+    'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max',
+    'cfg-api-timeout', 'cfg-run-timeout',
     'cfg-asr-max-perchat', 'cfg-tts-max', 'cfg-tts-max-perchat',
     'cfg-img-response-format', 'cfg-img-timeout',
     'cfg-search-maxresults', 'cfg-ds-needcontent', 'cfg-tavily-depth',
@@ -144,4 +149,14 @@ test('新增控件的保存代码读取同一个 id（渲染删了/保存改名�
     'lm-max-items', 'lm-recall-timeout', 'lm-capture-min', 'lm-groups'
   ];
   assert.deepEqual(livingIds.filter((id) => !living.includes(`'#${id}'`)), [], 'living-memory.js 有保存 selector 缺失');
+});
+
+test('MCP 可写目录：渲染控件存在，保存不再硬编码清空 sandbox 字段', () => {
+  const save = fs.readFileSync(path.join(UI, 'pages', 'settings-save.js'), 'utf8');
+  const extensions = fs.readFileSync(path.join(UI, 'pages', 'settings-extensions.js'), 'utf8');
+  assert.match(extensions, /mcp-writable-paths/);
+  assert.match(save, /\.mcp-writable-paths/);
+  assert.match(save, /const originalId = String\(row\.dataset\?\.id \|\| id\)/);
+  assert.match(save, /\.\.\.sandboxBase/);
+  assert.doesNotMatch(save, /writablePaths:\s*\[\]/);
 });

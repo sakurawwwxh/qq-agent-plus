@@ -109,6 +109,8 @@ async function loadStatus() {
       ['#cfg-lifefeed-offers', 'maxOffersPerDay'],
       ['#cfg-lifefeed-max-per-forage', 'maxPerForage'],
       ['#cfg-lifefeed-max-candidates', 'maxCandidates'],
+      ['#cfg-lifefeed-picks', 'maxPicksPerDay'],
+      ['#cfg-lifefeed-cooldown', 'cooldownDays'],
       ['#cfg-lifefeed-min-duration', 'minDurationSec'],
       ['#cfg-lifefeed-max-duration', 'maxDurationSec']
     ]) {
@@ -318,6 +320,9 @@ function renderLifeFeedSection(c) {
           </div>
           <div class="field"><label>每天最多领取</label>
             <input type="number" id="cfg-lifefeed-picks" value="${esc(cfg.maxPicksPerDay ?? 10)}" />
+          </div>
+          <div class="field"><label>同一 UP/标签冷却（天）</label>
+            <input type="number" id="cfg-lifefeed-cooldown" min="1" max="30" value="${esc(cfg.cooldownDays ?? 7)}" />
           </div>
         </div>
       </div>
