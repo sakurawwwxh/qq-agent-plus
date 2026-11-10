@@ -203,6 +203,48 @@ test('grounded 的代码格式保留运算符、缩进与行内代码', () => {
   assert.equal(mdToPlain('`a * b * c`'), 'a  b  c');
 });
 
+const urlCases = [
+  ['路径中的下划线', 'https://example.org/package/__init__.py', 'https://example.org/package/__init__.py'],
+  ['查询中的下划线', 'https://example.org/download?name=__report__.csv', 'https://example.org/download?name=__report__.csv'],
+  ['路径中的星号', 'https://example.org/a*b*c', 'https://example.org/a*b*c'],
+  ['查询中的星号与删除线', 'https://example.org/?filter=*a*&name=~~draft~~', 'https://example.org/?filter=*a*&name=~~draft~~'],
+  ['地址末尾的标记', 'https://example.org/__tail__ https://example.org/*tail*', 'https://example.org/__tail__ https://example.org/*tail*'],
+  ['多个地址', 'https://example.org/a** and https://example.org/b**', 'https://example.org/a** and https://example.org/b**'],
+  ['Markdown 链接', '[**源码**](https://example.org/__init__.py)', '源码 (https://example.org/__init__.py)'],
+  ['括号与片段', '[文档](https://example.org/a(b)__c__#part*one*)', '文档 (https://example.org/a(b)__c__#part*one*)'],
+  ['紧邻格式标记', '**https://example.org/__init__.py**', 'https://example.org/__init__.py'],
+  ['跨正文的格式标记', '**请看 https://example.org/a*b*c**。', '请看 https://example.org/a*b*c。'],
+  ['嵌套外层格式', '~~**请看 https://example.org/__init__.py**~~', '请看 https://example.org/__init__.py'],
+  ['斜体与句号', '*see https://example.org/__init__.py*.', 'see https://example.org/__init__.py.'],
+  ['外层下划线', '__see https://example.org/a*b*c__', 'see https://example.org/a*b*c'],
+  ['多个格式区域', '**https://example.org/a*b*c** **加粗** https://example.org/__x__', 'https://example.org/a*b*c 加粗 https://example.org/__x__'],
+  ['中文标点与括号', '看（https://example.org/__x__），再看 https://example.org/*y*。', '看（https://example.org/__x__），再看 https://example.org/*y*。'],
+  ['英文括号与格式', '(https://example.org/__x__) **加粗**', '(https://example.org/__x__) 加粗'],
+  ['大小写与转义', 'HTTP://example.org/%2F__x__?q=a%2Ab#*c*', 'HTTP://example.org/%2F__x__?q=a%2Ab#*c*'],
+  ['地址中的单引号', "https://example.org/O'Reilly/__init__.py", "https://example.org/O'Reilly/__init__.py"],
+  ['裸地址中的右括号', 'https://example.org/a)b__c__?x=*y*', 'https://example.org/a)b__c__?x=*y*'],
+  ['地址末尾的表格字符', 'https://example.org/__x__|', 'https://example.org/__x__|'],
+  ['图片与正文', '![预览](https://example.org/__image__.png) https://example.org/__file__', '预览 https://example.org/__file__'],
+  ['无替代文字图片', '![](https://example.org/__image__.png)', 'https://example.org/__image__.png'],
+  ['普通格式对照', '**加粗** *斜体* ~~删除~~ __强调__\n- 项目\n> 引用', '加粗 斜体 删除 强调\n• 项目\n引用'],
+  ['非 HTTP 协议对照', 'ftp://example.org/__file__', 'ftp://example.org/file'],
+  ['原始控制字符', '\u0000QQ_CODE_0\u0000 \u0000QQ_URL_0\u0000 https://example.org/__x__', '\u0000QQ_CODE_0\u0000 \u0000QQ_URL_0\u0000 https://example.org/__x__']
+];
+for (const preserveCode of [false, true]) {
+  for (const [name, input, expected] of urlCases) {
+    test(`URL 原样保留：${name}（preserveCode=${preserveCode}）`, () => {
+      assert.equal(mdToPlain(input, { preserveCode }), expected);
+    });
+  }
+}
+
+test('URL 保护与代码保护相互独立', () => {
+  const code = '    const url = "https://example.org/__x__?q=*y*";\n    const product = a * b * c;';
+  const input = `**源码**\n\`\`\`js\n${code}\n\`\`\`\n\`https://example.org/__inline__\`\nhttps://example.org/__outside__`;
+  assert.equal(mdToPlain(input, { preserveCode: true }),
+    `源码\n${code}\nhttps://example.org/__inline__\nhttps://example.org/__outside__`);
+});
+
 test('grounded 会话通过工具与出站队列发出完整代码', async (t) => {
   const { ChatStore } = await import('../src/core/store.js');
   const { SessionRegistry } = await import('../src/core/sessions.js');

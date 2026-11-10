@@ -325,6 +325,40 @@ it('气泡整形：代码块和链接不被拆坏', async () => {
 });
 
 
+for (const persona of [false, true]) {
+  for (const preserveCode of [false, true]) {
+    it(`URL 原样发送到协议端（persona=${persona}, preserveCode=${preserveCode}）`, async (t) => {
+      const cfg = baseConfig();
+      cfg.humanize = {
+        ...cfg.humanize,
+        enabled: true,
+        replyDelay: { enabled: true, minMs: 0, maxMs: 0, perCharMs: 0, capMs: 0 }
+      };
+      setRuntimeConfig(cfg);
+      const store = new ChatStore(0, { dataDir: dir });
+      t.after(() => store.close());
+      const sent = [];
+      const messageId = 700 + Number(persona) * 10 + Number(preserveCode);
+      const sender = new SendQueue({
+        store,
+        onebot: {
+          selfId: '100',
+          getGroupMemberInfo: async () => ({ shut_up_timestamp: 0 }),
+          sendText: async (_kind, _id, text) => { sent.push(text); return { message_id: messageId }; }
+        }
+      });
+      const url = 'https://example.org/package/__init__.py?filter=*a*&name=~~draft~~';
+      const result = await sender.sendTextBatch('group:1', [`**下载** [源码](${url})`], {
+        persona, preserveCode, voice: { maxChars: 12, maxBubbles: 3, pauseMs: [0, 0] }
+      });
+      assert.deepEqual(result.failed, []);
+      assert.deepEqual(sent, [`下载 源码 (${url})`]);
+      assert.equal(result.sent[0].text, sent[0]);
+      assert.equal(store.findByMid('group:1', result.sent[0].messageId).text, sent[0]);
+    });
+  }
+}
+
 it('气泡整形只作用于人格回复：系统文本（日报/游戏/插件代发）不拆条', async () => {
   const cfg = baseConfig();
   cfg.humanize = {

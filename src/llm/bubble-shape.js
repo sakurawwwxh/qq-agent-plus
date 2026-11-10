@@ -12,7 +12,7 @@ function protect(text) {
   out = out.replace(/`[^`\n]+`/g, (match) => stash(match));
   out = out.replace(/https?:\/\/[^\s，。！？；、"')】]+/gi, (match) => stash(match));
   // 常见颜文字：括号内部不拆开（只保护短片段，避免把正常括号内容也吞掉）。
-  out = out.replace(/[（(][^（）()\n]{1,16}[）)]/g, (match) => stash(match));
+  out = out.replace(/[（(][^（）()\n\u0000]{1,16}[）)]/g, (match) => stash(match));
   return { text: out, parts };
 }
 
