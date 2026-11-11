@@ -1,16 +1,13 @@
 // 把 agent 的 Markdown 回复转成适合 QQ 发送的纯文本。（移植自 qq-bridge src/llm/md-to-plain.js）
+import { randomUUID } from 'node:crypto';
 
 export function mdToPlain(md, { preserveCode = false } = {}) {
   let s = String(md ?? '');
-  const code = [];
-  let marker = '\u0000QQ_CODE_';
+  const protectedText = [];
+  const marker = `\u0000QQTEXT${randomUUID()}Z`;
+  const protect = (body) => `${marker}${protectedText.push(body) - 1}\u0000`;
   // Protect code before prose replacements can consume operators such as *, > and |.
   if (preserveCode) {
-    while (s.includes(marker)) marker += '_';
-    const protect = (body) => {
-      const index = code.push(body) - 1;
-      return `${marker}${index}\u0000`;
-    };
     s = s.replace(
       /^ {0,3}(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)^ {0,3}\1[ \t]*(?=\r?$)/gm,
       (_, fence, body) => protect(body.replace(/\r?\n$/, ''))
@@ -24,6 +21,44 @@ export function mdToPlain(md, { preserveCode = false } = {}) {
   // 图片/链接：保留文字，链接附在括号里（QQ 可点）
   s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => (alt || url));
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '$1 ($2)');
+  // URL 内的格式字符属于地址；只把正文中已打开的结尾标记留给后续清理。
+  const emphasis = new Set();
+  const trackEmphasis = (text) => {
+    for (const [mark] of text.matchAll(/\*{1,3}|__|~~/g)) {
+      if (emphasis.has(mark)) emphasis.delete(mark);
+      else emphasis.add(mark);
+    }
+  };
+  let scanned = 0;
+  s = s.replace(/https?:\/\/[^\s，。！？；、（）【】<>"`\u0000]+/gi, (url, offset, source) => {
+    trackEmphasis(source.slice(scanned, offset));
+    scanned = offset + url.length;
+    let end = url.length;
+    let depth = 0;
+    for (let i = 0; source[offset - 1] === '(' && i < end; i++) {
+      if (url[i] === '(') depth++;
+      else if (url[i] === ')') {
+        if (depth === 0) { end = i; break; }
+        depth--;
+      }
+    }
+    let boundary = end;
+    while (boundary > 0 && /[.,!?;:]/.test(url[boundary - 1])) boundary--;
+    const bareEnd = boundary;
+    const open = new Set(emphasis);
+    // 最多五种外层标记；不反复扩展哨兵或重新扫描整段消息。
+    for (let i = 0; i < 5; i++) {
+      const mark = ['***', '**', '*', '__', '~~'].find((value) => open.has(value)
+        && url.slice(0, boundary).endsWith(value));
+      if (!mark) break;
+      open.delete(mark);
+      boundary -= mark.length;
+    }
+    if (boundary < bareEnd) end = boundary;
+    const tail = url.slice(end);
+    trackEmphasis(tail);
+    return protect(url.slice(0, end)) + tail;
+  });
   // 粗体/斜体/删除线标记
   s = s.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');
   s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
@@ -42,9 +77,7 @@ export function mdToPlain(md, { preserveCode = false } = {}) {
   // 折叠的连续空行
   s = s.replace(/\n{3,}/g, '\n\n');
   s = s.trim();
-  if (preserveCode) {
-    s = s.replace(new RegExp(`${marker}(\\d+)\\u0000`, 'g'), (_, index) => code[Number(index)]);
-  }
+  s = s.replace(new RegExp(`${marker}(\\d+)\\u0000`, 'g'), (_, index) => protectedText[Number(index)]);
   return s;
 }
 
