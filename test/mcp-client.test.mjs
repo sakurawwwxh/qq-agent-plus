@@ -169,6 +169,40 @@ it('server 调用中崩溃后自动重启，工具重新挂载可用', async () 
   }
 });
 
+it('意外退出也清理 sandbox 临时目录（自动重启不会留下孤儿资源）', async () => {
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-mcp-cleanup-'));
+  const client = new McpStdioClient({
+    id: 'cleanup', command: process.execPath, args: [fixture], timeoutMs: 2000
+  });
+  try {
+    await client.start();
+    client.cleanup = { tempHome };
+    client.proc.kill('SIGKILL');
+    assert.equal(await waitFor(() => !fs.existsSync(tempHome), 2000), true);
+  } finally {
+    client.stop();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+});
+
+it('连续 3 次调用超时后杀掉子进程，交给管理器自动重启', async () => {
+  configWith({ env: { MCP_FAKE_HANG_CALL: '1' }, timeoutMs: 80 });
+  const manager = new McpManager({ restartBaseMs: 50, restartMaxMs: 200 });
+  try {
+    await manager.start();
+    const def = manager.toolDefsFor().find((entry) => entry.name === 'mcp_fake_echo');
+    for (let i = 0; i < 3; i += 1) {
+      const result = await def.execute({}, { text: 'hang' });
+      assert.equal(result.isError, true);
+      assert.match(result.content, /超时/);
+    }
+    assert.equal(await waitFor(() => manager.status()[0]?.restartAttempts >= 1, 3000), true, '卡死应触发自动重启');
+    assert.equal(await waitFor(() => manager.status()[0]?.ready, 3000), true, '重启后应恢复就绪');
+  } finally {
+    manager.stop();
+  }
+});
+
 it('启动失败会退避重试，超过上限后停止并给出可读错误', async () => {
   configWith({ command: process.execPath, args: ['-e', 'process.exit(3)'] });
   const manager = new McpManager({ restartBaseMs: 50, restartMaxMs: 50, maxRestarts: 2 });

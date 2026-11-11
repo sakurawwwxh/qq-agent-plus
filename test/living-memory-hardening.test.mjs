@@ -7,6 +7,7 @@ import { LivingMemoryStore } from '../src/living-memory/store.js';
 import { LivingMemoryService } from '../src/living-memory/service.js';
 import { LivingMemoryRuntime } from '../src/living-memory/runtime.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from '../src/living-memory/config.js';
+import { recentContextFor } from '../src/living-memory/util.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-living-memory-hardening-'));
 after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 }));
@@ -264,4 +265,18 @@ test('stop prevents a late capture from reopening the database', async () => {
   runtime.captureTurn({ chatKey: 'group:1', triggerEntries: [{ text: '停止后不应写库' }] });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(fs.existsSync(path.join(dataDir, 'living-memory', 'living-memory.sqlite')), false);
+});
+
+test('最近上下文不把 game-secret 私聊送进 embedding 查询', () => {
+  const store = {
+    recent: () => [
+      { id: '1', text: '普通消息' },
+      { id: '2', text: '你的词是「苹果」', eventKind: 'game-secret' },
+      { id: '3', text: '继续聊' }
+    ]
+  };
+  assert.deepEqual(
+    recentContextFor(store, 'private:1', [], { limit: 10, keep: 3 }),
+    [{ text: '普通消息' }, { text: '继续聊' }]
+  );
 });

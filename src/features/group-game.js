@@ -995,12 +995,18 @@ export class GroupGameManager {
       this.#dropBroadcast(oldest.deliveryId, 'queue-overflow');
       this.log(`[group-game] ${chatKey} 阶段播报积压超过 ${BROADCAST_MAX_PER_CHAT} 条，放弃最早一条`);
     }
+    // 同一群已有排队项时不要抢跑：direct 发送会绕过 #flushDeliveries 的同群顺序，
+    // 让后一条公告先于仍在退避的前一条到达。交给下一次 tick 按队列顺序发。
+    const hasEarlier = sameChat.length > 0;
     const item = {
       deliveryId: crypto.randomUUID(),
       chatKey,
       gameId: g?.gameId || '',
       instanceId: g?.instanceId || '',
-      requiresGameInstance: false,
+      // 局内公告只对当前这一局有意义：局被结束/删除后，排队的旧公告不应在
+      // 下一局或空群里补发。终局播报仍由 #flushDeliveries({force:true}) 先送达。
+      // stop()/取消报名会先删局再发说明，这条 g 为空的新公告必须放行。
+      requiresGameInstance: Boolean(g),
       effect: { type: 'public', text: String(effect.text).slice(0, 500) },
       attempts: 0,
       retryAt: 0,
@@ -1008,7 +1014,7 @@ export class GroupGameManager {
     };
     this.pendingBroadcasts.push(item);
     this.#save();
-    await this.#deliverPendingBroadcast(item);
+    if (!hasEarlier) await this.#deliverPendingBroadcast(item);
   }
 
   /** 投递一条 public 队列项；返回 sent/failed/unknown/in-flight/dropped。 */

@@ -33,9 +33,12 @@ function isDockerCommand(command) {
 }
 
 function normMode(server = {}, { networkIsolation = false, permissionIsolation = false } = {}) {
+  // 旧开关是显式安全要求，不能被同时保存的 sandbox.mode:'off' 覆盖。
+  // 控制台曾把两者一起写盘：勾了「网络隔离」却留着 mode=off/network=host，
+  // 旧实现会直接返回未沙箱 spec，勾选框形同虚设。
+  if (networkIsolation || permissionIsolation) return 'required';
   const raw = String(server?.mode || '').trim().toLowerCase();
   if (MODES.has(raw)) return raw;
-  if (networkIsolation || permissionIsolation) return 'required';
   // 只写了 sandbox.network:'none'/'loopback' 也要真的尝试隔离：以前默认 off，
   // 这行配置会被静默忽略，npx/uvx 仍以完整网络启动。
   const net = String(server?.network || '').trim().toLowerCase();
@@ -43,9 +46,11 @@ function normMode(server = {}, { networkIsolation = false, permissionIsolation =
 }
 
 function normNetwork(server = {}, networkIsolation = false, fallback = 'host') {
+  // networkIsolation 的字面语义就是禁网；显式 loopback/host 不能在它打开时翻案。
+  if (networkIsolation) return 'none';
   const raw = String(server?.network || '').trim().toLowerCase();
   if (NETWORKS.has(raw)) return raw;
-  return networkIsolation ? 'none' : fallback;
+  return fallback;
 }
 
 function isolationError(id, message) {

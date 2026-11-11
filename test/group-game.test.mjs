@@ -1060,6 +1060,31 @@ test('同一群同一种游戏开第二局：终局播报照常发（幂等键�
 
 const pendingFile = () => JSON.parse(fs.readFileSync(path.join(dataDir, 'games.json'), 'utf8')).pendingBroadcasts || [];
 
+test('局已删除后，排队中的公开播报不再补发', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  const g = w.mgr.games.get('group:1');
+  w.mgr.pendingBroadcasts.push({
+    deliveryId: 'stale-public',
+    chatKey: 'group:1',
+    gameId: g.gameId,
+    instanceId: g.instanceId,
+    requiresGameInstance: true,
+    effect: { type: 'public', text: '上一局的旧公告' },
+    attempts: 0,
+    retryAt: 0,
+    createdAt: w.getClock()
+  });
+  w.mgr.games.delete('group:1');
+  const before = w.sent.length;
+  await w.mgr.tick();
+  assert.equal(w.sent.length, before, '局没了就不该再补发旧公告');
+  assert.equal(pendingFile().length, 0, '队列项应被丢弃');
+});
+
 test('阶段播报失败进入持久化队列：退避后重试成功，之后不再重发', async () => {
   const w = makeWorld({ rng: () => 0.42 });
   const effects = new EffectLedger(w.store.db);
@@ -1097,6 +1122,36 @@ test('阶段播报失败进入持久化队列：退避后重试成功，之后�
   assert.equal(w.store.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE kind='game-broadcast' AND state='sent'").get().n, 2);
   await w.mgr.tick();
   assert.equal(attempts.length, 2, '已送达的播报不能再次发送');
+});
+
+test('阶段播报按队列顺序重试，后一条不抢跑', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  const attempts = [];
+  let openingFailed = false;
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      const text = String(msgs?.[0] || '');
+      attempts.push(text);
+      if (/数字炸弹开局/.test(text) && !openingFailed) {
+        openingFailed = true;
+        throw new Error('socket timeout');
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(attempts.length, 1, '前一条还在退避时，后一条不能直接抢跑');
+  w.setClock(w.getClock() + 21000);
+  await w.mgr.tick();
+  assert.equal(attempts.length, 3);
+  assert.match(attempts[1], /数字炸弹开局/);
+  assert.match(attempts[2], /不在这段里/);
 });
 
 test('阶段播报结果未知：账本 unknown，队列丢弃且永不重发', async () => {

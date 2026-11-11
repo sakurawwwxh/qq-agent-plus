@@ -690,11 +690,13 @@ test('mcp-isolation：要求隔离却没隔离 → 报红；显式信任的未�
   const bad = (await run([
     { id: 'ok', enabled: true, ready: true, sandboxKind: 'bwrap', unsandboxed: false },
     { id: 'bad', enabled: true, ready: true, sandboxError: 'E_MCP_ISOLATION：没有 bwrap', unsandboxed: false },
+    { id: 'legacy-off', enabled: true, ready: true, sandboxMode: 'off', networkIsolation: true, unsandboxed: true },
     { id: 'trusted', enabled: true, ready: true, unsandboxed: true, allowUnsandboxed: true }
   ])).checks.find((c) => c.name === 'mcp-isolation');
   assert.ok(bad, '巡检必须包含 mcp-isolation 一项');
   assert.equal(bad.ok, false, '配置要求隔离却没隔离必须报红');
   assert.match(String(bad.detail), /bad/);
+  assert.match(String(bad.detail), /legacy-off/, 'mode=off 不能豁免 networkIsolation');
 
   const down = (await run([
     { id: 'down', enabled: true, ready: false, error: 'spawn ENOENT', unsandboxed: false },

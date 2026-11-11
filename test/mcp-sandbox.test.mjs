@@ -134,6 +134,33 @@ test('npx：Linux 有 bwrap 时用只读根 + 独立 netns，HOME/缓存指向�
   fs.rmSync(spec.cleanup.tempHome, { recursive: true, force: true });
 });
 
+test('networkIsolation 优先于矛盾的 sandbox.mode/network，不能静默裸跑', () => {
+  const npxSpec = buildMcpLaunchSpec({
+    id: 'legacy-net',
+    command: 'npx',
+    args: ['-y', 'pkg'],
+    networkIsolation: true,
+    sandbox: { mode: 'off', network: 'host' },
+    platform: 'linux',
+    probeBwrap: OK
+  });
+  assert.equal(npxSpec.netIsolated, true);
+  assert.equal(npxSpec.unsandboxed, false);
+  assert.equal(npxSpec.sandboxKind, 'bwrap');
+
+  const nodeSpec = buildMcpLaunchSpec({
+    id: 'legacy-node-net',
+    command: 'node',
+    args: ['server.js'],
+    networkIsolation: true,
+    sandbox: { mode: 'off', network: 'host' },
+    netProbe: OK
+  });
+  assert.equal(nodeSpec.command, 'unshare');
+  assert.equal(nodeSpec.netIsolated, true);
+  assert.equal(nodeSpec.unsandboxed, false);
+});
+
 test('npx：没有 bwrap 时 required fail-closed，auto 需要 allowUnsandboxed', () => {
   const base = {
     id: 'npx-nobwrap',

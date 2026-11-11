@@ -148,6 +148,9 @@ export class McpStdioClient {
       this.lastError = detail;
       this.log.warn?.(detail);
       this.#failAll(new Error(detail));
+      // 非 stop() 的意外退出也要清 docker cidfile/容器和 bwrap 临时 HOME；
+      // 否则自动重启会不断留下孤儿容器。
+      this.#cleanupSandbox();
       if (!this.intentionalStop) {
         try { this.onExit?.({ code, signal }); } catch { /* 重启逻辑自身不能拖垮宿主 */ }
       }
@@ -231,6 +234,9 @@ export class McpStdioClient {
         if (this.consecutiveTimeouts >= 3) {
           this.ready = false;
           this.lastError = `连续 ${this.consecutiveTimeouts} 次调用超时，已标记未就绪`;
+          // 不退出进程的话，管理器永远不会走 onExit 重启，这个 server 会一直“未就绪”。
+          // 主动杀掉子进程，让 onExit 接管有界重启；不要设置 intentionalStop。
+          try { this.proc?.kill('SIGKILL'); } catch { /* 已退出 */ }
         }
         cleanup();
         reject(new Error(`MCP ${this.id} ${this.lastError}`));

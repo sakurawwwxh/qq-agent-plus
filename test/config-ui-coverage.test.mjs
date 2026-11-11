@@ -158,5 +158,7 @@ test('MCP 可写目录：渲染控件存在，保存不再硬编码清空 sandbo
   assert.match(save, /\.mcp-writable-paths/);
   assert.match(save, /const originalId = String\(row\.dataset\?\.id \|\| id\)/);
   assert.match(save, /\.\.\.sandboxBase/);
+  assert.match(save, /mode: \(networkIsolation \|\| permissionIsolation\) && sandboxMode === 'off' \? 'required' : sandboxMode/);
+  assert.match(save, /network: networkIsolation \? 'none' : sandboxNetwork/);
   assert.doesNotMatch(save, /writablePaths:\s*\[\]/);
 });

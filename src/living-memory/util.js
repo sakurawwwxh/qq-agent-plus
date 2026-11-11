@@ -90,6 +90,7 @@ export function recentContextFor(store, chatKey, triggerEntries = [], { limit = 
   if (typeof store?.recent !== 'function') return [];
   const currentIds = new Set((triggerEntries || []).map((entry) => String(entry?.id ?? '')));
   return (store.recent(chatKey, { limit }) || [])
+    .filter((entry) => entry?.eventKind !== 'game-secret')
     .filter((entry) => !currentIds.has(String(entry?.id ?? '')) && String(entry?.text || '').trim())
     .slice(-keep)
     .map((entry) => ({ text: String(entry.text).slice(0, 360) }));

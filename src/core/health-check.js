@@ -549,8 +549,9 @@ export async function runHealthCheck(opts = {}) {
       // 除了隔离问题，还要报“根本没起来”：配置里有 enabled、但既不在启动/重启、
       // 也没有 ready，说明 spawn 失败或启动流程卡死；不能等 error 字段非空才报。
       const unavailable = (row) => !row?.ready && !row?.starting && !row?.restarting;
-      // 显式 sandbox.mode:'off' 是管理员要求不隔离，不算“未按配置隔离”。
-      const isolateMismatch = (row) => row.sandboxMode !== 'off'
+      // 显式 sandbox.mode:'off' 是管理员要求不隔离，不算“未按配置隔离”；
+      // 但 networkIsolation/permissionIsolation 仍是硬要求，不能被 mode:'off' 豁免。
+      const isolateMismatch = (row) => (row.networkIsolation === true || row.permissionIsolation === true || row.sandboxMode !== 'off')
         && row.unsandboxed && row.allowUnsandboxed !== true;
       const bad = enabled.filter((row) => row.sandboxError || isolateMismatch(row) || unavailable(row));
       const trusted = enabled.filter((row) => row.unsandboxed && row.allowUnsandboxed === true);

@@ -110,6 +110,14 @@ async function saveConfig({ quiet = false } = {}) {
       if (!Array.isArray(writablePaths) || writablePaths.some((item) => typeof item !== 'string')) {
         throw new Error('MCP 可写目录必须是字符串 JSON 数组');
       }
+      const networkIsolation = row.querySelector('.mcp-network-isolation')?.checked === true;
+      const permissionIsolation = row.querySelector('.mcp-permission-isolation')?.checked === true;
+      const sandboxMode = ['off', 'auto', 'required'].includes(read('.mcp-sandbox-mode'))
+        ? read('.mcp-sandbox-mode')
+        : 'off';
+      const sandboxNetwork = ['none', 'loopback', 'host'].includes(read('.mcp-sandbox-network'))
+        ? read('.mcp-sandbox-network')
+        : 'host';
       return {
         id,
         enabled: row.querySelector('.mcp-enabled')?.checked !== false,
@@ -121,17 +129,14 @@ async function saveConfig({ quiet = false } = {}) {
         timeoutMs: clampInt(read('.mcp-timeout'), 1000, 300000, 30000),
         maxCallsPerMinute: clampInt(read('.mcp-maxcalls'), 1, 600, 30),
         toolMounting: read('.mcp-mounting') === 'meta' ? 'meta' : 'direct',
-        networkIsolation: row.querySelector('.mcp-network-isolation')?.checked === true,
-        permissionIsolation: row.querySelector('.mcp-permission-isolation')?.checked === true,
+        networkIsolation,
+        permissionIsolation,
         sandbox: {
           // 保留 kind 等未在表单里的已有字段，避免一次保存把手工配置抹掉。
           ...sandboxBase,
-          mode: ['off', 'auto', 'required'].includes(read('.mcp-sandbox-mode'))
-            ? read('.mcp-sandbox-mode')
-            : 'off',
-          network: ['none', 'loopback', 'host'].includes(read('.mcp-sandbox-network'))
-            ? read('.mcp-sandbox-network')
-            : 'host',
+          // 旧开关是硬要求：勾了网络隔离/权限隔离却留着 mode=off 会写出自相矛盾的配置。
+          mode: (networkIsolation || permissionIsolation) && sandboxMode === 'off' ? 'required' : sandboxMode,
+          network: networkIsolation ? 'none' : sandboxNetwork,
           writablePaths
         },
         allowUnsandboxed: row.querySelector('.mcp-allow-unsandboxed')?.checked === true,
