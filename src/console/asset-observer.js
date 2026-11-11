@@ -141,12 +141,26 @@ export function buildSlangContextForChat(
   ].join('\n');
 }
 
+const ASSET_CACHE_TTL_MS = 5000;
+const memorySummaryCache = new Map();
+const identityAssetsCache = new Map();
+
+/** 控制台写入记忆/人物后主动失效，避免 5 秒缓存让用户以为“保存没生效”。 */
+export function invalidateAssetCaches() {
+  memorySummaryCache.clear();
+  identityAssetsCache.clear();
+}
+
 export function readMemoryAssetSummary(dataDir = DATA_DIR) {
+  const cached = memorySummaryCache.get(dataDir);
+  if (cached && Date.now() - cached.at < ASSET_CACHE_TTL_MS) return cached.data;
   const memoryDir = path.join(dataDir, 'memory');
   const peopleDir = path.join(memoryDir, 'people');
   let names = [];
   try { names = fs.readdirSync(memoryDir); } catch {
-    return { chats: 0, people: 0, impressions: 0, handoffs: 0, items: [] };
+    const empty = { chats: 0, people: 0, impressions: 0, handoffs: 0, items: [] };
+    memorySummaryCache.set(dataDir, { at: Date.now(), data: empty });
+    return empty;
   }
   const rows = new Map();
   const touch = (chatKey) => {
@@ -211,19 +225,28 @@ export function readMemoryAssetSummary(dataDir = DATA_DIR) {
     }
   }
   const items = [...rows.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  return {
+  const result = {
     chats: items.length,
     people: globalFiles.length ? people : items.reduce((sum, chat) => sum + chat.people, 0),
     impressions: globalFiles.length ? impressions : items.reduce((sum, chat) => sum + chat.impressions, 0),
     handoffs: items.filter((chat) => chat.hasHandoff).length,
     items
   };
+  memorySummaryCache.set(dataDir, { at: Date.now(), data: result });
+  return result;
 }
 
 export function readIdentityAssets(dataDir = DATA_DIR, limit = 500, query = '') {
+  const cacheKey = `${dataDir}\u0000${limit}\u0000${query}`;
+  const cached = identityAssetsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < ASSET_CACHE_TTL_MS) return cached.data;
+  const remember = (value) => {
+    identityAssetsCache.set(cacheKey, { at: Date.now(), data: value });
+    return value;
+  };
   const file = identityDatabasePath(dataDir);
   if (!fs.existsSync(file)) {
-    return { exists: false, people: 0, sources: 0, aliases: 0, entries: [] };
+    return remember({ exists: false, people: 0, sources: 0, aliases: 0, entries: [] });
   }
   let db;
   try {
@@ -309,21 +332,21 @@ export function readIdentityAssets(dataDir = DATA_DIR, limit = 500, query = '') 
           .map((entry) => cleanText(entry.alias, 60))
           .filter(Boolean))]
       }));
-    return {
+    return remember({
       exists: true,
       ...totals,
       matched: entries.length,
       entries
-    };
+    });
   } catch (error) {
-    return {
+    return remember({
       exists: true,
       people: 0,
       sources: 0,
       aliases: 0,
       entries: [],
       error: String(error?.message ?? error)
-    };
+    });
   } finally {
     try { db?.close(); } catch { /* ignore */ }
   }
@@ -686,6 +709,7 @@ export class AssetObserver {
       origin: 'manual'   // 控制台手动新增的，不是模型自己记的
     });
     if (!entry) throw new Error('记忆存储不可用');
+    invalidateAssetCaches();
     return { chatKey: source, userId: uin, ...entry };
   }
 
@@ -698,41 +722,47 @@ export class AssetObserver {
       .filter(Boolean);
     if (!entries.length) throw new Error('至少保留一条记忆；删除请使用删除按钮');
     // 控制台里人手改的：标成 manual，别让它在记忆页显示成"整理改写"
-    return this.memory.replaceMember(
+    const result = this.memory.replaceMember(
       source,
       String(userId || '').trim(),
       cleanText(name, 60),
       entries,
       { origin: 'manual' }
     );
+    invalidateAssetCaches();
+    return result;
   }
 
   deleteMemory({ chatKey, userId }) {
     const source = String(chatKey || '');
     if (!/^(group|private):\d+$/.test(source)) throw new Error('会话格式无效');
-    return Boolean(this.memory?.removeMember(source, String(userId || '').trim()));
+    const removed = Boolean(this.memory?.removeMember(source, String(userId || '').trim()));
+    if (removed) invalidateAssetCaches();
+    return removed;
   }
 
   upsertIdentity(input) {
     const activeStore = this.getIdentityPilot?.()?.identityStore;
-    if (activeStore) return activeStore.upsertIdentityAsset(input);
-    const store = new IdentityStore({ dataDir: this.dataDir });
-    try {
-      return store.upsertIdentityAsset(input);
-    } finally {
-      store.close();
-    }
+    const result = activeStore
+      ? activeStore.upsertIdentityAsset(input)
+      : (() => {
+        const store = new IdentityStore({ dataDir: this.dataDir });
+        try { return store.upsertIdentityAsset(input); } finally { store.close(); }
+      })();
+    invalidateAssetCaches();
+    return result;
   }
 
   deleteIdentity(userId) {
     const pilot = this.getIdentityPilot?.();
-    if (pilot?.identityStore) return pilot.deleteIdentityAsset(userId);
-    const store = new IdentityStore({ dataDir: this.dataDir });
-    try {
-      return store.deleteIdentityAsset(userId);
-    } finally {
-      store.close();
-    }
+    const result = pilot?.identityStore
+      ? pilot.deleteIdentityAsset(userId)
+      : (() => {
+        const store = new IdentityStore({ dataDir: this.dataDir });
+        try { return store.deleteIdentityAsset(userId); } finally { store.close(); }
+      })();
+    invalidateAssetCaches();
+    return result;
   }
 
   identitySnapshot({ limit = 500, query = '' } = {}) {

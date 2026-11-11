@@ -22,10 +22,20 @@ import { state } from './core/state.js';
 import { loadExperimentalFeatureStatuses } from './pages/features.js';
 import { loadDailyMomentsStatus, loadQzoneInteractionStatus } from './pages/moments.js';
 import { lifecycleAggregate, loadTimeControlStatus } from './pages/status.js';
+let statusInFlight = false;
+let pendingFullRefresh = false;
+
 QARegistry.override('refreshStatus', async function refreshStatus(options = {}) {
   // light=true：只刷新顶栏/状态标签。chat-update、SSE 和 15 秒轮询走这条；
   // 身份/异常页的 500 行重接口只在切页、显式刷新或业务动作后加载。
   const light = options?.light === true;
+  if (statusInFlight) {
+    // 轻量刷新进行中又来了完整刷新（例如切页）：等当前请求结束再补一次，
+    // 不能直接丢掉，否则新页面的身份/异常数据要等下一次手动刷新。
+    if (!light) pendingFullRefresh = true;
+    return;
+  }
+  statusInFlight = true;
   try {
     state.status = await api('/api/status');
     const s = state.status;
@@ -116,7 +126,13 @@ QARegistry.override('refreshStatus', async function refreshStatus(options = {}) 
     if (!light && state.tab === 'identity') loadIdentityFeaturePage();
     if (!light && state.tab === 'incidents') loadIncidentFeaturePage();
     renderBanner();
-  } catch (e) { /* 忽略瞬时错误 */ }
+  } catch (e) { /* 忽略瞬时错误 */ } finally {
+    statusInFlight = false;
+    if (pendingFullRefresh) {
+      pendingFullRefresh = false;
+      Promise.resolve(QARegistry.dispatch('refreshStatus')).catch(() => {});
+    }
+  }
 });
 
 // 生命周期线程可能在某次模型 Session 已经结束之后，才由恢复循环因为空闲/硬上限
