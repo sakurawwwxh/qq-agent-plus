@@ -6,6 +6,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { closeServer } from './helpers/cleanup.mjs';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-imagegen-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
@@ -181,7 +182,7 @@ test('适配器：url 形态走内置安全下载器（真发一次 HTTP，验�
     );
   } finally {
     updateConfig({ security: { allowPrivateImageHosts: false } });
-    await new Promise((resolve) => server.close(resolve));
+    await closeServer(server);
   }
 });
 
@@ -377,7 +378,7 @@ test('魔搭异步生图：任务成功后下载 output_images 并原样返回�
     assert.equal(calls.length, 2);
   } finally {
     updateConfig({ security: { allowPrivateImageHosts: false } });
-    await new Promise((resolve) => server.close(resolve));
+    await closeServer(server);
   }
 });
 

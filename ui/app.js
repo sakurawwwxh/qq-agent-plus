@@ -1131,7 +1131,7 @@ function scheduleStatusRefresh() {
   if (state.statusRefreshTimer) return;
   state.statusRefreshTimer = setTimeout(() => {
     state.statusRefreshTimer = null;
-    refreshStatus();
+    refreshStatus({ light: true });
   }, 1500);
 }
 
@@ -1142,7 +1142,7 @@ function connectSSE() {
     // 新运行只刷新列表。用户已经在阅读某个 Session 时绝不抢占右侧详情；
     // currentSessionId 为空的首屏场景由 loadSessions 自行选择活动会话。
     loadSessions({ quiet: true });
-    refreshStatus();
+    refreshStatus({ light: true });
   });
   es.addEventListener('session-update', (ev) => {
     let data;
@@ -1196,7 +1196,7 @@ function connectSSE() {
     try { data = JSON.parse(ev.data); } catch { /* 数据坏了也照常刷列表 */ }
     loadSessions();
     if (state.tab === 'chats') loadChats({ quiet: true });
-    refreshStatus();
+    refreshStatus({ light: true });
     // ⚠️ 会话刚结束必须主动重拉一次详情：轮询只刷 running/waiting 的会话，
     //    最终态（sent / finishReason / error）之后再也不来 —— 不重拉的话，
     //    "已发送到 QQ"徽标和收尾状态只能等用户手动刷新才出现。
@@ -1353,7 +1353,7 @@ function connectSSE() {
   es.addEventListener('auto-update', () => {
     if (state.tab === 'control') loadControlHub({ force: true });
   });
-  es.addEventListener('status', () => refreshStatus());
+  es.addEventListener('status', () => refreshStatus({ light: true }));
   es.addEventListener('feedback', (ev) => {
     // 与上面几个事件同一道守卫：载荷坏了不能把监听器抛出去（其它事件都有 try/catch，
     // 这里原来是裸的 —— 2026-10-01 审查）
@@ -1722,12 +1722,12 @@ async function init() {
       connectSSE();
       refreshStatus();
       startListPoller();   // 配置已就绪，把 4s 兜底轮询校准到 ui.refreshMs
-      setInterval(() => { refreshStatus(); void refreshPendingBadge(); }, refreshIntervalMs(15000));
+      setInterval(() => { refreshStatus({ light: true }); void refreshPendingBadge(); }, refreshIntervalMs(15000));
       return;
     }
   } catch { /* 按默认流程走 */ }
   refreshStatus();
-  setInterval(() => { refreshStatus(); void refreshPendingBadge(); }, refreshIntervalMs(15000));
+  setInterval(() => { refreshStatus({ light: true }); void refreshPendingBadge(); }, refreshIntervalMs(15000));
   connectSSE();
   // 首次 startListPoller() 在配置加载前执行，会落到 4000ms 兜底值，导致会话列表每 4 秒重建一次（界面闪烁）；
   // 配置就绪后重新校准一次轮询间隔

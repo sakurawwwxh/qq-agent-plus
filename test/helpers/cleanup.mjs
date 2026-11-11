@@ -14,3 +14,15 @@ export function rmDirBestEffort(target) {
     return false;
   }
 }
+
+/** 关闭测试 HTTP 服务并主动断开 keep-alive 连接，避免 Windows 上残留句柄。 */
+export function closeServer(server) {
+  return new Promise((resolve) => {
+    if (!server) {
+      resolve();
+      return;
+    }
+    try { server.closeAllConnections?.(); } catch { /* 旧 Node/已关闭 */ }
+    server.close(() => resolve());
+  });
+}

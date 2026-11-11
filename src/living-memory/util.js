@@ -49,18 +49,26 @@ export function searchTerms(value) {
   return [...terms];
 }
 
-export function lexicalScore(query, candidate) {
+export function lexicalScorer(query) {
   const normalizedQuery = normalizeForSearch(query);
-  const normalizedCandidate = normalizeForSearch(candidate);
-  if (!normalizedQuery || !normalizedCandidate) return 0;
+  if (!normalizedQuery) return () => 0;
   const cjkQuery = normalizedQuery.replace(/[^\u3400-\u9fff]/g, '');
   const allowCjkUnigram = cjkQuery.length <= 1;
-  let score = normalizedCandidate.includes(normalizedQuery) ? 12 : 0;
-  for (const term of searchTerms(normalizedQuery)) {
-    if (term.length === 1 && (/^[a-z0-9]$/.test(term) || !allowCjkUnigram)) continue;
-    if (normalizedCandidate.includes(term)) score += 1;
-  }
-  return score;
+  const terms = [...searchTerms(normalizedQuery)]
+    .filter((term) => !(term.length === 1 && (/^[a-z0-9]$/.test(term) || !allowCjkUnigram)));
+  return (candidate) => {
+    const normalizedCandidate = normalizeForSearch(candidate);
+    if (!normalizedCandidate) return 0;
+    let score = normalizedCandidate.includes(normalizedQuery) ? 12 : 0;
+    for (const term of terms) {
+      if (normalizedCandidate.includes(term)) score += 1;
+    }
+    return score;
+  };
+}
+
+export function lexicalScore(query, candidate) {
+  return lexicalScorer(query)(candidate);
 }
 
 /**

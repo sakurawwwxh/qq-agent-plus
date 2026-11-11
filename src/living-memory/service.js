@@ -11,20 +11,27 @@ function recencyScore(memory) {
   return Math.max(0, 1 - days / 365);
 }
 
-function cosineSimilarity(left, right) {
-  if (!left || !right || left.length !== right.length || !left.length) return 0;
+function vectorNorm(vector) {
+  let sum = 0;
+  for (let index = 0; index < vector.length; index += 1) {
+    const value = Number(vector[index]) || 0;
+    sum += value * value;
+  }
+  return Math.sqrt(sum);
+}
+
+function cosineWithNorm(left, leftNorm, right) {
+  if (!left || !right || left.length !== right.length || !left.length || !leftNorm) return 0;
   let dot = 0;
-  let leftNorm = 0;
   let rightNorm = 0;
   for (let index = 0; index < left.length; index += 1) {
     const a = Number(left[index]) || 0;
     const b = Number(right[index]) || 0;
     dot += a * b;
-    leftNorm += a * a;
     rightNorm += b * b;
   }
-  if (!leftNorm || !rightNorm) return 0;
-  return dot / Math.sqrt(leftNorm * rightNorm);
+  if (!rightNorm) return 0;
+  return dot / (leftNorm * Math.sqrt(rightNorm));
 }
 
 function boundedDeadlineMs(value) {
@@ -214,11 +221,20 @@ export class LivingMemoryService {
         if (!candidates.length) {
           semanticAvailable = false;
         } else {
-          const best = candidates
-            .map((item) => ({ id: item.id, score: cosineSimilarity(queryVector, item.vector) }))
-            .filter((item) => item.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, 32);
+          const query = Float32Array.from(queryVector);
+          const queryNorm = vectorNorm(query);
+          const best = [];
+          let checked = 0;
+          for (const item of candidates) {
+            // 向量 unpack/cosine 是同步 CPU 工作；每 64 条检查一次本轮预算，
+            // 避免 deadline 只约束 embedding HTTP 而不管排序。
+            if (deadline && (checked++ & 63) === 0 && remainingMs() <= 0) {
+              throw new Error('语义召回超出本轮时间预算，已使用关键词结果');
+            }
+            const score = cosineWithNorm(query, queryNorm, item.vector);
+            if (score > 0) best.push({ id: item.id, score });
+          }
+          best.sort((a, b) => b.score - a.score).splice(32);
           const memories = this.store.getMemories(best.map((item) => item.id));
           const byId = new Map(memories.map((memory) => [memory.id, memory]));
           for (const [index, match] of best.entries()) {

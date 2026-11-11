@@ -22,7 +22,10 @@ import { state } from './core/state.js';
 import { loadExperimentalFeatureStatuses } from './pages/features.js';
 import { loadDailyMomentsStatus, loadQzoneInteractionStatus } from './pages/moments.js';
 import { lifecycleAggregate, loadTimeControlStatus } from './pages/status.js';
-QARegistry.override('refreshStatus', async function refreshStatus() {
+QARegistry.override('refreshStatus', async function refreshStatus(options = {}) {
+  // light=true：只刷新顶栏/状态标签。chat-update、SSE 和 15 秒轮询走这条；
+  // 身份/异常页的 500 行重接口只在切页、显式刷新或业务动作后加载。
+  const light = options?.light === true;
   try {
     state.status = await api('/api/status');
     const s = state.status;
@@ -110,8 +113,8 @@ QARegistry.override('refreshStatus', async function refreshStatus() {
     if (state.tab === 'settings' && state.settingsSection === 'experiments') {
       loadExperimentalFeatureStatuses();
     }
-    if (state.tab === 'identity') loadIdentityFeaturePage();
-    if (state.tab === 'incidents') loadIncidentFeaturePage();
+    if (!light && state.tab === 'identity') loadIdentityFeaturePage();
+    if (!light && state.tab === 'incidents') loadIncidentFeaturePage();
     renderBanner();
   } catch (e) { /* 忽略瞬时错误 */ }
 });

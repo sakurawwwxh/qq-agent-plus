@@ -123,6 +123,12 @@ test('群成员名单：从未发言的成员也能被 @，协议端失败时退
   cfg.humanize = { ...(cfg.humanize || {}), enabled: false };
   setRuntimeConfig(cfg);
   const store = withStore(t);
+  let memberNameCalls = 0;
+  const originalMemberNames = store.memberNames.bind(store);
+  store.memberNames = (...args) => {
+    memberNameCalls += 1;
+    return originalMemberNames(...args);
+  };
   const sent = [];
   let directoryCalls = 0;
   const onebot = {
@@ -137,9 +143,11 @@ test('群成员名单：从未发言的成员也能被 @，协议端失败时退
   const result = await sender.sendTextBatch('group:1', ['@潜水员 你好'], {});
   assert.equal(result.sent.length, 1);
   assert.equal(directoryCalls, 1);
+  assert.equal(memberNameCalls, 0, '完整名单可用时不应再扫消息表');
   assert.deepEqual(sent[0][3], [{ type: 'at', qq: '99' }, { type: 'text', text: ' 你好' }]);
 
-  // 第二次命中 10 分钟缓存，不再拉名单。
+  // 第二次命中 10 分钟缓存，不再拉名单，也不扫消息表。
   await sender.sendTextBatch('group:1', ['@潜水员 再问一句'], {});
   assert.equal(directoryCalls, 1);
+  assert.equal(memberNameCalls, 0);
 });

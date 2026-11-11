@@ -20,6 +20,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       # 必须取完整历史：发布说明要按「上一个 tag..本次 tag」算提交列表，
       # 默认的 depth=1 浅克隆里没有上一个 tag，说明会变成空的。
@@ -89,6 +90,12 @@ jobs:
       - name: 官方技能索引体检
         run: npm run skill:check
       - run: npm run test:unit
+      # tag 不触发 ci.yml：把 main CI 的 coverage 与官方插件打包/安装冒烟也放进 tag 门禁，
+      # 避免“CI 全绿但发布产物没跑过同一套检查”。
+      - name: 覆盖率门槛（与 main CI 同口径）
+        run: npm run test:coverage
+      - name: 官方插件打包 + 安装冒烟
+        run: node scripts/official-plugins-check.mjs
       # 与 ci.yml 同一步：发布闸门也要按更新器 unit 的加固环境（NoNewPrivileges + umask 0077）
       # 把门禁全清单复跑一遍 —— 门禁跑在加固 unit 里，2026-10-10 的事故（加固环境里两条
       # sudo 回退用例必败、导致标准部署装不上新版）正是默认环境里看不见的那一类。
@@ -129,6 +136,7 @@ jobs:
   windows:
     # release tag 不触发 ci.yml；这里补跑 Windows 门禁，避免 tag 绕过 test:unit:win。
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -142,6 +150,7 @@ jobs:
   release:
     needs: [verify, windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # 写权限只给这个 job：它只做"生成说明 + 建草稿 Release"，不跑 npm ci、不跑测试。
     permissions:
       contents: write

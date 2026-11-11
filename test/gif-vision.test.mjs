@@ -8,6 +8,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { after, before, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
+import { closeServer } from './helpers/cleanup.mjs';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-gif-vision-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
@@ -71,7 +72,7 @@ before(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = server.address().port;
 });
-after(() => new Promise((resolve) => server.close(resolve)));
+after(() => closeServer(server));
 
 test('convertGifToStillStrip：动图 → JPEG 帧条（装了 ffmpeg 才断言）', { skip: hasFfmpeg ? false : '本环境没有 ffmpeg' }, async () => {
   const gif = await makeAnimatedGif();

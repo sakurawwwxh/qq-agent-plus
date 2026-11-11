@@ -9,6 +9,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { closeServer } from './helpers/cleanup.mjs';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-image-downsample-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
@@ -48,7 +49,7 @@ before(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = server.address().port;
 });
-after(() => new Promise((resolve) => server.close(resolve)));
+after(() => closeServer(server));
 
 const url = () => `http://127.0.0.1:${port}/img`;
 

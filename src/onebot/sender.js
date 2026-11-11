@@ -301,20 +301,22 @@ export class SendQueue {
   }
 
   async #mentionMembersFor(chatKey) {
-    let recent = [];
-    try {
-      recent = mentionMembersFor(this.store, chatKey);
-    } catch (error) {
-      // 成员表读失败只放弃这次 @ 展开，纯文本仍要照常发出去。
-      log.warn('[sender] 读取成员表失败，本次不展开 @昵称:', error?.message ?? error);
-    }
+    // 先看 10 分钟缓存：旧实现先做一次全历史发言人扫描，再看缓存，
+    // 活跃群里每条带 @ 的消息都会白扫一遍消息表。
     const cached = this.mentionCache.get(chatKey);
     if (!cached || Date.now() - cached.at > 10 * 60 * 1000) {
       await this.#refreshMentionDirectory(chatKey);
     }
     const directory = this.mentionCache.get(chatKey)?.members || [];
-    // buildMentionParts 会按名字去重；这里保留两份，让“最近发言人”和完整名单互相兜底。
-    return [...recent, ...directory];
+    // 完整名单可用时不再扫消息表；只有名单接口失败/为空时才退回最近发言人。
+    if (directory.length) return directory;
+    try {
+      return mentionMembersFor(this.store, chatKey);
+    } catch (error) {
+      // 成员表读失败只放弃这次 @ 展开，纯文本仍要照常发出去。
+      log.warn('[sender] 读取成员表失败，本次不展开 @昵称:', error?.message ?? error);
+      return [];
+    }
   }
 
   #chain(chatKey) {

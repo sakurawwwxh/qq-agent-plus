@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test, after } from 'node:test';
+import { startAppWithPortRetry } from './helpers/port.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-config-conflict-api-'));
 process.env.QQ_AGENT_DATA_DIR = root;
@@ -14,18 +14,9 @@ after(() => {
   reloadConfig();
 });
 
-async function freePort() {
-  const server = http.createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
 test('配置冲突 API：默认 409 不写盘，force 才写，reload 读回磁盘版本', async (t) => {
-  const port = await freePort();
   const cfg = structuredClone(DEFAULT_CONFIG);
-  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.server = { ...cfg.server, host: '127.0.0.1', token: '' };
   cfg.runtime.mode = 'observe';
   cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
   cfg.onebot.httpUrl = 'http://127.0.0.1:1';
@@ -36,13 +27,21 @@ test('配置冲突 API：默认 409 不写盘，force 才写，reload 读回磁�
       baseUrl: 'https://search.example.com/v1', apiKey: 'sk-old', count: 6, timeoutMs: 20000
     }]
   };
-  updateConfig(cfg);
-  const app = createApp({ log: () => {} });
+  let app = null;
+  const started = await startAppWithPortRetry({
+    create: (port) => {
+      cfg.server = { ...cfg.server, port };
+      updateConfig(cfg);
+      app = createApp({ log: () => {} });
+      return app;
+    }
+  });
+  app = started.app;
+  const port = started.port;
   t.after(async () => {
     await app.stop();
     fs.rmSync(root, { recursive: true, force: true });
   });
-  await app.start();
   const request = async (route, { method = 'GET', body } = {}) => {
     const response = await fetch(`http://127.0.0.1:${port}${route}`, {
       method,
