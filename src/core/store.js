@@ -137,8 +137,7 @@ export class ChatStore {
       CREATE INDEX IF NOT EXISTS outbox_chat_state ON outbox(chat_key, state);
       -- held 自动释放按 run_id 查这批外发是否已终结；没有它每个 held 批次都扫全表。
       CREATE INDEX IF NOT EXISTS outbox_run_state ON outbox(run_id, state);
-      -- /api/metrics 与 unknown 统计按全局 state 过滤/分组；outbox_chat_state 以 chat_key
-      -- 开头用不上，会扫整表。created_at 顺带支持 unknown 年龄统计。
+      -- 全局 state 统计/年龄查询用；outbox_chat_state 以 chat_key 开头用不上。
       CREATE INDEX IF NOT EXISTS outbox_state_created ON outbox(state, created_at);
       CREATE TABLE IF NOT EXISTS conversation_threads (
         chat_key TEXT PRIMARY KEY, thread_id TEXT NOT NULL,

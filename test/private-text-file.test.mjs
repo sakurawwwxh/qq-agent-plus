@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { rmDirBestEffort } from './helpers/cleanup.mjs';
+import { closeServer, rmDirBestEffort } from './helpers/cleanup.mjs';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-private-text-'));
 process.env.QQ_AGENT_DATA_DIR = root;
@@ -451,7 +451,7 @@ test('真实 OneBot HTTP 链路只收到当前目标和内存 base64（本机假
     res.end(JSON.stringify({ status: 'ok', retcode: 0, data: { file_id: 'synthetic-file' } }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const { sender } = setup(t);
   sender.onebot = new OneBotClient({ wsUrl: 'ws://127.0.0.1:1', httpUrl: `http://127.0.0.1:${server.address().port}` });
   await sender.privateTextFile('private:2', { text: '合成资料', name: 'notes.md' });

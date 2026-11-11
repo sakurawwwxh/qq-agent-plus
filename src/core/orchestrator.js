@@ -3686,8 +3686,9 @@ export class Orchestrator {
     const nameToUserId = new Map();
     const nameToUids = new Map();   // 名字 → 出现过的 QQ 号集合：nameToUserId 是"先见到先赢"，看不出重名
     const uidToName = new Map();
-    // 与提示词/工具结果同一口径：屏蔽名单生效前存档的消息也不能作为整理材料。
-    for (const m of filterBlockedHistory(this.store.recent(chatKey, { limit: 2000 }), chatKey)) {
+    // 同一口径过滤；这份 2000 条快照复用于新建/整理 prompt，避免每个成员再查库。
+    const recent = filterBlockedHistory(this.store.recent(chatKey, { limit: 2000 }), chatKey);
+    for (const m of recent) {
       if (m.self || !m.senderId) continue;
       const uid = String(m.senderId);
       memberMsgCount.set(uid, (memberMsgCount.get(uid) || 0) + 1);
@@ -3701,7 +3702,7 @@ export class Orchestrator {
         if (!uidToName.has(uid)) uidToName.set(uid, nm);
       }
     }
-    return { memberMsgCount, nameMsgCount, nameToUserId, nameToUids, uidToName };
+    return { memberMsgCount, nameMsgCount, nameToUserId, nameToUids, uidToName, recent };
   }
 
   /** 确定一个记忆条目的 QQ 号（必要时反查名字并回写记忆文件）。 */
@@ -3805,7 +3806,7 @@ export class Orchestrator {
 
     const { system, user } = isNew
       ? this.#buildNewImpressionPrompt(chatKey, mem, stats)
-      : this.#buildConsolidatePrompt(mem, chatKey);
+      : this.#buildConsolidatePrompt(mem, chatKey, stats);
 
     const res = await this.#memoryChat([
       { role: 'system', content: system },
@@ -3926,7 +3927,7 @@ export class Orchestrator {
   }
 
   /** 整理模式：合并/删减已有印象。 */
-  #buildConsolidatePrompt(mem, chatKey) {
+  #buildConsolidatePrompt(mem, chatKey, stats = null) {
     // 与"今天"同口径（上海）：原来用 UTC，凌晨产生的印象在模型眼里会算成前一天。
     // 坏时间戳（负数/纳秒级/超范围）必须先夹住：toISOString 碰到 Invalid Date 会抛 RangeError，
     // 这条人物会因此永远整理不了（异常被记成 failed，坏值本身没人清理）。
@@ -3949,11 +3950,8 @@ export class Orchestrator {
     const today = todayKey();
     // 已有印象的人也要能看到最近的发言：否则整理只能合并/删除，结构上无法变丰富
     // （2026-11-01 插件仓库 issue #25）。只取该成员最近 30 条、每条 200 字，作为补充证据。
-    const sample = chatKey
-      ? filterBlockedHistory(this.store.recentBySender(chatKey, String(mem.userId || ''), 30), chatKey)
-        .map((m) => safeSlice(String(m.text || ''), 200))
-        .filter(Boolean)
-      : [];
+    const rows = Array.isArray(stats?.recent) ? stats.recent : filterBlockedHistory(this.store.recentBySender(chatKey, String(mem.userId || ''), 30), chatKey);
+    const sample = chatKey ? rows.filter((m) => String(m?.senderId || '') === String(mem.userId || '')).slice(-30).map((m) => safeSlice(String(m.text || ''), 200)).filter(Boolean) : [];
     // 元信息和印象条目必须分开：0.9.12/0.9.13 加了子标题后，元信息成了"子标题前的
     // 孤立段落"，模型会把它们当印象抄回库里（2026-11-01 插件仓库 issue #27 实测）。
     const metaLines = [`群友 QQ：${sanitizeUserText(String(mem.userId || ''))}`, `当前名字：${sanitizeUserText(String(mem.name || ''))}`, `今天：${today}（Asia/Shanghai）`];
@@ -4009,15 +4007,12 @@ export class Orchestrator {
   }
 
   /** 新建模式：从聊天记录里提炼对某人的长期印象。 */
-  #buildNewImpressionPrompt(chatKey, mem) {
+  #buildNewImpressionPrompt(chatKey, mem, stats = null) {
     const maxKeep = Number(getConfig().memory?.maxImpressionsPerMember) || 5;
     const uid = String(mem.userId || '');
     const safeName = sanitizeUserText(safeSlice(String(mem.name || ''), 60));
-    const sample = filterBlockedHistory(this.store.recent(chatKey, { limit: 2000 }), chatKey)
-      .filter((m) => !m.self && String(m.senderId) === uid)
-      .slice(-40)
-      .map((m) => safeSlice(String(m.text || ''), 200))
-      .filter(Boolean);
+    const recent = Array.isArray(stats?.recent) ? stats.recent : filterBlockedHistory(this.store.recent(chatKey, { limit: 2000 }), chatKey);
+    const sample = recent.filter((m) => !m.self && String(m.senderId) === uid).slice(-40).map((m) => safeSlice(String(m.text || ''), 200)).filter(Boolean);
 
     return {
       system: '你是聊天机器人的记忆模块，负责从聊天记录里提炼对某一位群友的长期印象。只提炼"以后跟这个人打交道用得上"的稳定特征，严格依据给定的发言，不要编造。输出必须是严格的 JSON 对象，不要 Markdown 代码块，不要任何解释文字。格式：{"impressions":["…"]}',
