@@ -31,10 +31,10 @@
   },
   "dependencies": {
     "jce": "0.2.3",
-    "node-html-parser": "^9.0.6",
+    "node-html-parser": "^9.0.7",
     "silk-wasm": "^3.7.1",
-    "undici": "^8.12.3",
-    "ws": "^8.22.1"
+    "undici": "^8.12.4",
+    "ws": "^8.22.2"
   },
   "license": "MIT",
   "author": "sakurawwwxh",
@@ -57,7 +57,7 @@
   },
   "homepage": "https://github.com/sakurawwwxh/qq-agent-plus#readme",
   "devDependencies": {
-    "@playwright/test": "1.64.1",
+    "@playwright/test": "1.65.0",
     "eslint": "^10.14.0",
     "eslint-scope": "^9.1.2",
     "espree": "^11.2.0",
