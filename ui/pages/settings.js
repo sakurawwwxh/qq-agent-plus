@@ -46,6 +46,7 @@ const SECTION_SEARCH_TERMS = {
   persona: '人设 角色卡 语气 口吻 规则 附加规则',
   chat: '聊天 回复 主动 话题 拟人化 自然 活跃 安静 陪聊 预设 风格 延迟 状态 关系 表情 发送 节奏 数据 保留 冷场',
   messageTypes: '消息 类型 图片 视频 语音 合并转发',
+  mute: '主动禁言 脾气 生气 禁言 自主 管理 处罚',
   allow: '白名单 群 私聊 屏蔽 黑名单',
   memory: '记忆 印象 交接 人物',
   api: '模型 API Key 温度 上下文 预算 提供商',
@@ -101,7 +102,7 @@ function renderSettingsSidebar() {
   // 系统"五组归位，每组一个小标题。分组只影响侧栏观感，分区 id 与行为一个都没动
   // （ui-smoke 断言 .settings-menu-item[data-section=...] 仍在，锚点不受影响）。
   const menu = [
-    ['对话与人格', [['persona', '人设'], ['chat', '聊天设置'], ['messageTypes', '消息类型'], ['allow', '聊天白名单'], ['memory', '记忆']]],
+    ['对话与人格', [['persona', '人设'], ['chat', '聊天设置'], ['messageTypes', '消息类型'], ['mute', '主动禁言'], ['allow', '聊天白名单'], ['memory', '记忆']]],
     ['模型与服务', [['api', '模型 API'], ['search', '搜索服务'], ['asr', '语音转文字'], ['token-saver', 'Token 节省']]],
     ['自动行为', [['moments', '每日动态'], ['qzone-interactions', '动态互动'], ['reminders', '定时提醒'], ['life-feed', '见闻'], ['groupGame', '群游戏'], ['time-control', '时间控制'], ['experiments', '实验功能']]],
     ['平台', [['platform', '平台能力'], ['onebot', 'OneBot'], ['mcp', 'MCP'], ['knowledge', '知识库'], ['memes', '梗库'], ['moderation', '群管理']]],
@@ -354,6 +355,7 @@ function renderSettingsSection(c) {
     allow: () => renderAllowSection(c),
     chat: () => renderChatSection(c),
     messageTypes: () => renderMessageTypesSection(c),
+    mute: () => renderMuteSection(c),
     platform: () => renderPlatformSection(c),
     mcp: () => renderMcpSection(c),
     knowledge: () => renderKnowledgeSection(c),
@@ -1089,6 +1091,28 @@ function renderMessageTypesSection(c) {
     <div class="field" style="margin-top:8px"><label for="cfg-mt-enrich-timeout">入站富化等待上限（毫秒）</label>
       <input type="number" id="cfg-mt-enrich-timeout" min="200" max="15000" step="100" value="${esc(Number(mt.enrichTimeoutMs) > 0 ? Number(mt.enrichTimeoutMs) : 5000)}" />
       <div class="hint">解析引用、@昵称、合并转发等后台处理的总预算，默认 5000。弱网/慢下载时调大，但会延后该会话后续消息的放行。</div></div>`;
+}
+
+function renderMuteSection(c) {
+  const m = c.mute || {};
+  return `
+    <h3 id="settings-mute">主动禁言</h3>
+    <div class="hint" style="margin-bottom:10px">这是机器人自己的脾气，不是管理员命令通道：只有它觉得自己被本轮群友冒犯时才可能动手。
+      默认关闭；开启后也建议先保持「试运行」，观察判断是否准确。目标必须在本轮触发消息里、只能是普通群成员，
+      群主/管理员/主人和机器人都不能动；单次时长、同一人冷却、每群每日次数都在工具层硬夹。</div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-mute-enabled" ${m.enabled === true ? 'checked' : ''} />
+      <label for="cfg-mute-enabled">启用主动禁言（默认关）</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-mute-dryrun" ${m.dryRun !== false ? 'checked' : ''} />
+      <label for="cfg-mute-dryrun">试运行：只记录「本来会禁言谁」，不真正调用协议端</label></div>
+    <div class="field-row">
+      <div class="field"><label for="cfg-mute-max">单次最长（分钟）</label>
+        <input type="number" id="cfg-mute-max" min="1" max="1440" value="${esc(Number(m.maxMinutes) > 0 ? Number(m.maxMinutes) : 60)}" /></div>
+      <div class="field"><label for="cfg-mute-cooldown">同一人冷却（分钟）</label>
+        <input type="number" id="cfg-mute-cooldown" min="1" max="10080" value="${esc(Number(m.cooldownMinutes) > 0 ? Number(m.cooldownMinutes) : 360)}" /></div>
+      <div class="field"><label for="cfg-mute-daily">每群每天最多次数</label>
+        <input type="number" id="cfg-mute-daily" min="1" max="20" value="${esc(Number(m.dailyLimit) > 0 ? Number(m.dailyLimit) : 3)}" /></div>
+    </div>
+    <div class="hint">超过上限会拒绝而不是截断；重启不会重置冷却/当日次数（记录在 data/mute-state.json）。</div>`;
 }
 
 function renderTokenSaverSection(c) {

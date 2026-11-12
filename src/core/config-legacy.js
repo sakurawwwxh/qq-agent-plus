@@ -846,8 +846,8 @@ export const DEFAULT_CONFIG = {
     actions: { ban: true, kick: true, recall: true, admin: true },
     groups: []
   },
-  // 轻量知识库：读取 data/knowledge 下的 .md/.txt，按关键词/中文二元组检索。
-  // 默认关闭；不做向量库，只有明确语料时才开。
+  mute: { enabled: false, dryRun: true, maxMinutes: 60, cooldownMinutes: 360, dailyLimit: 3 }, // 自主禁言：默认关+dry-run
+  // 轻量知识库：读取 data/knowledge 下的 .md/.txt；默认关闭，不做向量库。
   knowledge: {
     enabled: false,
     dir: '',

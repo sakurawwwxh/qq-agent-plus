@@ -181,6 +181,17 @@ async function saveConfig({ quiet = false } = {}) {
     };
   }
 
+  if (sec === 'mute') {
+    const m = c.mute || {};
+    patch.mute = {
+      enabled: chk('#cfg-mute-enabled', m.enabled === true),
+      dryRun: chk('#cfg-mute-dryrun', m.dryRun !== false),
+      maxMinutes: intKeepPositive(val('#cfg-mute-max', m.maxMinutes ?? 60), m.maxMinutes, 1, 1440, 60),
+      cooldownMinutes: intKeepPositive(val('#cfg-mute-cooldown', m.cooldownMinutes ?? 360), m.cooldownMinutes, 1, 10080, 360),
+      dailyLimit: intKeepPositive(val('#cfg-mute-daily', m.dailyLimit ?? 3), m.dailyLimit, 1, 20, 3)
+    };
+  }
+
   if (sec === 'token-saver') {
     const picked = $('input[name="token-saver-mode"]:checked')?.value;
     patch.tokenSaver = {

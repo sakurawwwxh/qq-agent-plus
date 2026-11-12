@@ -80,7 +80,8 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-denygroups', 'cfg-denyprivate',
       'cfg-mt-enrich-timeout', 'cfg-catchup-count',
       'cfg-search-maxresults', 'cfg-ds-needcontent', 'cfg-tavily-depth',
-      'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max'
+      'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max',
+      'cfg-mute-enabled', 'cfg-mute-dryrun', 'cfg-mute-max', 'cfg-mute-cooldown', 'cfg-mute-daily'
     ],
     'pages/chat.js': [
       'cfg-failure-notice', 'cfg-failure-notice-cooldown',
@@ -126,6 +127,7 @@ test('新增控件的保存代码读取同一个 id（渲染删了/保存改名�
     'cfg-qzi-decision-rounds', 'cfg-qzi-active-start', 'cfg-qzi-active-end',
     'cfg-digest-max', 'cfg-lifefeed-cooldown',
     'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max',
+    'cfg-mute-enabled', 'cfg-mute-dryrun', 'cfg-mute-max', 'cfg-mute-cooldown', 'cfg-mute-daily',
     'cfg-api-timeout', 'cfg-run-timeout',
     'cfg-asr-max-perchat', 'cfg-tts-max', 'cfg-tts-max-perchat',
     'cfg-img-response-format', 'cfg-img-timeout',
@@ -149,6 +151,16 @@ test('新增控件的保存代码读取同一个 id（渲染删了/保存改名�
     'lm-max-items', 'lm-recall-timeout', 'lm-capture-min', 'lm-groups'
   ];
   assert.deepEqual(livingIds.filter((id) => !living.includes(`'#${id}'`)), [], 'living-memory.js 有保存 selector 缺失');
+});
+
+test('主动禁言：控制台限制项与保存映射都在', () => {
+  const settings = fs.readFileSync(path.join(UI, 'pages', 'settings.js'), 'utf8');
+  const save = fs.readFileSync(path.join(UI, 'pages', 'settings-save.js'), 'utf8');
+  for (const id of ['cfg-mute-enabled', 'cfg-mute-dryrun', 'cfg-mute-max', 'cfg-mute-cooldown', 'cfg-mute-daily']) {
+    assert.ok(settings.includes(`id="${id}"`), `缺少控件 ${id}`);
+    assert.ok(save.includes(`'#${id}'`), `保存没有读取 ${id}`);
+  }
+  assert.match(save, /patch\.mute = \{/);
 });
 
 test('MCP 可写目录：渲染控件存在，保存不再硬编码清空 sandbox 字段', () => {

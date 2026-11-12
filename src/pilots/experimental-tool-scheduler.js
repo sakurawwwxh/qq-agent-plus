@@ -73,6 +73,7 @@ export const EXPERIMENTAL_SAME_ROUND_ACTION_TOOLS = new Set([
   'share_bilibili', // 对外发送封面+标题链接，并回写生活层队列
   'set_group_card', // 对外写：改自己的群名片
   'set_group_ban',  // 对外写：禁言/解禁
+  'mute_member',    // 对外写：AI 自主禁言（硬护栏在工具层）
   'kick_group_member', // 对外写：移出群
   'recall_message', // 对外写：撤回消息
   'set_group_admin', // 对外写：设置/取消群管理员

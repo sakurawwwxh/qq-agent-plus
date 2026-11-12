@@ -19,6 +19,7 @@ import { lookupMemes, rememberMeme } from '../memes/store.js';
 import { getSkillRegistry } from '../skills/registry.js';
 import { preparePrivateTextFile, privateTextFileError } from '../onebot/private-text-file.js';
 import { adminToolDefs } from '../admin/tools.js';
+import { muteToolDefs } from './mute.js';
 
 // 生图闸门（按张计费，全局；#9 那套双闸在这里只用全局侧 —— 一张图的钱与"哪个群要的"无关，
 // 但额度按会话记账便于排查，且 perChat 不设限）
@@ -644,6 +645,7 @@ function memoryQueryDescription() {
 export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}) {
   const defs = [
     ...adminToolDefs({ kind, chatId, cfg }),
+    ...muteToolDefs({ cfg, kind, trackDirectWrite }),
     {
       name: 'send_message',
       description: '发送消息到当前聊天（本工具只能发到本次会话对应的群/私聊）。messages 传字符串=发一条；传字符串数组=分多条发送（推荐）。只有需要明确"我回的是哪条"时才传 replyToMessageId 引用；需要点名某人才传 atUserId。不要在字符串内部用空格分句。',

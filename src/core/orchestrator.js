@@ -2271,6 +2271,8 @@ export class Orchestrator {
       // 只在开启时教"主持小游戏"，工具表却恒在，模型仍会去调一个必然报错的工具
       //（group-game.js 对 enabled=false 直接拒），白花一轮（2026-10-10 审查 D3）。
       if (cfg.groupGame?.enabled !== true && d.name === 'group_game') return false;
+      // 自主禁言：关闭或非群聊时连工具都不注入，避免模型白调一次必然被拒的工具。
+      if (d.name === 'mute_member' && (cfg.mute?.enabled !== true || !String(chatKey).startsWith('group:'))) return false;
       // ASR 按量计费：开关关掉或没配 key 就不注入，避免模型调用必失败；也防误配置导致意外计费
       if (!asrEnabled && d.name === 'get_message_audio') return false;
       // 生图的唯一发送路径是"进表情库 → send_sticker"；表情包功能关掉时那条路也没了，
