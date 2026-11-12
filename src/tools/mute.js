@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '../core/config-legacy.js';
 import { getConfig } from '../core/config.js';
-import { todayKey } from '../core/util.js';
+import { displayNameOf } from '../core/display-name.js';
+import { sanitizeUserText, todayKey } from '../core/util.js';
 import { classifyTransportFailure } from '../onebot/sender.js';
 
 const STATE_FILE = path.join(DATA_DIR, 'mute-state.json');
@@ -31,7 +32,10 @@ function emptyState() {
 }
 
 function loadState(now = Date.now()) {
-  if (stateCache) return stateCache;
+  if (stateCache) {
+    pruneState(stateCache, now);
+    return stateCache;
+  }
   try {
     const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     stateCache = {
@@ -95,9 +99,7 @@ function normalizeTarget(value) {
 }
 
 function displayName(member, uid) {
-  const text = String(member?.card || member?.nickname || member?.name || member?.remark || '')
-    .replace(/\s+/g, ' ').trim().slice(0, 60);
-  return text || String(uid || '');
+  return displayNameOf(String(uid || ''), member?.card || member?.nickname || member?.name || member?.remark || '');
 }
 
 async function memberInfo(ctx, userId) {
@@ -105,41 +107,33 @@ async function memberInfo(ctx, userId) {
   return await ctx.onebot.getGroupMemberInfo(ctx.chatId, Number(userId));
 }
 
-async function listMembers(ctx) {
-  if (typeof ctx.onebot?.getGroupMemberList !== 'function') throw new Error('协议端不支持查询群成员列表');
-  const list = await ctx.onebot.getGroupMemberList(ctx.chatId);
-  return Array.isArray(list) ? list : [];
-}
-
 function roleOf(member) {
   return String(member?.role || '').trim().toLowerCase();
 }
 
-function memberUid(member) {
-  return String(member?.user_id ?? member?.userId ?? member?.uin ?? '').trim();
-}
-
 async function resolveTarget(ctx, raw) {
-  const numeric = normalizeTarget(raw);
-  if (numeric) {
-    try {
-      const member = await memberInfo(ctx, numeric);
-      if (member) return { userId: numeric, member };
-    } catch { /* 有的协议端只实现列表接口，下面用列表兜底 */ }
-    const member = (await listMembers(ctx)).find((item) => memberUid(item) === numeric);
-    if (member) return { userId: numeric, member };
-    throw new Error(`本群没有找到 QQ ${numeric}`);
-  }
   const text = String(raw ?? '').trim();
   if (!text) throw new Error('target 不能为空');
-  const members = await listMembers(ctx);
-  const matches = members.filter((member) => {
-    const names = [member?.card, member?.nickname, member?.name].map((value) => String(value || '').trim()).filter(Boolean);
-    return names.includes(text);
-  });
-  if (matches.length === 1) return { userId: memberUid(matches[0]), member: matches[0] };
-  if (!matches.length) throw new Error(`本群没有找到名为「${text}」的成员；不确定是谁就填 QQ 号`);
-  throw new Error(`本群有 ${matches.length} 个「${text}」，请改填 QQ 号`);
+  const safeText = sanitizeUserText(text).slice(0, 80);
+  const numeric = normalizeTarget(text);
+  const matches = new Set();
+  for (const entry of ctx.triggerEntries || []) {
+    if (entry?.self) continue;
+    const uid = String(entry?.senderId || '').trim();
+    if (!uid) continue;
+    const names = new Set([
+      displayNameOf(uid, entry?.senderName),
+      String(entry?.senderName || '').trim()
+    ].filter(Boolean));
+    if (numeric && normalizeTarget(uid) === numeric) matches.add(uid);
+    if (names.has(text)) matches.add(uid);
+  }
+  if (!matches.size) throw new Error(`只能对你这一轮真正被惹到的人动手；${safeText} 这一轮没惹你`);
+  if (matches.size > 1) throw new Error(`目标「${safeText}」在这一轮有多个匹配，请改填 QQ 号`);
+  const userId = [...matches][0];
+  const member = await memberInfo(ctx, userId);
+  if (!member) throw new Error(`查询不到群成员 ${userId}`);
+  return { userId, member };
 }
 
 function deny(ctx, reason) {
@@ -204,8 +198,8 @@ async function executeMute(ctx, args, { trackDirectWrite } = {}) {
   if (role !== 'member') return deny(ctx, '只能对普通群成员执行；群主、管理员或角色未知的目标不行');
   if (!(Number(target.member?.join_time) > 0)) return deny(ctx, '目标不在本群（join_time 为空）');
   const name = displayName(target.member, uid);
-  const emotion = String(args?.emotion || '').replace(/\s+/g, ' ').trim().slice(0, 40);
-  const reason = String(args?.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const emotion = sanitizeUserText(String(args?.emotion || '')).replace(/\s+/g, ' ').trim().slice(0, 40);
+  const reason = sanitizeUserText(String(args?.reason || '')).replace(/\s+/g, ' ').trim().slice(0, 200);
   const now = Date.now();
   const state = loadState(now);
 
@@ -213,10 +207,11 @@ async function executeMute(ctx, args, { trackDirectWrite } = {}) {
     const record = latestBanRecord(state, ctx.chatKey, uid);
     if (!record) return deny(ctx, `只能解除你自己下过的禁言；${name} 不在可解除记录里`);
     if (record.unmutedAt) return deny(ctx, `${name} 的这条禁言已经解除过了`);
+    if (record.unknown) return deny(ctx, `${name} 上次禁言结果未知，不能自动解除`);
     const currentUntil = Number(target.member?.shut_up_timestamp) || 0;
     if (!(currentUntil > 0)) return deny(ctx, `${name} 当前没有生效中的禁言`);
     const mineEnd = Math.floor(Number(record.at) / 1000) + Number(record.minutes) * 60;
-    if (currentUntil > mineEnd + 120) return deny(ctx, '当前禁言看起来被人加罚过，不能替你解除');
+    if (Math.abs(currentUntil - mineEnd) > 120) return deny(ctx, '当前禁言已经被改过（加罚或缩短），不能替你解除');
     if (cfg.dryRun) {
       audit(ctx, 'dry-run', `计划解除 ${name}(${uid}) 的禁言`);
       return ok({ action: 'unmute-dry-run', target: uid, name, minutes: 0, note: `（试运行）我本来打算把 ${name} 放出来` });
@@ -235,6 +230,10 @@ async function executeMute(ctx, args, { trackDirectWrite } = {}) {
     return ok({ action: 'unmute', target: uid, name, minutes: 0, note: `已经把 ${name} 放出来了` });
   }
 
+  const currentUntil = Number(target.member?.shut_up_timestamp) || 0;
+  if (currentUntil > Math.floor(now / 1000)) {
+    return deny(ctx, `${name} 已经在禁言中，不缩短/覆盖现有的禁言`);
+  }
   const last = latestBanRecord(state, ctx.chatKey, uid);
   if (last && now - Number(last.at) < cfg.cooldownMinutes * 60_000) {
     const wait = Math.ceil((cfg.cooldownMinutes * 60_000 - (now - Number(last.at))) / 60_000);
@@ -253,7 +252,10 @@ async function executeMute(ctx, args, { trackDirectWrite } = {}) {
     if (typeof ctx.onebot?.setGroupBan !== 'function') throw new Error('协议端不支持禁言');
     await (trackDirectWrite || runDirect)(ctx, 'ban', { target: uid, minutes, mode: 'auto-mute' }, () => ctx.onebot.setGroupBan(ctx.chatId, Number(uid), minutes * 60, ctx.signal));
   } catch (error) {
-    const { uncertain } = classifyTransportFailure(error);
+    const transport = classifyTransportFailure(error);
+    const errorOutcome = String(error?.outcome || '');
+    const uncertain = errorOutcome === 'unknown'
+      || (errorOutcome !== 'failed' && transport.uncertain);
     outcome = uncertain ? 'unknown' : 'failed';
     audit(ctx, 'failed', `禁言 ${name}(${uid}) 失败：${String(error?.message ?? error).slice(0, 160)}`);
     if (outcome === 'unknown') {

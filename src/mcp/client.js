@@ -1,7 +1,7 @@
 // 极简 MCP stdio 客户端：只依赖 node 内建。一个 server 一个子进程，JSON-RPC 走 stdin/stdout。
 // 不实现采样/资源/提示词，只做 tools/list + tools/call —— 这是给聊天机器人用的最小闭环。
 
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { buildMcpLaunchSpec } from './sandbox.js';
 
@@ -280,7 +280,8 @@ export class McpStdioClient {
         const cid = fs.readFileSync(cleanup.cidFile, 'utf8').trim();
         if (cid) {
           // docker run 是前台进程，杀掉 CLI 不一定能带走容器；用 cidfile 兜底强制清理。
-          spawnSync('docker', ['rm', '-f', cid], { timeout: 8000, stdio: 'ignore' });
+          // 不能 spawnSync：这段在子进程 exit 回调里，Docker 卡住会冻结整个事件循环。
+          execFile('docker', ['rm', '-f', cid], { timeout: 8000, windowsHide: true }, () => {});
         }
       } catch { /* 容器可能已退出并 --rm 自清 */ }
       try { fs.rmSync(cleanup.cidFile, { force: true }); } catch { /* ignore */ }

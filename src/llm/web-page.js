@@ -6,6 +6,7 @@ import { safeFetchRequest } from './safe-fetch.js';
 const MAX_FETCH_BYTES = 512 * 1024;
 const MAX_CONTENT_CHARS = 20000;
 const PARSE_TIMEOUT_MS = 5000;
+const PARSE_QUEUE_TIMEOUT_MS = 15000;
 
 let parserWorker = null;
 let parserIdleTimer = null;
@@ -50,13 +51,21 @@ function getParserWorker() {
   worker.on('message', (message) => {
     const entry = parsePending.get(message?.id);
     if (!entry || entry.worker !== worker) return;
+    if (message.started) {
+      entry.start();
+      return;
+    }
     parsePending.delete(message.id);
     entry.cleanup();
     if (message.error) entry.reject(new Error(message.error));
     else entry.resolve(String(message.text || ''));
     scheduleParserIdleStop();
   });
-  worker.on('error', (error) => stopParserWorker(error));
+  // 旧 worker 被终止后可能仍把排队的 error 事件投递过来；不能让它误杀新 worker。
+  worker.on('error', (error) => {
+    if (parserWorker === worker) stopParserWorker(error);
+    else worker.terminate().catch(() => {});
+  });
   worker.on('exit', (code) => {
     if (parserWorker === worker) stopParserWorker(new Error(`HTML 解析 worker 退出（code=${code}）`));
   });
@@ -77,8 +86,12 @@ function parseHtmlInWorker(body, url, { signal } = {}) {
   }
   return new Promise((resolve, reject) => {
     const id = ++parseSeq;
+    let timer = null;
+    let queueTimer = null;
+    let started = false;
     const cleanup = () => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
+      if (queueTimer) clearTimeout(queueTimer);
       signal?.removeEventListener('abort', onAbort);
     };
     const fail = (error) => {
@@ -89,17 +102,30 @@ function parseHtmlInWorker(body, url, { signal } = {}) {
       scheduleParserIdleStop();
     };
     const onAbort = () => fail(signal.reason instanceof Error ? signal.reason : new Error('已取消'));
-    const timer = setTimeout(() => {
-      fail(new Error(`HTML 解析超时（>${PARSE_TIMEOUT_MS}ms）`));
-      stopParserWorker(new Error(`HTML 解析超时（>${PARSE_TIMEOUT_MS}ms）`));
-    }, PARSE_TIMEOUT_MS);
-    timer.unref?.();
+    const start = () => {
+      if (started || !parsePending.has(id)) return;
+      started = true;
+      if (queueTimer) clearTimeout(queueTimer);
+      timer = setTimeout(() => {
+        const error = new Error(`HTML 解析超时（>${PARSE_TIMEOUT_MS}ms）`);
+        fail(error);
+        stopParserWorker(error);
+      }, PARSE_TIMEOUT_MS);
+      timer.unref?.();
+    };
+    queueTimer = setTimeout(() => {
+      const error = new Error(`HTML 解析排队超时（>${PARSE_QUEUE_TIMEOUT_MS}ms）`);
+      fail(error);
+      stopParserWorker(error);
+    }, PARSE_QUEUE_TIMEOUT_MS);
+    queueTimer.unref?.();
     signal?.addEventListener('abort', onAbort, { once: true });
     parsePending.set(id, {
       worker,
+      start,
       cleanup,
-      resolve: (text) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(text); },
-      reject: (error) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(error); }
+      resolve: (text) => { cleanup(); resolve(text); },
+      reject: (error) => { cleanup(); reject(error); }
     });
     try {
       worker.postMessage({ id, body, url });

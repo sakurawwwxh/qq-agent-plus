@@ -103,12 +103,49 @@ it('支持唯一群名片匹配；重名要求补 QQ 号', async () => {
   assert.ok(!(await tool().execute(ctx, { target: '张三', minutes: 5 })).isError);
   assert.equal(calls.length, 1);
   resetMuteStateForTest();
-  const list = await ctx.onebot.getGroupMemberList('1');
-  ctx.onebot.getGroupMemberList = async () => [...list, { user_id: 44, role: 'member', join_time: 1, card: '张三' }];
-  ctx.triggerEntries = [{ senderId: '42', self: false }, { senderId: '44', self: false }];
+  ctx.triggerEntries = [
+    { senderId: '42', senderName: '张三', self: false },
+    { senderId: '44', senderName: '张三', self: false }
+  ];
   const dup = await tool().execute(ctx, { target: '张三', minutes: 5 });
   assert.equal(dup.isError, true);
   assert.match(dup.content, /改填 QQ 号/);
+});
+
+it('数字群名片不能借刀：本轮同时有同名/同号时必须判歧义', async () => {
+  const { ctx, calls } = context({
+    entries: [
+      { senderId: '42', senderName: '43', self: false },
+      { senderId: '43', senderName: '李四', self: false }
+    ]
+  });
+  const result = await tool().execute(ctx, { target: '43', minutes: 5 });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /多个匹配|没惹你/);
+  assert.equal(calls.length, 0);
+});
+
+it('名字目标也用最新的成员信息做角色/禁言状态判断', async () => {
+  const { ctx, calls } = context();
+  ctx.triggerEntries = [{ senderId: '42', senderName: '张三', self: false }];
+  const original = ctx.onebot.getGroupMemberInfo;
+  ctx.onebot.getGroupMemberInfo = async (gid, uid) => {
+    const info = await original(gid, uid);
+    return Number(uid) === 42 ? { ...info, role: 'admin' } : info;
+  };
+  const result = await tool().execute(ctx, { target: '张三', minutes: 5 });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /普通群成员/);
+  assert.equal(calls.length, 0);
+});
+
+it('目标已有禁言时拒绝，不能覆盖人类管理员或自己之前的处罚', async () => {
+  const { ctx, calls } = context();
+  shutUntil = Math.floor(Date.now() / 1000) + 600;
+  const result = await tool().execute(ctx, { target: '42', minutes: 5 });
+  assert.equal(result.isError, true);
+  assert.match(result.content, /已经在禁言中/);
+  assert.equal(calls.length, 0);
 });
 
 it('机器人不是管理员时拒绝', async () => {
@@ -175,7 +212,15 @@ it('别人下的禁言不能解；人类加罚后也不能解', async () => {
   shutUntil = Math.floor(Date.now() / 1000) + 600;
   const penalized = await tool().execute(next.ctx, { target: '42', minutes: 0 });
   assert.equal(penalized.isError, true);
-  assert.match(penalized.content, /加罚/);
+  assert.match(penalized.content, /加罚|改过/);
+
+  setup();
+  const shortened = context();
+  assert.ok(!(await tool().execute(shortened.ctx, { target: '42', minutes: 5 })).isError);
+  shutUntil = Math.floor(Date.now() / 1000) + 60;
+  const changed = await tool().execute(shortened.ctx, { target: '42', minutes: 0 });
+  assert.equal(changed.isError, true);
+  assert.match(changed.content, /改过/);
 });
 
 it('结果未知按可能已生效记录，冷却阻止模型重复操作', async () => {

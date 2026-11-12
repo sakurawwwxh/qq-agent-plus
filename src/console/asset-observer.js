@@ -142,8 +142,15 @@ export function buildSlangContextForChat(
 }
 
 const ASSET_CACHE_TTL_MS = 5000;
+const ASSET_CACHE_MAX = 64;
 const memorySummaryCache = new Map();
 const identityAssetsCache = new Map();
+
+function setBoundedCache(map, key, value) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > ASSET_CACHE_MAX) map.delete(map.keys().next().value);
+}
 
 /** 控制台写入记忆/人物后主动失效，避免 5 秒缓存让用户以为“保存没生效”。 */
 export function invalidateAssetCaches() {
@@ -159,7 +166,7 @@ export function readMemoryAssetSummary(dataDir = DATA_DIR) {
   let names = [];
   try { names = fs.readdirSync(memoryDir); } catch {
     const empty = { chats: 0, people: 0, impressions: 0, handoffs: 0, items: [] };
-    memorySummaryCache.set(dataDir, { at: Date.now(), data: empty });
+    setBoundedCache(memorySummaryCache, dataDir, { at: Date.now(), data: empty });
     return empty;
   }
   const rows = new Map();
@@ -232,16 +239,16 @@ export function readMemoryAssetSummary(dataDir = DATA_DIR) {
     handoffs: items.filter((chat) => chat.hasHandoff).length,
     items
   };
-  memorySummaryCache.set(dataDir, { at: Date.now(), data: result });
+  setBoundedCache(memorySummaryCache, dataDir, { at: Date.now(), data: result });
   return result;
 }
 
 export function readIdentityAssets(dataDir = DATA_DIR, limit = 500, query = '') {
-  const cacheKey = `${dataDir}\u0000${limit}\u0000${query}`;
+  const cacheKey = `${dataDir}\u0000${limit}\u0000${String(query).slice(0, 100)}`;
   const cached = identityAssetsCache.get(cacheKey);
   if (cached && Date.now() - cached.at < ASSET_CACHE_TTL_MS) return cached.data;
   const remember = (value) => {
-    identityAssetsCache.set(cacheKey, { at: Date.now(), data: value });
+    setBoundedCache(identityAssetsCache, cacheKey, { at: Date.now(), data: value });
     return value;
   };
   const file = identityDatabasePath(dataDir);

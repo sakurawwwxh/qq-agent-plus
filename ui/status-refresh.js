@@ -24,16 +24,19 @@ import { loadDailyMomentsStatus, loadQzoneInteractionStatus } from './pages/mome
 import { lifecycleAggregate, loadTimeControlStatus } from './pages/status.js';
 let statusInFlight = false;
 let pendingFullRefresh = false;
+let currentRefreshWaiters = [];
+let pendingFullWaiters = [];
 
 QARegistry.override('refreshStatus', async function refreshStatus(options = {}) {
   // light=true：只刷新顶栏/状态标签。chat-update、SSE 和 15 秒轮询走这条；
   // 身份/异常页的 500 行重接口只在切页、显式刷新或业务动作后加载。
   const light = options?.light === true;
   if (statusInFlight) {
-    // 轻量刷新进行中又来了完整刷新（例如切页）：等当前请求结束再补一次，
-    // 不能直接丢掉，否则新页面的身份/异常数据要等下一次手动刷新。
-    if (!light) pendingFullRefresh = true;
-    return;
+    // 不能直接 return：调用方可能靠 .then 之后再渲染设置页。轻量调用等当前请求；
+    // 完整调用要等挂起的那次完整刷新真正结束。
+    if (light) return new Promise((resolve) => currentRefreshWaiters.push(resolve));
+    pendingFullRefresh = true;
+    return new Promise((resolve) => pendingFullWaiters.push(resolve));
   }
   statusInFlight = true;
   try {
@@ -128,9 +131,17 @@ QARegistry.override('refreshStatus', async function refreshStatus(options = {}) 
     renderBanner();
   } catch (e) { /* 忽略瞬时错误 */ } finally {
     statusInFlight = false;
+    const currentWaiters = currentRefreshWaiters.splice(0);
+    for (const resolve of currentWaiters) resolve();
     if (pendingFullRefresh) {
       pendingFullRefresh = false;
-      Promise.resolve(QARegistry.dispatch('refreshStatus')).catch(() => {});
+      const waiters = pendingFullWaiters.splice(0);
+      Promise.resolve(QARegistry.dispatch('refreshStatus'))
+        .catch(() => {})
+        .finally(() => { for (const resolve of waiters) resolve(); });
+    } else {
+      const waiters = pendingFullWaiters.splice(0);
+      for (const resolve of waiters) resolve();
     }
   }
 });
