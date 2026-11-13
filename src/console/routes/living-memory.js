@@ -64,6 +64,9 @@ export function registerLivingMemoryRoutes(router, deps = {}) {
       importance: body.importance,
       confidence: body.confidence,
       tags: body.tags,
+      topics: body.topics,
+      keyFacts: body.keyFacts,
+      participants: body.participants,
       entities: body.entities,
       relations: body.relations,
       source: { origin: 'manual-console', createdAt: Date.now() }

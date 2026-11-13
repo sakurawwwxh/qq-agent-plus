@@ -75,6 +75,43 @@ test('数字炸弹：区间收窄、越界提示、踩中即结束（rng 固定 
   assert.equal(mgr.games.has('group:1'), false, '结束后清空');
 });
 
+test('开局私聊发不出去：队列落盘，重启后继续发且不重复', async () => {
+  const { store, sent, mgr, getClock, setClock } = makeWorld({ rng: () => 0 });
+  mgr.sender = {
+    sendTextBatch: async (chatKey, msgs) => {
+      sent.push({ chatKey, msgs: [...msgs] });
+      if (chatKey.startsWith('private:')) throw new Error('connect ECONNREFUSED 127.0.0.1:3001');
+      return { sent: [{ messageId: 'm1' }], failed: [] };
+    }
+  };
+  const r = await mgr.start({ chatKey: 'group:1', gameId: 'undercover' });
+  assert.equal(r.ok, true);
+  const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'games.json'), 'utf8'));
+  assert.equal(saved.games['group:1'].pendingPrivate.length, 4, '四条私聊词都要落盘待发');
+  assert.ok(saved.games['group:1'].pendingPrivate.every((item) => item.deliveryId));
+  assert.equal(sent.filter((item) => item.chatKey.startsWith('private:')).length, 4, '本轮先各试一次');
+
+  const sent2 = [];
+  const retry = new GroupGameManager({
+    store,
+    sender: {
+      sendTextBatch: async (chatKey, msgs) => {
+        sent2.push({ chatKey, msgs: [...msgs] });
+        return { sent: [{ messageId: `retry-${sent2.length}` }], failed: [] };
+      }
+    },
+    log: () => {},
+    now: getClock
+  });
+  setClock(getClock() + 60_000);
+  await retry.tick();
+  const privateRetries = sent2.filter((item) => item.chatKey.startsWith('private:'));
+  assert.equal(privateRetries.length, 4, '重启后把没发出去的私聊补发完');
+  assert.ok(privateRetries.every((item) => /你的词是/.test(item.msgs[0])));
+  const after = JSON.parse(fs.readFileSync(path.join(dataDir, 'games.json'), 'utf8'));
+  assert.equal(after.games['group:1'].pendingPrivate.length, 0, '发完清空队列');
+});
+
 test('谁是卧底：开局私聊发词 → 依次发言 → 投票淘汰 → 平民获胜', async () => {
   // rng 第 1 次选词组、第 2 次定卧底位置
   const seq = [0, 0.6];

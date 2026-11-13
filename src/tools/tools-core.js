@@ -174,6 +174,8 @@ async function stickerLookupHint(ctx, key) {
 import { normalizeMessageList, safeSlice, sanitizeUserText, textWithQuote, unquoteJsonString, stripQuoteMessageId } from '../core/util.js';
 import { buildShareText, shareSourceLabel } from './share-text.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
+import { adminRequest, moderationToolAllowed } from './moderation-auth.js';
+import { modelVisible, visibleEntry, midHint } from './message-visibility.js';
 import { matchesBlacklistKeyword } from '../core/keyword-rules.js';
 import { displayNameOf } from '../core/display-name.js';
 import { setMemberNote } from '../memory/memory-global.js';
@@ -309,22 +311,6 @@ function actionDone(ctx, kind) {
  * 群管理动作只允许全局管理员在群里明确要求时执行。
  * 主动唤醒/模型自己发挥时 triggerEntries 里没有管理员，一律拒绝。
  */
-function adminRequest(ctx, actionPatterns = []) {
-  const owner = String(getConfig().admin?.ownerUin || '').trim();
-  if (!/^\d{5,15}$/.test(owner)) return { ok: false, reason: '未配置全局管理员，群管理动作不可用' };
-  // 只认批次里**最后一条**非机器人发言，且这条发言要真的在说对应的管理动作；
-  // 群友先起哄、管理员随后回一句“收到”不能当成授权。
-  const entries = (ctx.triggerEntries || []).filter((entry) => !entry?.self);
-  const last = entries[entries.length - 1];
-  if (!last || String(last?.senderId || '') !== owner) {
-    return { ok: false, reason: '群管理动作只能由全局管理员在群里明确要求时执行' };
-  }
-  const text = String(last?.text || '');
-  if (actionPatterns.length && !actionPatterns.some((re) => re.test(text))) {
-    return { ok: false, reason: '管理员这条消息里没有明确的管理指令' };
-  }
-  return { ok: true, owner };
-}
 
 function normalizeTarget(value) {
   const text = String(value ?? '').trim();
@@ -387,6 +373,7 @@ async function trackDirectWrite(ctx, kind, detail, run) {
     try { effects.settle(began.id, 'sent'); } catch { /* 记账失败不影响结果 */ }
     return result;
   } catch (error) {
+    let deliveryState = 'unknown';
     try {
       // 与发送队列同一分类（classifyTransportFailure）：协议端明确拒绝/连接被拒/DNS 失败
       // 这类**确定没发出去**的算 failed；超时/连接重置/5xx 可能已经生效的才算 unknown。
@@ -396,10 +383,11 @@ async function trackDirectWrite(ctx, kind, detail, run) {
       const preflight = error?.beforeWrite === true
         || error?.code === 'GROUP_MUTED' || error?.code === 'SEND_RATE_LIMITED'
         || error?.name === 'AbortError';
-      const state = error?.outcome === 'failed' || preflight
+      deliveryState = error?.outcome === 'failed' || preflight
         || (definite && !uncertain) ? 'failed' : 'unknown';
-      effects.settle(began.id, state, { error: String(error?.message ?? error).slice(0, 200) });
+      effects.settle(began.id, deliveryState, { error: String(error?.message ?? error).slice(0, 200) });
     } catch { /* 同上 */ }
+    try { if (error && typeof error === 'object') error.delivery = deliveryState; } catch { /* 只读对象忽略 */ }
     throw error;
   }
 }
@@ -412,7 +400,7 @@ async function trackDirectWrite(ctx, kind, detail, run) {
 function messageInChat(ctx, mid) {
   const store = ctx?.store;
   if (!store || typeof store.findByMid !== 'function') return true;
-  return Boolean(store.findByMid(ctx.chatKey, mid));
+  return Boolean(visibleEntry(ctx, mid));
 }
 
 function sendErr(error, metadata = {}, messageOverride) {
@@ -445,22 +433,6 @@ function parseToolArguments(name, raw) {
     }
     return { error };
   }
-}
-
-// 引擎发的游戏私聊（game-secret：身份/查验结果/行动回执）对模型一律不可见——
-// 不只是历史里要过滤，按 id 单查、列可见 id 这些出口同样要过这道闸（2026-09-29 审查 P1）
-const modelVisible = (m) => Boolean(m) && m.eventKind !== 'game-secret';
-
-// 找不到消息 id 时，把当前会话真实可见的 id 告诉模型，避免它继续瞎猜。
-function midHint(ctx) {
-  const mids = ctx.store.recent(ctx.chatKey, { limit: 60 })
-    .filter(modelVisible)
-    .map((m) => m.mid)
-    .filter((v) => v !== null && v !== undefined && String(v) !== '');
-  const uniq = [...new Set(mids.map(String))].slice(-8);
-  return uniq.length
-    ? `消息 id 只能用聊天记录里每条消息前的 #数字（最近可见：${uniq.join(' ')}），不要自己编`
-    : '聊天记录里还没有带 #id 的消息';
 }
 
 // 群公告/群简介里带的是 HTML 片段（实测 &nbsp; 一堆）：换行/空白还原成可读文本。
@@ -515,7 +487,7 @@ function messageTargetError(ctx, { replyToMessageId, atUserId }) {
     if (!/^-?[1-9]\d*$/.test(reply)) {
       return `replyToMessageId 必须是聊天记录中的消息 id。${midHint(ctx)}`;
     }
-    if (!modelVisible(ctx.store?.findByMid?.(ctx.chatKey, reply))) {
+    if (!visibleEntry(ctx, reply)) {
       return `当前会话找不到要引用的消息 ${reply}。${midHint(ctx)}`;
     }
   }
@@ -525,7 +497,7 @@ function messageTargetError(ctx, { replyToMessageId, atUserId }) {
       return `atUserId 必须是当前群成员的数字 QQ 号。${memberHint(ctx)}`;
     }
     if (!hasParticipant(ctx, at)) {
-      const looksLikeMessageId = modelVisible(ctx.store?.findByMid?.(ctx.chatKey, at));
+      const looksLikeMessageId = visibleEntry(ctx, at);
       return `${at} 不是当前群中已出现的成员 QQ 号`
         + `${looksLikeMessageId ? '，它是消息 id；如需引用请改用 replyToMessageId' : ''}。${memberHint(ctx)}`;
     }
@@ -1450,8 +1422,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       },
       async execute(ctx, args) {
         try {
-          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const entry = visibleEntry(ctx, args.messageId);
+          if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const media = (Array.isArray(entry.media) ? entry.media : []).filter((m) => m && m.kind === 'image');
           if (!media.length) return ok(`消息 ${args.messageId} 里没有图片。`);
           const candidates = [];
@@ -1863,6 +1835,10 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
               group_id: Number(ctx.chatId), album_id: albumId, lloc, content
             }, 20000, ctx.signal));
           } catch (error) {
+            // 评论没有幂等键：结果未知时既不能退配额、也不能让模型在同一轮重试。
+            if (error?.delivery === 'unknown') {
+              return err('评论结果未知（可能已经发出），不要重试；让管理员在控制台核对。', { reportIncident: false });
+            }
             albumWriteQuota.refund(ctx.chatKey, reservedAt);
             throw error;
           }
@@ -1889,8 +1865,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
         try {
           if (ctx.kind !== 'group') return err('群相册只能在群聊里操作');
           const groupId = Number(ctx.chatId);
-          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const entry = visibleEntry(ctx, args.messageId);
+          if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const media = (Array.isArray(entry.media) ? entry.media : []).filter((m) => m && m.kind === 'image');
           const target = media.find((m) => /^https?:\/\//i.test(String(m.url || ''))) || media[0];
           if (!target) return ok(`消息 ${args.messageId} 里没有可上传的图片。`);
@@ -2201,7 +2177,7 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       async execute(ctx, args) {
         try {
           if (ctx.kind !== 'group') return err('禁言只能在群聊里执行');
-          const admin = adminRequest(ctx, [/禁言|解禁|解除禁言|封/]);
+          const admin = adminRequest(ctx, [/禁言|解禁|解除禁言|封禁|封号|小黑屋/]);
           if (!admin.ok) return err(admin.reason, { reportIncident: false });
           const targetCheck = moderationTargetError(ctx, args.targetUserId, admin.owner);
           if (targetCheck.error) return err(targetCheck.error, { reportIncident: false });
@@ -2234,7 +2210,7 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       async execute(ctx, args) {
         try {
           if (ctx.kind !== 'group') return err('踢人只能在群聊里执行');
-          const admin = adminRequest(ctx, [/踢|移出|请出|移除/]);
+          const admin = adminRequest(ctx, [/踢出|踢人|移出群|请出群|赶出群|移除群/]);
           if (!admin.ok) return err(admin.reason, { reportIncident: false });
           const targetCheck = moderationTargetError(ctx, args.targetUserId, admin.owner);
           if (targetCheck.error) return err(targetCheck.error, { reportIncident: false });
@@ -2296,7 +2272,7 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       async execute(ctx, args) {
         try {
           if (ctx.kind !== 'group') return err('群管理员设置只能在群聊里执行');
-          const admin = adminRequest(ctx, [/管理员|管理|升为|取消管理/]);
+          const admin = adminRequest(ctx, [/设(?:置|为|成)?.*管理员|取消.*管理员|撤销.*管理员|升为.*管理员|给.*管理员|管理员.*(?:取消|撤销|撤掉|下了|下掉|去掉)/]);
           if (!admin.ok) return err(admin.reason, { reportIncident: false });
           if (typeof args.enable !== 'boolean') return err('enable 必须是 true 或 false');
           const targetCheck = moderationTargetError(ctx, args.targetUserId, admin.owner);
@@ -2863,8 +2839,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       },
       async execute(ctx, args) {
         try {
-          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const entry = visibleEntry(ctx, args.messageId);
+          if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const viewables = await currentMessageImageUrls(ctx, entry);
           if (!viewables.length) return ok(`消息 ${args.messageId} 没有可查看的图片`);
           // 「消息类型」页可以关掉视频画面（省一次抽帧 + 一次视觉调用）：关了就跳过视频帧条，
@@ -2939,8 +2915,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       },
       async execute(ctx, args) {
         try {
-          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const entry = visibleEntry(ctx, args.messageId);
+          if (!entry) return err(`当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const result = await transcribeMessageAudio(ctx, entry);
           if (!result.ok) return err(result.error);
           return ok({
@@ -3489,6 +3465,16 @@ export function toOpenAiTools(defs) {
 export async function executeTool(defs, ctx, name, argsJson) {
   const def = defs.find((d) => d.name === name);
   if (!def) return { content: `错误：未知工具 ${name}`, isError: true };
+  // 工具表是这一轮开始时按配置筛出来的；执行前必须再判一次。否则管理员在运行中
+  // 关闭群管理/平台写入，已经注入给模型的工具仍会落盘（最长可拖到整轮超时）。
+  if (def.feature === 'moderation') {
+    const gate = moderationToolAllowed(name, ctx);
+    if (gate) return { content: `错误：${gate}`, isError: true, reportIncident: false };
+  }
+  // send_private_file 自己会返回带 errorCode 的安全回执，交给它处理，别在这里改成泛化错误。
+  if (name !== 'send_private_file' && !platformToolAllowed(name, getConfig().platform, ctx.chatKey)) {
+    return { content: '错误：这个平台能力已被管理员关闭', isError: true, reportIncident: false };
+  }
   const raw = argsJson ?? '{}';
   const parsed = parseToolArguments(name, raw);
   if (parsed.error) {

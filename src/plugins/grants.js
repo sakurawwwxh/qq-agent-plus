@@ -130,13 +130,10 @@ export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 
   const keyPreview = providedPreviewKey !== undefined ? String(providedPreviewKey || '') : previewKey(preview);
   const state = load(dataDir, pluginId);
   const grants = cleanGrants(state, now);
-  // 同 (动作, 目标, 预览) 的重复批准：次数累加、有效期取更晚（不至于把刚批的几分钟覆盖成更短）
-  const previous = grants.find((entry) => entry.action === key && String(entry.target || '') === wanted
-    && String(entry.previewKey || '') === keyPreview);
   const entry = {
-    // 退款/人工核对按 grantId 精确定位：只按 (动作,目标,预览) 匹配时，旧通行证被清掉后
-    // 管理员新批一张同键通行证，迟到的退款会把额度加到新证上（等于多授权一次）。
-    grantId: String(previous?.grantId || crypto.randomUUID()),
+    // 每次批准都发新证。复用 grantId 会让"旧 unknown 的迟到退款"加到后来新批的额度上，
+    // 等于凭空多授权一次（评论/弹幕没有幂等键，多一次就可能重复写）。
+    grantId: crypto.randomUUID(),
     action: key,
     target: wanted,
     ...(keyPreview ? { previewKey: keyPreview } : {}),
@@ -144,13 +141,11 @@ export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 
     // 这是重置逻辑之外的兜底 —— 即使调用方忘了清批准，新代码也拿不到旧授权。
     ...(manifestHash ? { manifestHash: String(manifestHash) } : {}),
     ...(sourcePendingId ? { sourcePendingId: String(sourcePendingId) } : {}),
-    expiresAt: Math.max(Number(previous?.expiresAt) || 0, now + ttl),
-    usesLeft: (Number(previous?.usesLeft) || 0) + count,
+    expiresAt: now + ttl,
+    usesLeft: count,
     grantedAt: now
   };
-  state.approvals = previous
-    ? grants.map((item) => (item === previous ? entry : item))
-    : [...grants, entry];
+  state.approvals = [...grants, entry];
   save(dataDir, pluginId, state);
   return { ...entry };
 }

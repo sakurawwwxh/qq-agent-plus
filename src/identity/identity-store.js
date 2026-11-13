@@ -1061,8 +1061,9 @@ export class IdentityStore {
     const uin = normalizeUin(userId);
     const source = String(sourceChatKey || '');
     const key = String(triggerKey || '').trim().slice(0, 500);
-    if (!account || !uin || !/^(group|private):\d+$/.test(source) || !key) {
-      return { created: false, reason: 'invalid-candidate', opportunity: null };
+    if (!account || !uin || hasIdentityAssetTombstone(this.db, uin)
+      || !/^(group|private):\d+$/.test(source) || !key) {
+      return { created: false, reason: hasIdentityAssetTombstone(this.db, uin) ? 'deleted-person' : 'invalid-candidate', opportunity: null };
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -1215,9 +1216,9 @@ export class IdentityStore {
       let finalStatus = status;
       let finalReason = cleanMemory(reason);
       let proposalId = '';
-      if (this.isKnownFriend(opportunity.userId)) {
+      if (this.isKnownFriend(opportunity.userId) || hasIdentityAssetTombstone(this.db, opportunity.userId)) {
         finalStatus = 'cancelled';
-        finalReason = 'already-friend';
+        finalReason = this.isKnownFriend(opportunity.userId) ? 'already-friend' : 'person-deleted';
       } else if (status === 'proposed') {
         const latestProposal = this.db.prepare(`
           SELECT status, cooldown_until
@@ -1339,6 +1340,7 @@ export class IdentityStore {
     const name = cleanName(primaryName);
     if (!uin) throw new Error('人物 QQ 号必须为正整数');
     if (!name) throw new Error('人物名称不能为空');
+    if (hasIdentityAssetTombstone(this.db, uin)) throw new Error('这个人物已被管理员删除，不能再编辑或重建');
     const existing = this.db.prepare(
       'SELECT profile_json FROM people WHERE uin=?'
     ).get(uin);
@@ -1814,7 +1816,7 @@ export class IdentityStore {
     );
     if (result.changes !== 1) {
       const proposal = this.getFriendProposal(id);
-      if (!proposal) throw new Error('好友候选不存在');
+      if (!proposal) throw Object.assign(new Error('好友候选不存在'), { code: 'FRIEND_PROPOSAL_GONE' });
       if (proposal.status === 'accepted') return proposal;
       throw new Error(`好友候选发送状态已改变：${proposal.status}`);
     }

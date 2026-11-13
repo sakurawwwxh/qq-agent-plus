@@ -2563,6 +2563,8 @@ export class Orchestrator {
       // 本轮触发消息（remind 的 from 兜底要判断"是否只有一个发送者"；只带最小字段）
       triggerEntries: (triggerEntries || []).map((m) => ({
         senderId: m?.senderId || '', senderName: m?.senderName || '', self: Boolean(m?.self),
+        mentionsSelf: m?.mentionsSelf === true, replySenderId: String(m?.reply?.senderId || ''),
+        eventKind: String(m?.eventKind || ''), targetUserId: String(m?.targetUserId || ''),
         // 群管理授权要核对管理员这句到底说了什么；只留文本片段，不带媒体/原始段。
         text: safeSlice(String(m?.text || ''), 300)
       })),

@@ -109,6 +109,7 @@ function normalizeMemory(row) {
   const status = MEMORY_STATUSES.has(row?.status) ? row.status : 'active';
   const tagsJson = arrayValue(row?.tags_json);
   const entitiesJson = arrayValue(row?.entities_json);
+  const participantsJson = arrayValue(row?.participants_json);
   const relationsJson = arrayValue(row?.relations_json);
   const sourceJson = objectValue(row?.source_json);
   const searchText = asText(row?.search_text, 8000) || [summary, content, textFromJson(tagsJson), textFromJson(entitiesJson)].filter(Boolean).join('\n');
@@ -126,6 +127,7 @@ function normalizeMemory(row) {
     tagsJson,
     sourceJson,
     entitiesJson,
+    participantsJson,
     relationsJson,
     searchText,
     vectorStatus: status === 'active' ? 'pending' : 'none',
@@ -212,10 +214,10 @@ export async function migrateLegacyLivingMemory({
     const insertMemory = store.db.prepare(`
       INSERT OR IGNORE INTO memories (
         id, scope_key, type, status, summary, content, importance, confidence,
-        tags_json, source_json, entities_json, relations_json, search_text,
+        tags_json, source_json, entities_json, participants_json, relations_json, search_text,
         vector_status, vector_error, embedding_model, vector_blob, vector_dimensions,
         created_at, updated_at, expires_at, archived_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, NULL, 0, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, NULL, 0, ?, ?, ?, ?)
     `);
     const insertTurn = store.db.prepare(
       'INSERT OR IGNORE INTO turns (id, scope_key, session_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -234,7 +236,7 @@ export async function migrateLegacyLivingMemory({
         const result = insertMemory.run(
           memory.id, memory.scopeKey, memory.type, memory.status, memory.summary, memory.content,
           memory.importance, memory.confidence, memory.tagsJson, memory.sourceJson, memory.entitiesJson,
-          memory.relationsJson, memory.searchText, memory.vectorStatus, memory.embeddingModel,
+          memory.participantsJson, memory.relationsJson, memory.searchText, memory.vectorStatus, memory.embeddingModel,
           memory.createdAt, memory.updatedAt, memory.expiresAt, memory.archivedAt
         );
         if (result.changes) report.imported.memories += 1;

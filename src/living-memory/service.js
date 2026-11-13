@@ -57,14 +57,26 @@ function normalizeType(value) {
   return MEMORY_TYPES.has(value) ? value : 'episode';
 }
 
-function subjectsCompatible(left, right) {
-  const collect = (value) => new Set((Array.isArray(value) ? value : [])
+function subjectSet(value) {
+  return new Set((Array.isArray(value) ? value : [])
     .map((item) => asText(item, 120).toLowerCase().trim()).filter(Boolean));
-  const a = collect(left);
-  const b = collect(right);
-  if (!a.size || !b.size) return true;
+}
+
+function intersects(a, b) {
   for (const item of a) if (b.has(item)) return true;
   return false;
+}
+
+function subjectsCompatible(left, right) {
+  const lp = subjectSet(left?.participants), rp = subjectSet(right?.participants);
+  if (lp.size && rp.size) return intersects(lp, rp);
+  // 来卡没有主体、旧卡有：不能合并，否则会用空主体覆盖已有归属。
+  if (!lp.size && rp.size) return false;
+  if (!lp.size && !rp.size) {
+    const le = subjectSet(left?.entities), re = subjectSet(right?.entities);
+    if (le.size && re.size) return intersects(le, re);
+  }
+  return true;
 }
 
 function mergeSource(previous, next) {
@@ -81,6 +93,13 @@ function mergeSource(previous, next) {
     turnIds: union('turnIds'),
     turnCount: Math.max(Number(prev.turnCount) || 0, Number(incoming.turnCount) || 0)
   };
+}
+
+function mergeList(previous, incoming, max = 64) {
+  return [...new Set([
+    ...(Array.isArray(previous) ? previous : []),
+    ...(Array.isArray(incoming) ? incoming : [])
+  ].filter(Boolean))].slice(0, max);
 }
 
 export class LivingMemoryService {
@@ -112,12 +131,14 @@ export class LivingMemoryService {
     if (!target.trim()) return null;
     if (typeof this.store.listMemories !== 'function') return null;
     const candidates = this.store.listMemories({ scopeKeys: [scopeKey], status: 'active', type, limit: 80 }).entries;
-    const subjects = [...(Array.isArray(raw?.participants) ? raw.participants : []), ...(Array.isArray(raw?.entities) ? raw.entities : [])];
     for (const candidate of candidates) {
       const similarity = textSimilarity(target, `${candidate.summary || ''}\n${candidate.content || ''}`);
       if (similarity < 0.82) continue;
       // 相似但主体不同（张三 vs 李四）不能合并，否则会把别人的事实覆盖掉。
-      if (!subjectsCompatible(subjects, [...(candidate.participants || []), ...(candidate.entities || [])])) continue;
+      if (!subjectsCompatible(
+        { participants: raw?.participants, entities: raw?.entities },
+        { participants: candidate.participants, entities: candidate.entities }
+      )) continue;
       return candidate;
     }
     return null;
@@ -152,6 +173,12 @@ export class LivingMemoryService {
         ...input,
         id: duplicate.id,
         importance: Math.max(Number(input.importance) || 0, Number(duplicate.importance) || 0),
+        // 主体字段取并集：来卡缺 participants/entities 时不能把旧卡已有归属清空。
+        participants: mergeList(duplicate.participants, input.participants),
+        entities: mergeList(duplicate.entities, input.entities),
+        tags: mergeList(duplicate.tags, input.tags),
+        topics: mergeList(duplicate.topics, input.topics),
+        keyFacts: mergeList(duplicate.keyFacts, input.keyFacts, 100),
         // 合并更新必须保留旧批次的来源回合：否则删除记忆时旧 turn 永远清不掉。
         source: mergeSource(duplicate.source, input.source)
       }

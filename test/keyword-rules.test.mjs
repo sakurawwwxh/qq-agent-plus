@@ -67,6 +67,12 @@ test('输入截断：正则只看前 2000 字，普通字面量仍全量匹配',
   assert.equal(matchesBlacklistKeyword(`${padded}广告`, ['广告']), true);
 });
 
+test('全角/兼容字符先做 NFKC，不能靠全角字母绕过黑名单', () => {
+  assert.equal(matchesBlacklistKeyword('ｓｐａｍ 来了', ['spam']), true);
+  assert.equal(matchesBlacklistKeyword('ＳＰＡＭ', ['re:^spam$']), true);
+  assert.equal(matchesBlacklistKeyword('正常聊天', ['spam']), false);
+});
+
 test('sanitize：非法/不安全条目丢弃，合法条目保留，超上限截断', () => {
   const cleaned = sanitizeBlacklistKeywordRules([
     '广告', '', '  ', 're:^转发.*抽奖$', 're:^a*a*a*b$', 're:(', 're:(a+)+', 42

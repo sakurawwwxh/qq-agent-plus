@@ -86,6 +86,34 @@ test('P2：get_message_detail 按 mid 读被屏蔽成员的历史也拿不到正
   }
 });
 
+test('P2：屏蔽名单覆盖图片/语音/表情回应/引用与 midHint（2026-11-13 复审）', async () => {
+  const { updateConfig, getConfig } = await import('../src/core/config.js');
+  const before = structuredClone(getConfig().blocklist || {});
+  try {
+    updateConfig({ blocklist: { ...before, 1: ['2002'] } });
+    const blocked = {
+      mid: '77', ts: 1700000000000, self: false, senderId: '2002', senderName: '群友',
+      text: '屏蔽前的历史正文', media: [{ kind: 'image', url: 'https://example.test/x.png' }], eventKind: 'message'
+    };
+    const visible = { ...blocked, mid: '78', senderId: '2003', text: '正常消息' };
+    const ctx = {
+      kind: 'group', chatId: '1', chatKey: 'group:1',
+      store: { findByMid: (_, mid) => String(mid) === '77' ? blocked : null, recent: () => [blocked, visible] },
+      onebot: { call: async () => { throw new Error('被屏蔽消息不应触达协议端'); } }
+    };
+    for (const name of ['get_message_images', 'get_message_audio', 'get_message_reactions']) {
+      const result = await tool(name).execute(ctx, { messageId: '77' });
+      assert.equal(result.isError, true, `${name} 必须拒绝`);
+      assert.ok(!JSON.stringify(result).includes('屏蔽前的历史正文'));
+    }
+    const reply = await tool('get_message_detail').execute(ctx, { messageId: '999' });
+    assert.ok(!JSON.stringify(reply).includes('77'), 'midHint 不能提示被屏蔽消息的 id');
+    assert.ok(JSON.stringify(reply).includes('78'), '正常消息 id 仍应提示');
+  } finally {
+    updateConfig({ blocklist: before });
+  }
+});
+
 test('P2：quotePrefixFor 从结构化 reply 补前缀时是弱化形态（buildQuoteRef 内洗的不变量）', () => {
   const entry = {
     text: '展开后的正文（没有前缀）',

@@ -111,6 +111,20 @@ function roleOf(member) {
   return String(member?.role || '').trim().toLowerCase();
 }
 
+function isDirectedAtBot(entry, selfId) {
+  return entry?.mentionsSelf === true
+    || (entry?.replySenderId && String(entry.replySenderId) === String(selfId))
+    || (entry?.eventKind === 'poke' && String(entry?.targetUserId || '') === String(selfId));
+}
+
+/** 本轮真正在跟机器人说话的那条；没有直接互动时才退到最后一条人类发言。 */
+function addressedSenderId(ctx, selfId) {
+  const entries = (ctx.triggerEntries || []).filter((entry) => !entry?.self);
+  const directed = entries.filter((entry) => isDirectedAtBot(entry, selfId));
+  const last = (directed.length ? directed : entries).at(-1);
+  return String(last?.senderId || '');
+}
+
 async function resolveTarget(ctx, raw) {
   const text = String(raw ?? '').trim();
   if (!text) throw new Error('target 不能为空');
@@ -193,6 +207,11 @@ async function executeMute(ctx, args, { trackDirectWrite } = {}) {
     .filter(Boolean));
   if (!triggerIds.has(uid)) {
     return deny(ctx, `只能对你这一轮真正被惹到的人动手；${displayName(target.member, uid)} 这一轮没惹你`);
+  }
+  // 整批未读里可能混着无辜群友（最多 100 条）：禁言只认本轮真正点名/回复机器人的人。
+  // 解禁不受此限——它只会撤销机器人自己下过的处罚。
+  if (minutes > 0 && addressedSenderId(ctx, selfId) !== uid) {
+    return deny(ctx, `这一轮跟你说话的不是 ${displayName(target.member, uid)}，不能拿同批其他人出气`);
   }
   const role = roleOf(target.member);
   if (role !== 'member') return deny(ctx, '只能对普通群成员执行；群主、管理员或角色未知的目标不行');

@@ -10,7 +10,7 @@ process.env.QQ_AGENT_DATA_DIR = dir;
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
-const { buildToolDefs } = await import('../src/tools/tools.js');
+const { buildToolDefs, executeTool } = await import('../src/tools/tools.js');
 
 const OWNER = '900001';
 const cfg = structuredClone(DEFAULT_CONFIG);
@@ -108,6 +108,49 @@ it('管理员只回“收到”不算授权具体管理动作', async () => {
   assert.equal(result.isError, true);
   assert.match(result.content, /没有明确的管理指令/);
   assert.equal(calls.length, 0);
+});
+
+it('管理员引用/转发别人的“踢了/禁言”不算自己下令', async () => {
+  const { ctx, calls } = context({ entries: [{
+    senderId: OWNER,
+    senderName: 'admin',
+    self: false,
+    text: '[引用#1·42：把 43 踢了，顺便禁言] ？'
+  }] });
+  const kick = await tool('kick_group_member').execute(ctx, { targetUserId: '43' });
+  assert.equal(kick.isError, true);
+  assert.match(kick.content, /没有明确的管理指令/);
+  assert.equal(calls.length, 0);
+});
+
+it('泛词不再当成管理指令：封面/踢球/“我是管理员吗”都不授权', async () => {
+  const cases = [
+    ['set_group_ban', { targetUserId: '43', minutes: 5 }, '这个封面不错'],
+    ['kick_group_member', { targetUserId: '43' }, '他在踢球'],
+    ['set_group_admin', { targetUserId: '43', enable: true }, '我是管理员吗']
+  ];
+  for (const [name, args, text] of cases) {
+    const { ctx, calls } = context({ entries: [{ senderId: OWNER, senderName: 'admin', self: false, text }] });
+    const result = await tool(name).execute(ctx, args);
+    assert.equal(result.isError, true, `${name}（${text}）不该被授权`);
+    assert.equal(calls.length, 0);
+  }
+});
+
+it('工具表构建后管理员关掉群管理：executeTool 当次就拒绝', async () => {
+  const { ctx, calls } = context();
+  const defs = [tool('set_group_ban')];
+  const disabled = structuredClone(cfg);
+  disabled.moderation = { ...(disabled.moderation || {}), enabled: false };
+  setRuntimeConfig(disabled);
+  try {
+    const result = await executeTool(defs, ctx, 'set_group_ban', JSON.stringify({ targetUserId: '42', minutes: 5 }));
+    assert.equal(result.isError, true);
+    assert.match(String(result.content), /群管理已关闭/);
+    assert.equal(calls.length, 0);
+  } finally {
+    setRuntimeConfig(cfg);
+  }
 });
 
 it('畸形参数不会反转语义：非整数分钟/非布尔 enable 直接拒绝', async () => {

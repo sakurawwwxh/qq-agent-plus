@@ -1664,8 +1664,8 @@ function buildApp({
           enriched = { text, reply: null, media };
         }
         const finalText = enriched.text || text;
-        // 黑名单必须看到展开后的正文再判：先落库/先唤醒会让转发里的广告在检查前进入模型。
-        if (finalText && matchesBlacklistKeyword(finalText, cfgNow.store?.blacklistKeywords)) {
+        // 用当前配置而非到达时快照：富化可能等十几秒，期间管理员新增的规则也要生效。
+        if (finalText && matchesBlacklistKeyword(finalText, getConfig().store?.blacklistKeywords)) {
           blocked = true;
           const dropped = store.dropDeferredMessage(chatKey, stored.id);
           if (dropped) {

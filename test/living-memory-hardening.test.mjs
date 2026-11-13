@@ -77,6 +77,34 @@ test('same summary with different people must not overwrite each other', async (
   service.close();
 });
 
+test('empty subject must not overwrite a person card; shared entity cannot bridge different people', async () => {
+  const store = new LivingMemoryStore({ file: tempFile() });
+  const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });
+  const zhang = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '对 NAS 方案感兴趣', content: '张三在问 NAS。',
+    participants: ['张三'], entities: ['NAS']
+  });
+  const noSubject = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '对 NAS 方案感兴趣', content: '随手记一条。'
+  });
+  assert.notEqual(noSubject.id, zhang.id, '来卡没有主体时不能并进某个人的卡');
+  assert.deepEqual(store.getMemory(zhang.id).participants, ['张三'], '旧卡主体不能被清空');
+
+  const li = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '对 NAS 方案感兴趣', content: '李四也在问 NAS。',
+    participants: ['李四'], entities: ['NAS']
+  });
+  assert.notEqual(li.id, zhang.id, '共享实体不能替代 participants 相交');
+
+  const upgraded = await service.upsertMemory({
+    scopeKey: 'group:1', type: 'fact', summary: '对 NAS 方案感兴趣', content: '张三补充了细节。',
+    participants: ['张三'], entities: ['NAS', '群晖']
+  });
+  assert.equal(upgraded.id, zhang.id);
+  assert.deepEqual(new Set(store.getMemory(zhang.id).entities), new Set(['NAS', '群晖']), '实体取并集');
+  service.close();
+});
+
 test('merging an updated card keeps all source turns, and delete clears them', async () => {
   const store = new LivingMemoryStore({ file: tempFile(), turnRetentionDays: 0 });
   const service = new LivingMemoryService({ store, embedder: vectorEmbedder(), embeddingConfig, log: { warn() {} } });

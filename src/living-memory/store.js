@@ -34,14 +34,31 @@ function normalizeDuplicateText(value) {
   return String(value || '').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '').slice(0, 6000);
 }
 
-function sameSubject(left, right) {
-  const collect = (value) => new Set((Array.isArray(value) ? value : [])
+function subjectSet(value) {
+  return new Set((Array.isArray(value) ? value : [])
     .map((item) => asText(item, 120).toLowerCase().trim()).filter(Boolean));
-  const a = collect(left);
-  const b = collect(right);
-  if (!a.size || !b.size) return true;
+}
+
+function intersects(a, b) {
   for (const item of a) if (b.has(item)) return true;
   return false;
+}
+
+/**
+ * 合并前的“主体不冲突”判定（left = 来卡，right = 已有卡）。
+ * - participants 双方都有：必须有交集；共享实体不能替代（张三和李四都聊 NAS 也不是同一主体）。
+ * - 来卡没有 participants、已有卡有：不合并 —— 否则会用空主体覆盖已有归属。
+ * - 双方都没有 participants：才退回 entities 判断；两边实体都非空且无交集则不合并。
+ */
+function sameSubject(left, right) {
+  const lp = subjectSet(left?.participants), rp = subjectSet(right?.participants);
+  if (lp.size && rp.size) return intersects(lp, rp);
+  if (!lp.size && rp.size) return false;
+  if (!lp.size && !rp.size) {
+    const le = subjectSet(left?.entities), re = subjectSet(right?.entities);
+    if (le.size && re.size) return intersects(le, re);
+  }
+  return true;
 }
 
 function cappedJson(value, max = MAX_TURN_PAYLOAD_CHARS) {
@@ -302,8 +319,10 @@ export class LivingMemoryStore {
     for (const row of rows) {
       const memory = rowToMemory(row);
       if (normalizeDuplicateText(memory.summary) !== targetSummary) continue;
-      const subjects = [...(Array.isArray(participants) ? participants : []), ...(Array.isArray(entities) ? entities : [])];
-      if (!sameSubject(subjects, [...(memory.participants || []), ...(memory.entities || [])])) continue;
+      if (!sameSubject(
+        { participants, entities },
+        { participants: memory.participants, entities: memory.entities }
+      )) continue;
       return memory;
     }
     return null;

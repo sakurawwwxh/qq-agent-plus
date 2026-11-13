@@ -125,6 +125,22 @@ it('数字群名片不能借刀：本轮同时有同名/同号时必须判歧义
   assert.equal(calls.length, 0);
 });
 
+it('同一批里先发言的无辜群友不能替点名机器人的人挨罚', async () => {
+  const { ctx, calls } = context({
+    entries: [
+      { senderId: '42', senderName: '张三', self: false, text: '早上好' },
+      { senderId: '43', senderName: '李四', self: false, text: '@机器人 把 42 禁言', mentionsSelf: true }
+    ]
+  });
+  const innocent = await tool().execute(ctx, { target: '42', minutes: 5 });
+  assert.equal(innocent.isError, true);
+  assert.match(innocent.content, /跟你说话的不是|没惹你/);
+  assert.equal(calls.length, 0);
+  const actual = await tool().execute(ctx, { target: '43', minutes: 5 });
+  assert.ok(!actual.isError, actual.content);
+  assert.equal(calls.length, 1);
+});
+
 it('名字目标也用最新的成员信息做角色/禁言状态判断', async () => {
   const { ctx, calls } = context();
   ctx.triggerEntries = [{ senderId: '42', senderName: '张三', self: false }];
@@ -179,9 +195,9 @@ it('成功禁言换算成秒并落盘；同一人冷却期内拒绝', async () =
 
 it('每群每日次数上限生效', async () => {
   setup({ dailyLimit: 1 });
-  const entries = [{ senderId: '42', self: false }, { senderId: '43', self: false }];
-  const { ctx, calls } = context({ entries });
+  const { ctx, calls } = context({ entries: [{ senderId: '42', self: false }] });
   assert.ok(!(await tool().execute(ctx, { target: '42', minutes: 5 })).isError);
+  ctx.triggerEntries = [{ senderId: '43', self: false }];
   const second = await tool().execute(ctx, { target: '43', minutes: 5 });
   assert.equal(second.isError, true);
   assert.match(second.content, /上限/);

@@ -125,6 +125,19 @@ test('删除人物：同事务取消待批请求与待评审机会，删提议�
   assert.equal(store.deleteIdentityAsset('123456'), true);
 
   assert.equal(store.isIdentityAssetDeleted('123456'), true);
+  assert.throws(() => store.upsertIdentityAsset({
+    userId: '123456', primaryName: '复活', chatKey: 'group:1'
+  }), /删除/, '编辑接口不能清墓碑复活人物');
+  const revived = store.createFriendOpportunity({
+    accountUin: '888888',
+    userId: '123456',
+    sourceChatKey: 'group:1',
+    triggerKey: 'store-trigger-after-delete',
+    probability: 1,
+    randomValue: 0
+  });
+  assert.equal(revived.created, false);
+  assert.equal(revived.reason, 'deleted-person', '删除后手动/在途评分不能新建好友机会');
   assert.equal(store.isIdentityAssetDeleted('654321'), false, '别人的墓碑不能串味');
   assert.equal(store.getPerson('123456', { chatKey: 'group:1' }), null, '人物行仍按原语义删除');
   assert.equal(

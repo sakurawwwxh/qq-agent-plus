@@ -173,7 +173,9 @@ function compileRules(rules) {
 }
 
 export function matchesBlacklistKeyword(text, rules = []) {
-  const input = String(text ?? '');
+  // NFKC：把全角/兼容字符折叠成统一形态（ｓｐａｍ → spam），否则中文输入法下的
+  // 全角广告词会整片绕过字面量和 `i` 正则（2026-11-13 全量审查）。
+  const input = String(text ?? '').normalize('NFKC');
   if (!input || !Array.isArray(rules) || !rules.length) return false;
   const { literals, regexes } = compileRules(rules);
   if (literals.length) {

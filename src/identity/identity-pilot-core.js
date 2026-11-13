@@ -750,6 +750,14 @@ export class IdentityPilotManager {
           : '好友申请 API 已明确受理；尚未成为好友，等待 friend_add 事件确认。'
       };
     } catch (error) {
+      if (error?.code === 'FRIEND_PROPOSAL_GONE') {
+        return {
+          proposal: null,
+          protocolDispatchSupported: true,
+          execution: 'deleted-during-dispatch',
+          note: '人物在发送期间被删除；如果对方已经收到好友申请，请在 QQ 客户端核对后处理。'
+        };
+      }
       const definiteFailure = error instanceof FriendRequestProtocolError
         && error.outcome === 'failed';
       const outcome = definiteFailure ? 'failed' : 'held_unknown';

@@ -226,6 +226,25 @@ test('迟到退款按 grantId 定位：不能加到后来同键的新通行证�
   assert.equal(current.usesLeft, 1, '旧证的迟到退款不能给新证加额度');
 });
 
+test('额度耗尽后重新批准：旧 unknown 的迟到退款不能加到新证', (t) => {
+  const dir = makeDir(t);
+  const oldGrant = grantApproval(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', uses: 1, ttlMs: 60_000
+  });
+  const admitted = admitWrite(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', quotaLimit: 3, floorMs: 0
+  });
+  assert.equal(admitted.admitted, true);
+  settleWriteOp(dir, 'p', admitted.opId, { outcome: 'unknown' });
+  const newGrant = grantApproval(dir, 'p', 'write', {
+    target: 'A', preview: 'hello', uses: 1, ttlMs: 60_000
+  });
+  assert.notEqual(newGrant.grantId, oldGrant.grantId, '重新批准必须发新证');
+  assert.equal(refundApproval(dir, 'p', admitted.approvalReceipt), true);
+  const current = stateOf(dir).approvals.find((entry) => entry.grantId === newGrant.grantId);
+  assert.equal(current.usesLeft, 1, '旧 unknown 退款不能把新证变成 2 次');
+});
+
 test('grants 文件损坏：准入 fail-closed，不生成通配批准', (t) => {
   const dir = makeDir(t);
   fs.mkdirSync(path.join(dir, 'plugin-grants'), { recursive: true });

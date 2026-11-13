@@ -20,6 +20,7 @@ import { sanitizeDeep } from '../tools/tools-core.js';
 import { canonicalVersion } from './version.js';
 import { hashManifest } from './manifest-diff.js';
 import { readOwnerUin, sendOwnerText } from '../core/notify-owner.js';
+import { classifyTransportFailure } from '../onebot/sender.js';
 import {
   admitWrite, settleWriteOp, recoverWriteOps,
   requestPendingApproval, listPendingApprovals, approvePendingApproval,
@@ -851,6 +852,12 @@ export class PluginRegistry {
         return { delivered: true, error: '' };
       } catch (error) {
         errors.push(`WS 私聊：${error?.message ?? error}`);
+        // 只有"确定没发出去"才能换 HTTP 再发；超时/5xx/连接重置可能已经送达，
+        // 再补一条会让 owner 收到两条同样的通知（2026-11-13 全量审查）。
+        const transport = classifyTransportFailure(error);
+        if (transport.uncertain || error?.outcome === 'unknown') {
+          return { delivered: false, error: errors.join('；') };
+        }
       }
     } else {
       errors.push('发送队列不可用');

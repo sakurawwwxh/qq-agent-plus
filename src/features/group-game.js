@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { displayNameOf } from '../core/display-name.js';
 import { sanitizeUserText, ZONE_OFFSET_MS, settleWithDeadline } from '../core/util.js';
+import { classifyTransportFailure } from '../onebot/sender.js';
 import * as numberBomb from './games/number-bomb.js';
 import * as undercover from './games/undercover.js';
 import * as werewolf from './games/werewolf.js';
@@ -737,8 +738,12 @@ export class GroupGameManager {
       if (dirty) this.#save();
       return;
     }
-    // 先补发上一轮失败的阶段播报，再推进状态机；同群保持入队顺序。
+    // 先补发上一轮失败的阶段播报，再补发上次没发完的私聊（身份/词），最后推进状态机。
     await this.#flushDeliveries();
+    for (const chatKey of [...this.games.keys()]) {
+      if (this.stopped) break;
+      await this.#flushPrivate(chatKey, cfg);
+    }
     for (const [chatKey, g] of [...this.games.entries()]) {
       if (this.stopped) break;
       try {
@@ -862,6 +867,64 @@ export class GroupGameManager {
     }
   }
 
+  /**
+   * 私聊效果先落盘再发：开局发词/身份/首夜提示是一串独立私聊，进程在中间重启时
+   * 原来的直发会永久丢一部分玩家。队列随游戏状态一起 #save，重启用同一 deliveryId
+   * 让 EffectLedger 判重（sent/review 都不再重发，只有确定 failed 才重试）。
+   */
+  #queuePrivate(chatKey, effect) {
+    const g = this.games.get(chatKey);
+    const uid = String(effect?.userId || '');
+    const text = String(effect?.text || '');
+    if (!g || !uid || !text) return null;
+    g.pendingPrivate = Array.isArray(g.pendingPrivate) ? g.pendingPrivate : [];
+    const item = {
+      deliveryId: crypto.randomUUID(),
+      userId: uid,
+      text: text.slice(0, 500),
+      attempts: 0,
+      retryAt: 0
+    };
+    g.pendingPrivate.push(item);
+    return item;
+  }
+
+  async #flushPrivate(chatKey, cfg) {
+    const g = this.games.get(chatKey);
+    const queue = Array.isArray(g?.pendingPrivate) ? g.pendingPrivate : [];
+    if (!queue.length) return { privateOk: 0, privateFailed: 0, privatePeople: 0 };
+    if (!cfg.allowPrivateInvite) {
+      // 开关关掉时原来也是逐条失败；这里直接清队列，避免每个 tick 都重试注定发不出的消息。
+      g.pendingPrivate = [];
+      this.#save();
+      return { privateOk: 0, privateFailed: queue.length, privatePeople: 0 };
+    }
+    let privateOk = 0;
+    let privateFailed = 0;
+    let dirty = false;
+    const people = new Set();
+    for (const item of [...queue]) {
+      if (this.stopped && !this.draining) break;
+      if (Number(item.retryAt) > this.now()) continue;
+      const result = await this.#deliverPrivateEffect(chatKey, item, cfg);
+      if (result.ok) {
+        privateOk += 1;
+        people.add(result.userId);
+      } else if (result.terminal) {
+        privateFailed += 1;
+      } else {
+        item.attempts = (Number(item.attempts) || 0) + 1;
+        item.retryAt = this.now() + Math.min(300_000, 20_000 * (2 ** Math.min(4, item.attempts)));
+        dirty = true;
+        continue;
+      }
+      g.pendingPrivate = (g.pendingPrivate || []).filter((entry) => entry.deliveryId !== item.deliveryId);
+      dirty = true;
+    }
+    if (dirty) this.#save();
+    return { privateOk, privateFailed, privatePeople: people.size };
+  }
+
   async #applyEffects(chatKey, effects) {
     if (this.stopped && !this.draining) return;
     const cfg = this.#cfg();
@@ -874,16 +937,13 @@ export class GroupGameManager {
         if (effect.type === 'public' && effect.text) {
           await this.#enqueueAndDeliverPublic(chatKey, effect);
         } else if (effect.type === 'private' && effect.text) {
-          const result = await this.#deliverPrivateEffect(chatKey, effect, cfg);
-          if (result.ok) {
-            privateOk += 1;
-            privateUsers.add(result.userId);
-          } else {
-            privateFailed += 1;
-          }
+          // 先入队并落盘，发不出去留给下个 tick / 下次启动，不在这里直接丢。
+          if (this.#queuePrivate(chatKey, effect)) this.#save();
         } else if (effect.type === 'wake' && this.wake) {
           this.wake(chatKey, Number(effect.delayMs) || 60000, String(effect.note || ''), { kind: 'game' });
         } else if (effect.type === 'end') {
+          // 先把这个阶段排队的私聊发完，再发终局：否则“你出局了”会落在“平民获胜”之后。
+          await this.#flushPrivate(chatKey, cfg);
           // 终局前最后尝试一次排队的阶段播报；终局后它们已过期，不再跨局补发。
           await this.#flushDeliveries({ chatKey, force: true });
           this.#dropBroadcastsForChat(chatKey, 'game-ended');
@@ -944,7 +1004,12 @@ export class GroupGameManager {
         this.log('[group-game] 效果发送失败:', error);
       }
     }
-    return { privateFailed, privateOk, privatePeople: privateUsers.size };
+    const flushed = await this.#flushPrivate(chatKey, cfg);
+    return {
+      privateFailed: privateFailed + flushed.privateFailed,
+      privateOk: privateOk + flushed.privateOk,
+      privatePeople: privateUsers.size + flushed.privatePeople
+    };
   }
 
   /** 统一 settle：发送已成功时账本写失败不能让调用方误判成"没发出去"而重试。 */
@@ -1125,25 +1190,29 @@ export class GroupGameManager {
     this.#save();
   }
 
-  /** private 阶段播报：只记账本，不进入重试队列（避免重复发身份/词语/行动提示）。 */
+  /** private 阶段播报：先落盘队列，再按稳定 deliveryId 走账本判重。 */
   async #deliverPrivateEffect(chatKey, effect, cfg) {
     const uid = String(effect.userId || '');
-    if (this.stopped && !this.draining) return { ok: false, userId: uid };
+    if (this.stopped && !this.draining) return { ok: false, terminal: false, userId: uid };
     if (!cfg.allowPrivateInvite) {
       this.log('[group-game] 跳过私聊消息（未开启「允许私聊发身份」）');
-      return { ok: false, userId: uid };
+      return { ok: false, terminal: true, userId: uid };
     }
     // 游戏期间豁免（开关开启时）：只对**本局在册玩家**放宽私聊白名单；不在册一律不发，
     // 免得一次提示注入就把词/身份发给任意 QQ（把关放在这里，而不是只靠插件自觉）
     const roster = new Set((this.games.get(chatKey)?.state?.roles || []).map((r) => String(r.userId)));
     const gameScoped = cfg.allowGamePrivateDm && roster.has(uid);
     const g = this.games.get(chatKey);
+    const deliveryId = String(effect.deliveryId || crypto.randomUUID());
     const began = this.effects?.begin({
       kind: 'game-broadcast',
       chatKey,
-      idemKey: `game:${chatKey}:dm:${crypto.randomUUID()}`,
+      idemKey: `game:${chatKey}:dm:${deliveryId}`,
       detail: { gameId: g?.gameId || '', instanceId: g?.instanceId || '', type: 'private', userId: uid }
     });
+    if (began?.action === 'done') return { ok: true, terminal: true, userId: uid };
+    if (began?.action === 'review') return { ok: false, terminal: true, userId: uid };
+    if (began?.action === 'in-flight') return { ok: false, terminal: false, userId: uid };
     const effectId = began?.id || null;
     try {
       const res = await this.sender.sendTextBatch(`private:${uid}`, [String(effect.text).slice(0, 500)], {
@@ -1156,17 +1225,19 @@ export class GroupGameManager {
       for (const s of (res?.sent || [])) this.#noteSecretMid(`private:${uid}`, s?.messageId);
       if (Array.isArray(res?.failed) && res.failed.length) {
         this.#settleEffect(effectId, 'unknown', { partial: true, error: '部分发送失败' });
-        return { ok: false, userId: uid };
+        return { ok: false, terminal: true, userId: uid };
       }
       this.#settleEffect(effectId, 'sent');
-      return { ok: true, userId: uid };
+      return { ok: true, terminal: true, userId: uid };
     } catch (error) {
-      const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : true;
+      const transport = classifyTransportFailure(error);
+      const uncertain = effectId ? this.store.hasUncertainEffects(effectId) : transport.uncertain;
       this.#settleEffect(effectId, uncertain ? 'unknown' : 'failed', {
         error: String(error?.message ?? error).slice(0, 200)
       });
       this.log('[group-game] 私聊效果发送失败:', error);
-      return { ok: false, userId: uid };
+      // 只有"能证明没送达"的传输错误才留在队列里下轮重试；白名单/权限/未知结果都不重发。
+      return { ok: false, terminal: !(transport.definite && !uncertain), userId: uid };
     }
   }
 }
