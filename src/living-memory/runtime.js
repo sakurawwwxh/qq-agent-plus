@@ -354,6 +354,10 @@ export class LivingMemoryRuntime {
     this.pending.delete(chatKey);
     if (this.stopped) return { created: 0, stopped: true };
     if (!batch.length || !this.applies(chatKey) || this.config().autoCapture === false) return { created: 0 };
+    // 先拿住 service：模型调用可能跨过 stop()，drain() 会等这个在途任务结束再关库；
+    // 不能等模型返回后再 #service() —— 那时 stopped=true 会白丢已经付费的提炼结果。
+    const service = this.#service();
+    if (!service) return { created: 0, stopped: true };
     const source = {
       sessionIds: [...new Set(batch.map((turn) => turn.sessionId).filter(Boolean))],
       turnIds: [...new Set(batch.map((turn) => turn.turnId).filter(Boolean))],
@@ -369,8 +373,6 @@ export class LivingMemoryRuntime {
       });
       try { this.recordUsage?.(response, response?.model || ''); } catch { /* 记账失败不影响记忆 */ }
       const cards = normalizeCards(parseJsonArray(response?.message?.content), chatKey, source);
-      const service = this.#service();
-      if (!service) return { created: 0, stopped: true };
       let created = 0;
       for (const card of cards) {
         // 单卡敏感/格式问题只丢这一张：不能让它把整批干净卡片一起带走并重烧一次模型。

@@ -1154,6 +1154,40 @@ test('阶段播报按队列顺序重试，后一条不抢跑', async () => {
   assert.match(attempts[2], /不在这段里/);
 });
 
+test('前一条还在退避时，同群后一条也不能先发', async () => {
+  const w = makeWorld({ rng: () => 0.42 });
+  const effects = new EffectLedger(w.store.db);
+  w.mgr.effects = effects;
+  const attempts = [];
+  let openingAttempts = 0;
+  w.mgr.sender = {
+    sendTextBatch: async (chatKey, msgs, options = {}) => {
+      const text = String(msgs?.[0] || '');
+      attempts.push(text);
+      if (/数字炸弹开局/.test(text) && openingAttempts < 2) {
+        openingAttempts += 1;
+        throw new Error('socket timeout');
+      }
+      w.sent.push({ chatKey, msgs: [...msgs], options });
+      return { sent: [{ messageId: `m${w.sent.length}` }], failed: [] };
+    }
+  };
+  const r = await w.mgr.start({ chatKey: 'group:1', gameId: 'number-bomb' });
+  assert.equal(r.ok, true);
+  say(w.store, 'u1', '群友1', '猜 200');
+  await w.mgr.handleNewMessages('group:1');
+  assert.equal(attempts.length, 1);
+  w.setClock(w.getClock() + 21000);
+  await w.mgr.tick();
+  assert.equal(attempts.length, 2, '第一次退避只重试前一条');
+  assert.match(attempts[1], /数字炸弹开局/);
+  w.setClock(w.getClock() + 41000);
+  await w.mgr.tick();
+  assert.equal(attempts.length, 4);
+  assert.match(attempts[2], /数字炸弹开局/);
+  assert.match(attempts[3], /不在这段里/);
+});
+
 test('阶段播报结果未知：账本 unknown，队列丢弃且永不重发', async () => {
   const w = makeWorld({ rng: () => 0.42 });
   const effects = new EffectLedger(w.store.db);

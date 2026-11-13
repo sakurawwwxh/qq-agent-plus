@@ -18,12 +18,13 @@ export function redactSecretValue(value) {
     // 分隔符要求让 monkey=/tokenizer=/sortkey= 这类普通词不误伤。
     .replace(/([?&](?:[a-z0-9_-]*[_-])?(?:token|key|secret|password|authorization|auth|credentials?|signature|apikey|client_id|clientid)=)[^&\s]+/gi, '$1[redacted]')
     // JSON 体形态："apiKey": "…"（错误信息里原样回显请求体时的兜底；命中面故意偏宽，宁多脱勿漏）。
-    .replace(/("[a-z0-9_-]*(?:access_token|api[-_]?key|client_id|client_secret|secret_key|api_token|auth[-_]?token|auth[-_]?key|session_key|token|secret|password|authorization|credential|key)"\s*:\s*)"[^"]*"/gi, '$1"[redacted]"')
-    // 其它常见头形态：x-api-key: xxx / api-key: xxx / authorization: Token xxx。
+    .replace(/("[a-z0-9_-]*(?:access[-_]?token|api[-_]?key|client_id|client_secret|secret_key|api_token|auth[-_]?token|auth[-_]?key|subscription[-_]?key|session_key|token|secret|password|authorization|credential|key)"\s*:\s*)"[^"]*"/gi, '$1"[redacted]"')
+    // 其它常见头形态：x-api-key: xxx / api-key: xxx / x-auth-token: xxx /
+    // Ocp-Apim-Subscription-Key: xxx / authorization: Token xxx。
     // 值吃到行尾 —— `authorization: Token abc` 里的 scheme 与令牌都是凭据的一部分。
     // Bearer|Basic 的值已由上一条处理成 [redacted]，这里跳过（前瞻里先吃掉空白，
     // 否则 \s* 会回溯成零空格，把 "Basic [redacted]" 当成普通值再脱一次）。
-    .replace(/\b((?:x[-_])?api[-_]?key|authorization|proxy-authorization)\s*:\s*(?!\s*(?:\[redacted\]|bearer\b|basic\b))[^\n]+/gi, '$1: [redacted]')
+    .replace(/\b((?:[a-z0-9]+[-_])*(?:api[-_]?key|auth[-_]?token|access[-_]?token|subscription[-_]?key|token)|authorization|proxy-authorization)\s*:\s*(?!\s*(?:\[redacted\]|bearer\b|basic\b))[^\n]+/gi, '$1: [redacted]')
     // Cookie 头整值脱敏（一对对抠不现实，整个值都是凭据）。吃到行尾：
     // `Cookie: a=1; skey=secret; p_skey=secret` 里只有第一对是凭据，旧写法 \S+ 会漏掉后面几对。
     .replace(/\b(cookie)\s*:\s*[^\n]+/gi, '$1: [redacted]')

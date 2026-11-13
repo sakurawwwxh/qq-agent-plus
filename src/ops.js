@@ -1510,7 +1510,10 @@ function runTarVerboseList(file) {
 
 function runTarExtract(file, destDir) {
   fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
-  return runTarWithFallback(['-xzf', file, '-C', destDir], { timeout: 30 * 60 * 1000 });
+  // GNU tar（Git for Windows）的 --force-local 管不到 -C 的盘符路径，会把它当成远端主机；
+  // 改成先切到目标目录再解包，两种 tar 都能用（2026-11-13 全量测试实测）。
+  const args = IS_WINDOWS ? ['-xzf', file] : ['-xzf', file, '-C', destDir];
+  return runTarWithFallback(args, { timeout: 30 * 60 * 1000, cwd: IS_WINDOWS ? destDir : undefined });
 }
 
 function unsafeArchiveName(raw) {

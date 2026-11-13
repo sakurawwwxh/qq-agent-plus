@@ -74,3 +74,12 @@ test('redactText：Cookie 多段、x-api-key 与 URL 里的 user:pass 也要脱�
   // 已经脱敏过的值不重复处理（幂等）
   assert.equal(redactText(redactText('x-api-key: abcd1234')), 'x-api-key: [redacted]');
 });
+
+test('redactText：X-Auth-Token / Access-Token / Azure 订阅键等头名变体', () => {
+  assert.equal(redactText('X-Auth-Token: token-123'), 'X-Auth-Token: [redacted]');
+  assert.equal(redactText('Access-Token: access-123'), 'Access-Token: [redacted]');
+  assert.equal(redactText('Ocp-Apim-Subscription-Key: azure-123'), 'Ocp-Apim-Subscription-Key: [redacted]');
+  assert.equal(redactText('--header=Ocp-Apim-Subscription-Key: azure-123'), '--header=Ocp-Apim-Subscription-Key: [redacted]');
+  // 普通连字符字段不能误伤
+  assert.equal(redactText('X-Request-Id: req-123'), 'X-Request-Id: req-123');
+});

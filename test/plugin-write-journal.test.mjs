@@ -40,6 +40,22 @@ test('准入原子性：floor/批准/配额都通过才同时扣减并写 journa
   assert.equal(listWriteOps(dir, 'p', { state: 'admitted' }).length, 1);
 });
 
+test('无目标的动作级批准不能被带 actionTarget 的工具当通配通行证', (t) => {
+  const dir = makeDir(t);
+  grantApproval(dir, 'p', 'like', { target: '', preview: 'hello', uses: 1, ttlMs: 60_000 });
+  const denied = checkApproval(dir, 'p', 'like', {
+    target: 'victim', preview: 'hello', requireTarget: true
+  });
+  assert.equal(denied.approved, false, '空目标批准不能匹配具体目标');
+  const admission = admitWrite(dir, 'p', 'like', {
+    target: 'victim', preview: 'hello', requireTarget: true, quotaLimit: 10, floorMs: 0
+  });
+  assert.equal(admission.admitted, false);
+  assert.equal(admission.needsApproval, true);
+  // 动作级工具自己仍可使用动作级批准。
+  assert.equal(checkApproval(dir, 'p', 'like', { target: '', preview: 'hello' }).approved, true);
+});
+
 test('配额不足不扣批准；floor 不足不扣任何东西', (t) => {
   const dir = makeDir(t);
   grantApproval(dir, 'p', 'write', { target: 'A', preview: 'hello', uses: 1 });

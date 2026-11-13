@@ -764,7 +764,10 @@ export class PluginRegistry {
       manifestHash,
       quotaLimit: Number(host.manifest.quotas?.[action]) || 0,
       floorMs: PLUGIN_WRITE_FLOOR_MS,
-      lastWriteAt: this.lastWriteAt.get(host.id)
+      lastWriteAt: this.lastWriteAt.get(host.id),
+      // 带 actionTarget 的工具不能复用同 action 的「无目标」动作级批准，
+      // 否则一次动作级批准会变成任意目标的通配通行证。
+      requireTarget: targetKeys.length > 0
     });
     if (!admission.admitted) {
       if (!admission.needsApproval) {

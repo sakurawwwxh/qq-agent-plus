@@ -1017,9 +1017,11 @@ export class ChatStore {
         WHERE chat_key=? AND state!='closed'`).all(chatKey)
       : this.db.prepare(`SELECT * FROM conversation_threads WHERE state!='closed'`).all();
     const transitions = [];
+    // 到期与在途只差几毫秒：先删 transcript 会让已接住的这轮从空线程开始。
+    const busy = this.db.prepare("SELECT 1 FROM runs WHERE chat_key=? AND state='leased' UNION ALL SELECT 1 FROM messages WHERE chat_key=? AND state IN ('pending','leased','deferred') LIMIT 1");
     for (const row of rows) {
-      let nextState = '';
-      let reason = '';
+      if (busy.get(row.chat_key, row.chat_key)) continue;
+      let nextState = '', reason = '';
       if ((row.mode || 'threaded') === 'lifecycle') {
         if (row.state === 'rollover_armed') {
           if (Number(row.resume_armed_until) > 0 && Number(row.resume_armed_until) <= now) {
@@ -1029,8 +1031,7 @@ export class ChatStore {
           } else {
             const idleDeadline = Number(row.idle_deadline) || 0;
             const hardDeadline = Number(row.hard_deadline) || 0;
-            const idleDue = idleDeadline > 0 && idleDeadline <= now;
-            const hardDue = hardDeadline > 0 && hardDeadline <= now;
+            const idleDue = idleDeadline > 0 && idleDeadline <= now, hardDue = hardDeadline > 0 && hardDeadline <= now;
             if (idleDue && (!hardDue || idleDeadline < hardDeadline)) {
               nextState = 'closed';
               reason = row.disposition === 'listening' ? 'silent-idle' : 'active-idle';

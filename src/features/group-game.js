@@ -52,6 +52,7 @@ export class GroupGameManager {
     this.timer = null;
     this.tickTask = null;
     this.stopped = false;
+    this.draining = false;
     // 兜底扫描窗口内"入口路径已喂过引擎"的消息 id（防双喂的精确判据，见 #collectPrivateActions）：
     // 只在扫描进行时生效，不进任何落盘状态。
     this._privateScanActive = false;
@@ -152,6 +153,7 @@ export class GroupGameManager {
   startLoop() {
     if (this.timer) return;
     this.stopped = false;
+    this.draining = false;
     this.timer = setInterval(() => { this.tick().catch((e) => this.log('[group-game] tick 出错:', e?.message ?? e)); }, 20000);
     if (this.timer.unref) this.timer.unref();
     if (this.games.size) this.log(`[group-game] 已从磁盘恢复 ${this.games.size} 局进行中的游戏`);
@@ -165,6 +167,7 @@ export class GroupGameManager {
 
   /** 停机收尾：等在途 tick（可能正在发送阶段播报）结束，最多 5 秒。 */
   async drain(timeoutMs = 5000) {
+    this.draining = true;
     this.stopped = true;
     await settleWithDeadline([this.tickTask], timeoutMs);
   }
@@ -860,7 +863,7 @@ export class GroupGameManager {
   }
 
   async #applyEffects(chatKey, effects) {
-    if (this.stopped) return;
+    if (this.stopped && !this.draining) return;
     const cfg = this.#cfg();
     let privateFailed = 0;
     let privateOk = 0;
@@ -1103,15 +1106,19 @@ export class GroupGameManager {
 
   /** 刷新所有到期队列项；同群遇到失败/在途就停止该群后续项，保证顺序。 */
   async #flushDeliveries({ chatKey = '', force = false } = {}) {
-    if (this.stopped || !this.pendingBroadcasts.length) return;
+    if ((this.stopped && !this.draining) || !this.pendingBroadcasts.length) return;
     this.#pruneBroadcasts(this.now());
     const blocked = new Set();
     for (const item of [...this.pendingBroadcasts]) {
-      if (this.stopped) break;
+      if (this.stopped && !this.draining) break;
       if (chatKey && item.chatKey !== chatKey) continue;
       if (!this.pendingBroadcasts.some((x) => x.deliveryId === item.deliveryId)) continue;
       if (blocked.has(item.chatKey)) continue;
-      if (!force && Number(item.retryAt) > this.now()) continue;
+      if (!force && Number(item.retryAt) > this.now()) {
+        // 前一条还在退避：同一群的后一条必须一起等，否则会越过失败项先发。
+        blocked.add(item.chatKey);
+        continue;
+      }
       const outcome = await this.#deliverPendingBroadcast(item);
       if (outcome === 'failed' || outcome === 'in-flight') blocked.add(item.chatKey);
     }
@@ -1121,7 +1128,7 @@ export class GroupGameManager {
   /** private 阶段播报：只记账本，不进入重试队列（避免重复发身份/词语/行动提示）。 */
   async #deliverPrivateEffect(chatKey, effect, cfg) {
     const uid = String(effect.userId || '');
-    if (this.stopped) return { ok: false, userId: uid };
+    if (this.stopped && !this.draining) return { ok: false, userId: uid };
     if (!cfg.allowPrivateInvite) {
       this.log('[group-game] 跳过私聊消息（未开启「允许私聊发身份」）');
       return { ok: false, userId: uid };

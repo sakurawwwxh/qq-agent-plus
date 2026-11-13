@@ -10,9 +10,11 @@ import { redactSecretValue } from './redact.js';
 //   authorization / auth / x-api-key / x_api_key / cookie / bearer
 // 它们常在 api.extraBody、api.thinkingParams 这类"高级逃生口"里被用户原样填成请求头，
 // 原来不含这些词的模式会漏过、把明文密钥写进审计文件（审计会把整份配置落盘）。
+// 2026-11-13 复审又补了连字符/驼峰变体：api-key、X-Auth-Token、Access-Token、
+// Ocp-Apim-Subscription-Key（Azure）。只写了 x-api-key 时，这些同义头名会原样漏出。
 // 仍**故意不含**裸 `key`：普通业务字段大量叫 xxxKey（sortKey、sortkey、clientKey…），
 // 加了会把无关字段整片抹成 [redacted]（`*From` 的排除也拦不住这些）。
-export const SECRET_KEY_PATTERN = /(^token$|apikey|api_key|accesstoken|access_token|secret|password|privatekey|private_key|authorization|^auth$|x-api-key|x_api_key|^cookie$|^bearer$)/i;
+export const SECRET_KEY_PATTERN = /(^token$|apikey|api[-_]?key|accesstoken|access[-_]?token|authtoken|auth[-_]?token|secret|password|privatekey|private[-_]?key|authorization|^auth$|^cookie$|^bearer$|subscription[-_]?key)/i;
 // 形如 apiKeyFrom 的字段存的是"密钥来源标识"（如 manual），不是密钥本身，不要脱敏
 export const SECRET_KEY_EXCLUDE = /from$/i;
 
@@ -116,11 +118,17 @@ export function sanitizeConfigSecrets(cfg) {
       // args 除了 --token=xxx 的内联形态，还要掩“敏感 flag 的下一个参数”：
       // ["--api-key", "sk-live"] 这种分参数写法原先会原样下发。
       const flag = /^--?(?:.*[-_])?(?:key|token|secret|pass(word|wd)?|auth|authorization|header|cookie)/i;
+      // 内联头形态：--header=Authorization: Bearer … / -H "X-Api-Key: …" /
+      // Ocp-Apim-Subscription-Key: …。键名前后可能是 =、-、空白，不能只认 "key="。
+      const inlineSecret = /(?:^|[-_=:;,\s])(?:authorization|auth|api[-_]?key|subscription[-_]?key|access[-_]?token|auth[-_]?token|token|key|secret|pass(?:word|wd)?|cookie|session[-_]?key)\s*[:=]/i;
+      const looksSecretArg = (arg) => inlineSecret.test(arg)
+        || /\bBearer\s+\S+/i.test(arg)
+        || /\b[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@/i.test(arg);
       const args = [];
       const list = Array.isArray(original.args) ? original.args : [];
       for (let i = 0; i < list.length; i += 1) {
         const arg = String(list[i] ?? '');
-        args.push(/(token|key|secret|password)=/i.test(arg) ? '******' : arg);
+        args.push(looksSecretArg(arg) ? '******' : arg);
         if (!arg.includes('=') && flag.test(arg) && i + 1 < list.length) {
           args.push('******');
           i += 1;

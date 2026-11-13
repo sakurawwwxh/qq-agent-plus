@@ -123,3 +123,55 @@ test('sanitizeConfigSecrets：MCP env/args 用 ****** 掩码，不能把真 Key 
   assert.ok(!JSON.stringify(out).includes('sk-live-secret'));
   assert.ok(!JSON.stringify(out).includes('ghp_secret'));
 });
+
+test('sanitizeConfigSecrets：头名变体（连字符/驼峰）也按密钥字段处理', () => {
+  const out = sanitizeConfigSecrets({
+    api: {
+      extraBody: {
+        'api-key': 'sk-hyphen',
+        'X-Auth-Token': 'auth-token-value',
+        'Access-Token': 'access-token-value',
+        'Ocp-Apim-Subscription-Key': 'azure-value',
+        'X-Extra': '1'
+      }
+    }
+  });
+  const extra = out.api.extraBody;
+  assert.equal(extra['api-key'], undefined);
+  assert.equal(extra['X-Auth-Token'], undefined);
+  assert.equal(extra['Access-Token'], undefined);
+  assert.equal(extra['Ocp-Apim-Subscription-Key'], undefined);
+  assert.equal(extra['X-Extra'], '1');
+  const text = JSON.stringify(out);
+  for (const secret of ['sk-hyphen', 'auth-token-value', 'access-token-value', 'azure-value']) {
+    assert.ok(!text.includes(secret), `${secret} 不能明文下发`);
+  }
+});
+
+test('sanitizeConfigSecrets：MCP args 的 header 内联/分参数写法与 URL 凭据也要掩码', () => {
+  const out = sanitizeConfigSecrets({
+    mcp: {
+      servers: [{
+        id: 's',
+        command: 'node',
+        args: [
+          '-y', 'server.js',
+          '--header=Authorization: Bearer ghp_header_secret',
+          '-H', 'X-Api-Key: sk-header-secret',
+          '--header', 'Ocp-Apim-Subscription-Key: azure-secret',
+          'https://user:pass@example.test/mcp'
+        ],
+        env: {}
+      }]
+    }
+  });
+  const args = out.mcp.servers[0].args;
+  assert.equal(args[0], '-y');
+  assert.equal(args[1], 'server.js');
+  assert.equal(args.at(-1), '******', 'URL 内嵌凭据不能明文下发');
+  const text = JSON.stringify(out);
+  for (const secret of ['ghp_header_secret', 'sk-header-secret', 'azure-secret', 'pass@example']) {
+    assert.ok(!text.includes(secret), `${secret} 不能出现在下发的 args 里`);
+  }
+  assert.equal(args.filter((arg) => arg === '******').length, 4, '三条头 + 一条 URL 凭据');
+});

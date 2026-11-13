@@ -161,7 +161,7 @@ export function grantApproval(dataDir, pluginId, action, { uses = 1, ttlMs = 10 
  * @returns {{approved:boolean, reason:string, expiresAt:number, usesLeft:number, receipt?:object}}
  * receipt 用于失败退还：只回 use、不续期 —— 退还的额度立刻对下一次可用。
  */
-export function checkApproval(dataDir, pluginId, action, { consume = false, target = '', preview = '', manifestHash = '', now = Date.now() } = {}) {
+export function checkApproval(dataDir, pluginId, action, { consume = false, target = '', preview = '', manifestHash = '', now = Date.now(), requireTarget = false } = {}) {
   const key = assertAction(action);
   const wanted = normalizeTarget(target);
   const keyPreview = previewKey(preview);
@@ -172,7 +172,7 @@ export function checkApproval(dataDir, pluginId, action, { consume = false, targ
   const grants = cleanGrants(state, now);
   const match = grants.find((entry) => entry.action === key
     && Number(entry.usesLeft) > 0
-    && (String(entry.target || '') === '' || String(entry.target) === wanted)
+    && (String(entry.target) === wanted || (!requireTarget && String(entry.target || '') === ''))
     && String(entry.previewKey || '') === keyPreview);
   // 传了当前 manifest 指纹就必须匹配：升级后旧授权自动失效。
   // 没有指纹的老授权（引入绑定之前签发、或直接调用 grantApproval 的旧路径）
@@ -190,7 +190,7 @@ export function checkApproval(dataDir, pluginId, action, { consume = false, targ
     const exactExists = grants.some((entry) => entry.action === key);
     const contentMismatch = grants.some((entry) => entry.action === key
       && String(entry.previewKey || '') !== keyPreview
-      && (String(entry.target || '') === '' || String(entry.target) === wanted));
+      && (String(entry.target) === wanted || (!requireTarget && String(entry.target || '') === '')));
     return {
       approved: false,
       reason: contentMismatch
@@ -580,7 +580,8 @@ export function admitWrite(dataDir, pluginId, action, {
   quotaLimit = 0,
   floorMs = 60_000,
   lastWriteAt: lastWriteAtOverride,
-  now = Date.now()
+  now = Date.now(),
+  requireTarget = false
 } = {}) {
   const key = assertAction(action);
   const wanted = normalizeTarget(target);
@@ -604,7 +605,7 @@ export function admitWrite(dataDir, pluginId, action, {
   }
   const hit = grants.find((entry) => entry.action === key
     && Number(entry.usesLeft) > 0
-    && (String(entry.target || '') === '' || String(entry.target) === wanted)
+    && (String(entry.target) === wanted || (!requireTarget && String(entry.target || '') === ''))
     && String(entry.previewKey || '') === keyPreview
     && (!manifestHash || !entry.manifestHash || String(entry.manifestHash) === String(manifestHash)));
   if (!hit) {
@@ -612,7 +613,7 @@ export function admitWrite(dataDir, pluginId, action, {
       && String(entry.target || '') === wanted
       && String(entry.previewKey || '') !== keyPreview);
     const exactTarget = grants.some((entry) => entry.action === key
-      && (String(entry.target || '') === '' || String(entry.target) === wanted));
+      && (String(entry.target) === wanted || (!requireTarget && String(entry.target || '') === '')));
     return {
       admitted: false,
       needsApproval: true,
