@@ -614,6 +614,22 @@ describe('ChatStore', () => {
     assert.equal(store.hasLeasedRun('group:2'), false, '只作用于指定会话');
   });
 
+  it('latestThreadCheckpoint survives rollover but not a policy close', (t) => {
+    const { store } = fixture(t);
+    const thread = store.updateLifecycleThread('group:1', { disposition: 'active', promptHash: 'v1' });
+    const old = store.appendThreadCheckpoint('group:1', thread.threadId, 'run-old', { summary: '旧摘要' });
+    assert.ok(old);
+    assert.equal(store.latestThreadCheckpoint('group:1')?.state.summary, '旧摘要');
+
+    store.armLifecycleRollover('group:1', 'test', 600000);
+    assert.equal(store.latestThreadCheckpoint('group:1')?.state.summary, '旧摘要', 'rollover 需要旧 checkpoint 做交接');
+
+    const next = store.appendThreadCheckpoint('group:1', thread.threadId, 'run-new', { summary: '新摘要' });
+    assert.equal(store.latestThreadCheckpoint('group:1')?.id, next.id);
+    store.closeConversationThread('group:1', 'policy-changed');
+    assert.equal(store.latestThreadCheckpoint('group:1'), null, '线程关闭后 checkpoint 不再可见');
+  });
+
   it('honours store.sqliteSynchronous and can switch it at runtime (Issue #45)', (t) => {
     const sync = (store) => store.db.prepare('PRAGMA synchronous').get().synchronous;
     const { store } = fixture(t);

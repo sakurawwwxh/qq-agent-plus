@@ -106,6 +106,13 @@ test('P2：屏蔽名单覆盖图片/语音/表情回应/引用与 midHint（2026
       assert.equal(result.isError, true, `${name} 必须拒绝`);
       assert.ok(!JSON.stringify(result).includes('屏蔽前的历史正文'));
     }
+    for (const [name, args] of [
+      ['collect_sticker', { messageId: '77', note: '测试' }],
+      ['set_my_avatar', { messageId: '77' }]
+    ]) {
+      const result = await tool(name).execute(ctx, args);
+      assert.equal(result.isError, true, `${name} 必须拒绝被屏蔽成员的图片`);
+    }
     const reply = await tool('get_message_detail').execute(ctx, { messageId: '999' });
     assert.ok(!JSON.stringify(reply).includes('77'), 'midHint 不能提示被屏蔽消息的 id');
     assert.ok(JSON.stringify(reply).includes('78'), '正常消息 id 仍应提示');

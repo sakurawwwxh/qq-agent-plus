@@ -211,6 +211,19 @@ test('审计落盘：字段名不含关键词但值是密钥（extraBody/headers
   fs.rmSync(dir2, { recursive: true, force: true });
 });
 
+test('审计落盘：插件设置里的 biliCookie/userSession 这类非 secret 字段也要掩码', () => {
+  const dir = tmp();
+  appendAudit({
+    dir, action: 'config.update', target: 'config', ok: true, at: Date.UTC(2026, 10, 14, 3),
+    before: { plugins: { settings: { bili: { biliCookie: 'SESSDATA=secret-1', userSession: 'session-2', theme: 'dark' } } } }
+  });
+  const text = readAll(dir);
+  assert.ok(!text.includes('secret-1'));
+  assert.ok(!text.includes('session-2'));
+  assert.ok(text.includes('dark'), '普通设置仍保留');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('审计落盘：header 类字段名（authorization / x-api-key / cookie）整值脱敏', () => {
   const dir = tmp();
   appendAudit({

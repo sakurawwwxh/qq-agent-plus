@@ -1457,23 +1457,6 @@ function buildApp({
   async function dispatchStoredIncoming(options) {
     const { chatKey, kind, id, stored, isSelf, backlog = false } = options;
     const finalize = options.finalize || null;
-    if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
-    if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
-    // 插件只读观察：给的是**已去重、已过 sanitizeUserText** 的正文与最小元信息（不给 media 等内部字段），
-    // 插件改不了内容、也拦不住消息（它没有回执通道）。只投非自己发的消息：v1 插件发不了言，
-    // 但等 `send` 能力开了之后，"自己发的也投"会变成自问自答的环。
-    if (!isSelf) {
-      pluginRegistry.observe({
-        chatKey, group: kind === 'group',
-        mid: stored.mid, ts: stored.ts,
-        senderId: stored.senderId, senderName: stored.senderName,
-        text: stored.text
-      });
-    }
-    if (!isSelf) {
-      Promise.resolve(stickers.autoCollect?.(chatKey, stored)).catch((error) =>
-        log('[sticker] 自动收藏失败:', error?.message ?? error));
-    }
     emit('chat-update', chatKey);
     const ackHandled = async () => {
       if (finalize) {
@@ -1486,6 +1469,31 @@ function buildApp({
         log(`[ingest] 管理员命令消息标记已读失败：${error?.message ?? error}`);
       }
     };
+    if (!isSelf && kind === 'group' && (getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId))) { await ackHandled(); return; }
+    // 群游戏的私聊行动（狼人杀这类"夜里私聊提交"的游戏）：属于进行中的局就由引擎在入口
+    // 接管（发回执/发查验结果），并就地标记已读 —— 不再唤醒模型，也不给插件观察者看。
+    // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
+    if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
+      && await groupGame.consumePrivateAction(chatKey, stored)) {
+      await ackHandled();
+      return;
+    }
+    if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
+    if (!isSelf) slangPilot?.observeMessage(chatKey, stored);
+    // 插件只读观察：只给已去重、已过 sanitizeUserText 的正文与最小元信息，不给 media；
+    // 插件改不了内容、也拦不住消息（没有回执通道）。不投自己发的消息，避免自问自答环。
+    if (!isSelf) {
+      pluginRegistry.observe({
+        chatKey, group: kind === 'group',
+        mid: stored.mid, ts: stored.ts,
+        senderId: stored.senderId, senderName: stored.senderName,
+        text: stored.text
+      });
+    }
+    if (!isSelf) {
+      Promise.resolve(stickers.autoCollect?.(chatKey, stored)).catch((error) =>
+        log('[sticker] 自动收藏失败:', error?.message ?? error));
+    }
     if (
       !isSelf
       && (
@@ -1493,14 +1501,6 @@ function buildApp({
         || await handleSlangPilotAdminCommand(kind, id, stored.text)
       )
     ) {
-      await ackHandled();
-      return;
-    }
-    // 群游戏的私聊行动（狼人杀这类"夜里私聊提交"的游戏）：属于进行中的局就由引擎在入口
-    // 接管（发回执/发查验结果），并就地标记已读 —— 不再唤醒模型（省调用 + 零泄密面）。
-    // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
-    if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
-      && await groupGame.consumePrivateAction(chatKey, stored)) {
       await ackHandled();
       return;
     }

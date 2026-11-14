@@ -1405,8 +1405,8 @@ export class ChatStore {
   }
 
   latestThreadCheckpoint(chatKey) {
-    const row = this.db.prepare(`SELECT * FROM thread_checkpoints
-      WHERE chat_key=? ORDER BY id DESC LIMIT 1`).get(chatKey);
+    // 只认当前线程版本且未关闭的 checkpoint：rollover/策略变更后旧摘要不能继续注入。
+    const row = this.db.prepare(`SELECT c.* FROM thread_checkpoints c JOIN conversation_threads t ON t.thread_id=c.thread_id WHERE c.chat_key=? AND t.state!='closed' ORDER BY c.id DESC LIMIT 1`).get(chatKey);
     if (!row) return null;
     let state = {};
     let sourceMessageIds = [];

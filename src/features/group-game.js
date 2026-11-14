@@ -306,8 +306,14 @@ export class GroupGameManager {
     await this.#applyEffects(hit.groupKey, hit.out.effects || []);
     // 就地标记已读：这条私聊不再唤醒模型（省调用 + 零泄密面）
     try { this.store.markRead(chatKey, [Number(message?.id)]); } catch { /* 标记失败不影响本局 */ }
+    this.#markActionSecret(chatKey, message?.id);
     if (hit.out.state?.phase === 'ended') this.#finishIfEnded(hit.groupKey);
     return true;
+  }
+
+  /** 已消费的私聊行动不能再作为普通历史进入模型（prompt/工具按 eventKind 过滤）。 */
+  #markActionSecret(chatKey, messageId) {
+    try { this.store.db.prepare("UPDATE messages SET event_kind='game-secret' WHERE chat_key=? AND id=?").run(chatKey, Number(messageId)); } catch { /* 记账失败不影响消费 */ }
   }
 
   /** tick 的兜底扫描：补处理"错过入口"（重启补课、引擎当时没在跑）的私聊行动。 */
@@ -351,6 +357,7 @@ export class GroupGameManager {
           this._privateScanFedIds.add(fedKey);
           dirty = true;
           try { this.store.markRead(key, [Number(m.id)]); } catch { /* 忽略 */ }
+          this.#markActionSecret(key, m.id);
           if (hit.out.effects?.length) {
             if (hit.out.effects.length) await this.#applyEffects(hit.groupKey, hit.out.effects);
           }
@@ -756,6 +763,16 @@ export class GroupGameManager {
         }
         // 上次终局播报没送出去：先重试播报，送达了才收尾（2026-10-10 审查 C1）
         if (g.pendingEnd) {
+          // 终局前先把私聊队列补完：否则先发“平民获胜”再删局，未送达的身份/词语会跟着消失。
+          if (g.pendingPrivate?.length) {
+            await this.#flushPrivate(chatKey, cfg, { force: true });
+            if (g.pendingPrivate?.length) {
+              g.pendingEndRetryAt = this.now() + 20000;
+              this.#save();
+              this.log(`[group-game] ${chatKey} 还有 ${g.pendingPrivate.length} 条私聊未送达，终局播报继续等待`);
+              continue;
+            }
+          }
           // 退避（2026-10-12 审查）：原来每个 tick（20 秒）都试一次，协议端长时间发不出去时
           // 反复打日志/重试。改成 20s→40s→…→10 分钟封顶；退避点在 g 上、随 #save() 落盘，
           // 重启后不会立刻重打。
@@ -889,7 +906,7 @@ export class GroupGameManager {
     return item;
   }
 
-  async #flushPrivate(chatKey, cfg) {
+  async #flushPrivate(chatKey, cfg, { force = false } = {}) {
     const g = this.games.get(chatKey);
     const queue = Array.isArray(g?.pendingPrivate) ? g.pendingPrivate : [];
     if (!queue.length) return { privateOk: 0, privateFailed: 0, privatePeople: 0 };
@@ -905,7 +922,7 @@ export class GroupGameManager {
     const people = new Set();
     for (const item of [...queue]) {
       if (this.stopped && !this.draining) break;
-      if (Number(item.retryAt) > this.now()) continue;
+      if (!force && Number(item.retryAt) > this.now()) continue;
       const result = await this.#deliverPrivateEffect(chatKey, item, cfg);
       if (result.ok) {
         privateOk += 1;
@@ -943,9 +960,28 @@ export class GroupGameManager {
           this.wake(chatKey, Number(effect.delayMs) || 60000, String(effect.note || ''), { kind: 'game' });
         } else if (effect.type === 'end') {
           // 先把这个阶段排队的私聊发完，再发终局：否则“你出局了”会落在“平民获胜”之后。
-          await this.#flushPrivate(chatKey, cfg);
+          // force：不因退避跳过；终局后局对象会被删，队列不能跟着消失。
+          const ended = this.games.get(chatKey);
+          try {
+            await this.#flushPrivate(chatKey, cfg, { force: true });
+            await this.#flushDeliveries({ chatKey, force: true });
+          } catch (error) {
+            if (ended) {
+              ended.pendingEnd = String(effect.result || '');
+              ended.pendingEndRetryAt = this.now() + 20000;
+              this.#save();
+            }
+            this.log(`[group-game] ${chatKey} 终局前排空失败，保留 pendingEnd 下个 tick 重试：`, error?.message ?? error);
+            continue;
+          }
+          if (ended?.pendingPrivate?.length) {
+            ended.pendingEnd = String(effect.result || '');
+            ended.pendingEndRetryAt = this.now() + 20000;
+            this.#save();
+            this.log(`[group-game] ${chatKey} 还有 ${ended.pendingPrivate.length} 条私聊没送达，暂不删局`);
+            continue;
+          }
           // 终局前最后尝试一次排队的阶段播报；终局后它们已过期，不再跨局补发。
-          await this.#flushDeliveries({ chatKey, force: true });
           this.#dropBroadcastsForChat(chatKey, 'game-ended');
           this.#save();
           const g = this.games.get(chatKey);

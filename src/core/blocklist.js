@@ -24,3 +24,26 @@ export function filterBlockedHistory(messages, chatKey, { crossScope = false } =
   }
   return messages;
 }
+
+/** 当前配置下这个发送者是否被屏蔽（只对群聊生效；self 永远放行）。 */
+export function isBlockedSender(chatKey, senderId) {
+  const [kind, id] = String(chatKey || '').split(':');
+  if (kind !== 'group' || !id || !senderId) return false;
+  return (getConfig().blocklist?.[id] || []).map(String).includes(String(senderId));
+}
+
+/**
+ * 把"屏蔽前已入库、还没被领取"的消息直接标成已读。
+ * 只在 #wake 前调用：不带这一步时，claimUnread 会把屏蔽生效前入队的 pending 消息
+ * 原样领进本轮 prompt，等于屏蔽只对新消息生效。
+ */
+export function purgeBlockedPending(store, chatKey) {
+  const [kind, id] = String(chatKey || '').split(':');
+  if (kind !== 'group' || !id || typeof store?.db?.prepare !== 'function') return 0;
+  const blocked = [...new Set((getConfig().blocklist?.[id] || []).map(String).filter(Boolean))];
+  if (!blocked.length) return 0;
+  const marks = blocked.map(() => '?').join(',');
+  return Number(store.db.prepare(`UPDATE messages SET state='acked', lease_id=NULL
+    WHERE chat_key=? AND state='pending' AND sender_id IN (${marks})`)
+    .run(chatKey, ...blocked).changes) || 0;
+}

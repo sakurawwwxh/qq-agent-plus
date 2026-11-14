@@ -18,6 +18,8 @@ const { McpStdioClient } = await import('../src/mcp/client.js');
 
 function configWith(server = {}) {
   const cfg = structuredClone(DEFAULT_CONFIG);
+  // 空令牌 + 共享网络会让 MCP 子进程能访问本机控制台；管理器现在 fail-closed。
+  cfg.server = { ...(cfg.server || {}), token: 'test-console-token' };
   cfg.mcp = {
     enabled: true,
     servers: [{
@@ -31,6 +33,24 @@ function configWith(server = {}) {
   setRuntimeConfig(cfg);
   return cfg;
 }
+
+it('空令牌控制台 + 未隔离网络：MCP server 必须拒绝启动', async () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...(cfg.server || {}), token: '' };
+  cfg.mcp = {
+    enabled: true,
+    servers: [{ id: 'unsafe', command: process.execPath, args: [fixture], timeoutMs: 5000 }]
+  };
+  setRuntimeConfig(cfg);
+  const manager = new McpManager();
+  try {
+    await manager.start();
+    assert.equal(manager.status().filter((row) => row.ready).length, 0, '不能把可访问本机控制台的子进程拉起来');
+    assert.equal(manager.toolDefsFor().length, 0);
+  } finally {
+    manager.stop();
+  }
+});
 
 it('启动 stdio server，列出工具并调用', async () => {
   configWith();

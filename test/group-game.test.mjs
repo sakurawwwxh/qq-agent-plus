@@ -246,7 +246,9 @@ test('狼人杀的私聊行动：入口接管（标记已读、发回执），�
   });
   const took = await mgr.consumePrivateAction(`private:${seer.userId}`, stored);
   assert.equal(took, true, '属于进行中的局 → 引擎接管');
-  assert.equal(store.findByMid(`private:${seer.userId}`, 'pm-1').state, 'acked', '接管后要标记已读');
+  const consumed = store.findByMid(`private:${seer.userId}`, 'pm-1');
+  assert.equal(consumed.state, 'acked', '接管后要标记已读');
+  assert.equal(consumed.eventKind, 'game-secret', '已消费的行动不能作为普通私聊历史进入模型');
   assert.match(sent.at(-1).msgs[0], /查验结果/);
   assert.equal(sent.at(-1).chatKey, `private:${seer.userId}`);
 

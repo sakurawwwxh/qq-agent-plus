@@ -7,7 +7,8 @@
 //      - 所有变长量词（含 `?`、`{n,m}`）的**组合预算**不超过 200
 //        （例如 `a?` 最多 7 个、一个 `{0,199}`）；
 //      - 禁止断言、反向引用、嵌套重复、超大重复；
-//      - 匹配前把输入截到 2000 字符。
+//      - 匹配前把输入限制到 20000 字符（普通 QQ 消息上限约 4500，完整覆盖）；
+//        超长正文再补扫尾部 2000 字符，避免“广告追加在最后”的稳定绕过。
 //      原因：JS 正则没有超时，`^a*a*a*a*b$`、`a?a?a?…`、多个 {0,1000} 都能在
 //      几千字消息上爆炸回溯，而 ingest 是同步路径。只数 * 和 + 不够 —— `?` 也是
 //      选择点，必须按"选择组合数"做乘积预算。
@@ -19,9 +20,10 @@ const MAX_REGEX_CHARS = 160;
 const MAX_UNBOUNDED_QUANTIFIERS = 1;
 const MAX_BOUNDED_REPEAT = 1000;
 // 变长量词的选择组合上限：200 意味着 `a?` 最多 7 个（2^7=128），
-// 或一个 `{0,199}`；100 条规则 × 200 组合 × 2000 字仍在可控量级。
+// 或一个 `{0,199}`；100 条规则 × 200 组合 × 20000 字仍在可控量级。
 const MAX_VARIABLE_CHOICES = 200;
-const MAX_REGEX_INPUT_CHARS = 2000;
+const MAX_REGEX_INPUT_CHARS = 20000;
+const MAX_REGEX_TAIL_CHARS = 2000;
 
 function ruleText(rule) {
   return String(rule ?? '').trim();
@@ -187,10 +189,11 @@ export function matchesBlacklistKeyword(text, rules = []) {
     }
   }
   if (!regexes.length) return false;
-  // 正则只看前 2000 字：配合"变长量词组合预算"，把最坏回溯压到可控量级。
+  // 常规消息（≤20000 字）全量扫描；更长的正文至少补扫尾部，堵住“前面垫字、广告放最后”。
   const head = input.length > MAX_REGEX_INPUT_CHARS ? input.slice(0, MAX_REGEX_INPUT_CHARS) : input;
+  const tail = input.length > MAX_REGEX_INPUT_CHARS ? input.slice(-MAX_REGEX_TAIL_CHARS) : '';
   for (const regex of regexes) {
-    if (regex.test(head)) return true;
+    if (regex.test(head) || (tail && regex.test(tail))) return true;
   }
   return false;
 }

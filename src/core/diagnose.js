@@ -80,7 +80,7 @@ export function sessionStorage(dataDir) {
  * 常见的 `biliCookie` / `userSession` 这类键名不带 token/key 字样，按字段名脱敏拦不住；
  * 这里按"敏感词出现在键名任意位置"再掩一遍，其余设置保留（诊断仍要看配置）。
  */
-function maskPluginSettings(cfg) {
+export function maskPluginSettings(cfg) {
   const settings = cfg?.plugins?.settings;
   if (!settings || typeof settings !== 'object') return;
   for (const bag of Object.values(settings)) {

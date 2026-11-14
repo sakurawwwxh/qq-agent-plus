@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
 import { redactSecretFields, sanitizeConfigSecrets } from './secret-keys.js';
+import { maskPluginSettings } from './diagnose.js';
 import { redactText } from './redact.js';
 
 const FIELD_LIMIT = 4096;            // 单字段 4KB 截断（J.2）
@@ -55,6 +56,7 @@ function prepareValue(value, state) {
   if (value === undefined || value === null) return null;
   let v = value;
   try { v = sanitizeConfigSecrets(v); } catch { state.truncated = true; }
+  try { maskPluginSettings(v); } catch { state.truncated = true; }
   try { v = redactSecretFields(v); } catch { state.truncated = true; return '[unredacted]'; }
   return truncateDeep(v, state, 0);
 }

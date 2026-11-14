@@ -61,9 +61,10 @@ test('防御性：即使把不安全规则直接喂给匹配函数，也会被�
   assert.ok(Date.now() - started < 200, '不安全规则不能在匹配路径上被编译执行');
 });
 
-test('输入截断：正则只看前 2000 字，普通字面量仍全量匹配', () => {
+test('输入截断：常规长消息全量扫描，超长正文补扫尾部', () => {
   const padded = 'x'.repeat(2500);
-  assert.equal(matchesBlacklistKeyword(`${padded}广告`, ['re:^x+广告$']), false);
+  assert.equal(matchesBlacklistKeyword(`${padded}广告`, ['re:^x+广告$']), true, '2500 字仍在常规扫描范围内');
+  assert.equal(matchesBlacklistKeyword(`${'x'.repeat(30000)}广告`, ['re:x+广告$']), true, '超长正文的尾部也要扫到');
   assert.equal(matchesBlacklistKeyword(`${padded}广告`, ['广告']), true);
 });
 
@@ -91,8 +92,8 @@ test('编译缓存正确：规则切换后立即生效，不会拿旧正则', ()
   assert.equal(matchesBlacklistKeyword('转发抽奖', ['re:^广告']), false);
 });
 
-test('性能：合法正则匹配 5 万字消息也在毫秒级（只看前 2000 字）', () => {
-  // 命中点在前 2000 字内，后面再挂 5 万字的尾巴：正则不应把整条消息都啃一遍
+test('性能：合法正则匹配 5 万字消息也在毫秒级（扫描上限 2 万字 + 尾部）', () => {
+  // 命中点在前 2 万字内，后面再挂 5 万字的尾巴：正则不应把整条消息都啃一遍
   const text = `转发${'x'.repeat(1990)}抽奖${'y'.repeat(50000)}`;
   const started = Date.now();
   assert.equal(matchesBlacklistKeyword(text, ['re:^转发.*抽奖']), true);

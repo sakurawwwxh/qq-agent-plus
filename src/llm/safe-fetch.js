@@ -479,7 +479,7 @@ async function requestOnce(url, ip, options = {}) {
 
 const MAX_REDIRECTS = 5;
 
-const CREDENTIAL_HEADER_RE = /^(cookie|authorization|proxy-authorization)$/i;
+const CREDENTIAL_HEADER_RE = /^(cookie|authorization|proxy-authorization|x[-_]api[-_]?key|api[-_]?key|x[-_]auth[-_]?token|auth[-_]?token|x[-_]access[-_]?token|access[-_]?token|x[-_]api[-_]?token|api[-_]?token|private[-_]?token|subscription[-_]?key|ocp[-_]apim[-_]subscription[-_]?key|x[-_]amz[-_]security[-_]token|x[-_]goog[-_]api[-_]?key)$/i;
 
 function hasCredentialHeaders(headers) {
   if (!headers || typeof headers !== 'object') return false;

@@ -388,11 +388,13 @@ export class LivingMemoryRuntime {
       return { created };
     } catch (error) {
       // 失败时把整批放回队首并重试一次；仍失败就丢弃，避免同一批无限烧模型调用。
-      const attempts = (this.retries.get(chatKey) || 0) + 1;
+      // 次数挂在批次上，不能按 chatKey 共享：两个并发 flush 会让后一个首次失败就被当成已重试。
+      const attempts = (Number(batch.attempts) || 0) + 1;
       if (!this.stopped && attempts <= 1) {
-        this.retries.set(chatKey, attempts);
         const current = this.pending.get(chatKey) || [];
-        this.pending.set(chatKey, [...batch, ...current]);
+        const retryBatch = [...batch, ...current];
+        retryBatch.attempts = attempts;
+        this.pending.set(chatKey, retryBatch);
         const timer = setTimeout(() => { void this.flush(chatKey); }, 60_000);
         timer.unref?.();
         this.timers.set(chatKey, timer);

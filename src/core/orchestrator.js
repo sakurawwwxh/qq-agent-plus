@@ -24,7 +24,7 @@ import {
   updateConfig
 } from './config.js';
 import { cappedByTokenSaver, effectiveRunLimits, tokenSaverCapsOf } from './token-saver.js';
-import { filterBlockedHistory } from './blocklist.js';
+import { filterBlockedHistory, purgeBlockedPending } from './blocklist.js';
 import { redactText } from './redact.js';
 import { recentContextFor } from '../living-memory/util.js';
 // ── 主动开话题的时间段：窗口外不主动开口（聊天回复不受影响）──
@@ -1462,8 +1462,8 @@ export class Orchestrator {
       }
     }
     if (!proactive) {
-      // peekUnread 只看不取，limit 给足以免漏判（判定用的是这批的文本；与 claimUnread 的
-      // batchLimit 同窗口，见 #unreadScanLimit）
+      purgeBlockedPending(this.store, chatKey);   // 屏蔽名单动态：先收口屏蔽前入队、未领取的消息
+      // peekUnread 只看不取；limit 与 claimUnread 的 batchLimit 同窗口（见 #unreadScanLimit）。
       pendingEntries = this.store.peekUnread(chatKey, this.#unreadScanLimit()) || [];
       // 取用预判时那颗骰子（超过 2 分钟就当过期，避免串到后面的批次）
       const pendingRoll = this.pendingRolls.get(chatKey);
@@ -2359,7 +2359,7 @@ export class Orchestrator {
       .update('\0')
       .update(pluginToolDefs.map((def) => def.name).sort().join(','))
       .update('\0')
-      .update(mcpToolDefs.map((def) => def.name).sort().join(','))
+      .update(mcpToolDefs.map((def) => def.name).sort().join(',') + '\0' + JSON.stringify([[...(cfg.blocklist?.[String(chatId)] || [])].map(String).sort(), [...(cfg.store?.blacklistKeywords || [])].map(String).sort(), pluginToolDefs, mcpToolDefs]))
       .digest('hex');
 
     let priorProviderMessages = [];
@@ -3205,9 +3205,7 @@ export class Orchestrator {
       }
       if (!batch.length) continue;
       const settleAll = (state, detail = {}) => {
-        for (const pair of batch) {
-          if (pair.effectId) this.effects.settle(pair.effectId, state, detail);
-        }
+        for (const pair of batch) try { if (pair.effectId) this.effects.settle(pair.effectId, state, detail); } catch (error) { log.error(`[reminder] 账本结算失败（${state}）：`, error?.message ?? error); }
       };
       // 连续未确认播报：一次性提醒耗尽后停用（未知不能重发）；周期项耗尽只跳过本期，
       // 必须 re-arm 到下一次，否则“每天 9 点吃药”会在一次网关故障后永久消失。
@@ -3239,7 +3237,7 @@ export class Orchestrator {
           const delivered = Array.isArray(result?.sent) && result.sent.length > 0;
           if (delivered) {
             settleAll('sent', { deliveredAt: Date.now() });
-            for (const pair of batch) this.reminders.markFired(pair.it.id, now);
+            for (const pair of batch) try { this.reminders.markFired(pair.it.id, now); } catch (error) { log.error(`[reminder] 已送达但 markFired 失败：${pair.it.id}`, error?.message ?? error); }
             log.info(`[reminder] 已播报 ${batch.length} 条：${chatKey} ${batch.map((pair) => String(pair.it.text)).join(' / ')}`);
             return;
           }

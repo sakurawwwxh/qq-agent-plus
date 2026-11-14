@@ -112,7 +112,7 @@ test('safeFetchBinary accepts a response exactly at the byte limit', async (t) =
 test('重定向：同源保留凭据，跨源剥掉（白名单 ≠ 可以交 Cookie）', async (t) => {
   const seenTarget = [];
   const target = http.createServer((req, res) => {
-    seenTarget.push({ url: req.url, cookie: req.headers.cookie || '' });
+    seenTarget.push({ url: req.url, cookie: req.headers.cookie || '', apiKey: req.headers['x-api-key'] || '' });
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('ok');
   });
@@ -138,13 +138,14 @@ test('重定向：同源保留凭据，跨源剥掉（白名单 ≠ 可以交 Co
   const sourcePort = await listen(source);
   t.after(() => source.close());
 
-  const headers = { cookie: 'SESSDATA=secret' };
+  const headers = { cookie: 'SESSDATA=secret', 'x-api-key': 'header-secret' };
   await safeFetchRequest(`http://127.0.0.1:${sourcePort}/same`, { headers, allowPrivate: true });
   assert.equal(seenSource.at(-1).cookie, 'SESSDATA=secret', '同源重定向保留凭据');
 
   await safeFetchRequest(`http://127.0.0.1:${sourcePort}/cross`, { headers, allowPrivate: true });
   assert.equal(seenTarget.at(-1).url, '/land');
   assert.equal(seenTarget.at(-1).cookie, '', '跨源（换端口也算）重定向必须剥掉 Cookie');
+  assert.equal(seenTarget.at(-1).apiKey, '', '跨源重定向也必须剥掉 x-api-key');
 });
 
 test('readBounded：正好等于上限（自然读尽）不标 truncated；超过才中断并标（2026-10-09 审查）', async () => {

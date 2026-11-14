@@ -842,8 +842,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
       },
       async execute(ctx, args) {
         try {
-          const entry = ctx.store.findByMid(ctx.chatKey, args.messageId);
-          if (!modelVisible(entry)) return err(`在当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
+          const entry = visibleEntry(ctx, args.messageId);
+          if (!entry) return err(`在当前会话找不到消息 ${args.messageId}。${midHint(ctx)}`);
           const imageMedia = (entry.media || []).find((m) => m.kind === 'image' && m.url);
           if (!imageMedia) return err('该消息没有可收藏的图片');
           // 与"自动收藏"同一口径：先判一下这是不是真表情包 —— 只靠模型自己的判断，
@@ -1212,8 +1212,8 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
             }
             file = sticker.url;
           } else {
-            const entry = ctx.store.findByMid(ctx.chatKey, mid);
-            if (!modelVisible(entry)) return err(`当前会话找不到消息 ${mid}。${midHint(ctx)}`);
+            const entry = visibleEntry(ctx, mid);
+            if (!entry) return err(`当前会话找不到消息 ${mid}。${midHint(ctx)}`);
             const media = (Array.isArray(entry.media) ? entry.media : []).filter((m) => m && m.kind === 'image');
             const target = media.find((m) => /^https?:\/\//i.test(String(m.url || ''))) || media[0];
             if (!target) return ok(`消息 ${mid} 里没有可用的图片。`);
