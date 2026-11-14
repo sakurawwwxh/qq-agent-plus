@@ -13,6 +13,7 @@ import {
   renderBanner
 } from './app.js';
 import { api } from './core/api.js';
+import { syncModelReplacementStatus } from './pages/model-replacement.js';
 import { setStatusLabel, updateOnebotStatusLine } from './core/dom-util.js';
 import { $, esc } from './core/dom.js';
 import { fmtTokens, mulOf, onebotIssueText } from './core/format.js';
@@ -26,6 +27,7 @@ QARegistry.override('refreshStatus', async function refreshStatus() {
   try {
     state.status = await api('/api/status');
     const s = state.status;
+    await syncModelReplacementStatus(s);
     // 版本号（package.json 的 version）：侧栏一直显示，控制页的版本徽标也用它。
     // 之前只显示部署提交号（sha），用户看不出"这是哪个版本"。
     if (s.version) {

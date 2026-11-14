@@ -1,6 +1,8 @@
 // OpenAI 兼容 Chat Completions 客户端（非流式）。
 // 支持工具调用、usage 统计和可选模型。
 import { getConfig } from '../core/config.js';
+import { withModelReplacement } from '../core/model-replacement.js';
+import { modelHttpError, isModelReplacementError } from './model-http-error.js';
 import { stripLoneSurrogates } from '../core/util.js';
 import { normalizeThinkingIntent, resolveThinkingPatch, modelServiceById, modelServiceOfBaseUrl, effectiveThinkingRaw, hostOf } from '../core/provider-presets.js';
 import { resolveModelPrice, priceAt } from '../pricing/model-prices.js';
@@ -158,9 +160,9 @@ const thinkingParamRejectedWarned = new Set();
 let extraBodyStreamWarned = false;
 
 /** 当前连接的地址主机（每供应商独立设置按它取）。 */
-function currentHost() {
+function currentHost(snapshot = null) {
   try {
-    const cfg = getConfig();
+    const cfg = snapshot || getConfig();
     const pid = String(cfg?.api?.provider || '').trim();
     const provider = (cfg?.providers || []).find((p) => p && p.id === pid) || null;
     return hostOf(provider?.baseURL || cfg?.api?.baseUrl || '');
@@ -170,9 +172,9 @@ function currentHost() {
 }
 
 /** 当前连接命中的渠道预设 id（先看 provider 记录，再看 api.baseUrl）。 */
-function currentServiceId() {
+function currentServiceId(snapshot = null) {
   try {
-    const cfg = getConfig();
+    const cfg = snapshot || getConfig();
     const pid = String(cfg?.api?.provider || '').trim();
     const provider = (cfg?.providers || []).find((p) => p && p.id === pid) || null;
     if (provider?.preset) {
@@ -190,12 +192,12 @@ function currentServiceId() {
   }
 }
 
-function thinkingFor(purpose, overrides = null) {
+function thinkingFor(purpose, overrides = null, snapshot = null) {
   let raw = null;
   let customParams = null;
   let serviceId = '';
   try {
-    const cfg = getConfig();
+    const cfg = snapshot || getConfig();
     customParams = cfg?.api?.thinkingParams;
     if (overrides?.baseUrl) {
       // 专用模型/兜底这类 overrides 调用按 overrides 自己的地址取每供应商设置与渠道形状，
@@ -206,8 +208,8 @@ function thinkingFor(purpose, overrides = null) {
       serviceId = svc ? svc.id : '';
     } else {
       // 先取"当前供应商自己的条"，没有才退回全局设置（每供应商独立）。
-      raw = effectiveThinkingRaw(cfg?.api, currentHost());
-      serviceId = currentServiceId();
+      raw = effectiveThinkingRaw(cfg?.api, currentHost(cfg));
+      serviceId = currentServiceId(cfg);
     }
   } catch { /* 取不到就走默认 */ }
   const intent = normalizeThinkingIntent(raw, purpose);
@@ -271,7 +273,11 @@ async function runCompletionWithRetries(args, retries) {
       return response;
     } catch (error) {
       lastError = error;
-      if (args.signal?.aborted || attempt >= retries || !isRetryableError(error)) throw error;
+      // A configured permanent-switch condition goes straight to the queue;
+      // ordinary rate limits retain the existing backoff and fallback behavior.
+      const queue = args.configSnapshot?.modelReplacement?.chat;
+      if (args.signal?.aborted || (queue && isModelReplacementError(error, queue.triggers))
+        || attempt >= retries || !isRetryableError(error)) throw error;
       const wait = 1000 * Math.pow(2, attempt);   // 1s, 2s
       llmRuntimeStats.retries += 1;
       log.warn(`[llm] 请求失败（第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
@@ -333,7 +339,11 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   let response = null;
   let primaryError = null;
   try {
-    response = await runCompletionWithRetries(args, retries);
+    response = args.overrides
+      ? await runCompletionWithRetries(args, retries)
+      : await withModelReplacement('chat', getConfig(), (cfg) => {
+        return runCompletionWithRetries({ ...args, configSnapshot: cfg }, retries);
+      }, { signal: args.signal });
   } catch (error) {
     primaryError = error;
     llmRuntimeStats.primaryErrors += 1;
@@ -398,14 +408,15 @@ export async function chatCompletion({
   overrides = null,
   cacheKey = '',
   maxTokens = null,
-  purpose = ''
+  purpose = '',
+  configSnapshot = null
 }) {
   assertTimeAllowed();
   llmRuntimeStats.attempts += 1;
-  const api = overrides || effectiveApi();
+  const api = overrides || (configSnapshot ? { ...configSnapshot.api, apiKey: resolveApiKey(configSnapshot) } : effectiveApi());
   // 聊天这类"随口回一句"的任务关掉思考：省一半输出 token、少 1~3 秒；
   // 判断/写作类（表情包要不要收、说说、空间互动、身份评估）不传 purpose，继续思考。
-  const thinking = thinkingFor(purpose, overrides);
+  const thinking = thinkingFor(purpose, overrides, configSnapshot);
   const thinkingOff = thinking.effectiveOff;
   const body = {
     model: api.model,
@@ -517,7 +528,7 @@ export async function chatCompletion({
         res = await send(retryBody);
         if (!res.ok) text = await readTextBounded(res, CHAT_RESPONSE_MAX_BYTES);
       }
-      if (!res.ok) throw new Error(`模型 API HTTP ${res.status}：${text.slice(0, 500)}`);
+      if (!res.ok) throw modelHttpError(`模型 API HTTP ${res.status}：${text.slice(0, 500)}`, res.status, text);
     }
     const data = await readJsonBounded(res, CHAT_RESPONSE_MAX_BYTES);
     const choice = data?.choices?.[0];

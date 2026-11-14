@@ -1,3 +1,6 @@
+import { createModelReplacement } from '../core/model-replacement.js';
+import { isModelReplacementError } from '../llm/model-http-error.js';
+import { MAX_REPLACEMENT_ENTRIES } from '../core/model-replacement-config.js';
 // 语音/视频转文字：取文件 URL → ffmpeg 转 16k PCM → 交给配置的语音识别服务。
 // 聊天模型无关：任何模型都消费转写文本，音频理解不依赖多模态。
 // 供应商可换（见 config.asr.provider）：火山 Seed-ASR / 任意 OpenAI 兼容服务 / 本机 whisper.cpp。
@@ -277,15 +280,48 @@ async function transcribeInChunks(pcm, perChunk, { signal } = {}) {
     } catch (error) {
       // 已经转写（也已经计费）的前几片别白丢：把进度写进错误里，用户至少知道钱花在哪、要不要重试
       const detail = String(error?.message ?? error);
-      throw new Error(pieces.length > 1
+      const wrapped = new Error(pieces.length > 1
         ? `第 ${i + 1}/${pieces.length} 片转写失败（前 ${texts.length} 片已出结果）：${detail}`
-        : detail);
+        : detail, { cause: error });
+      if (error?.modelRequest === true) Object.assign(wrapped, { modelRequest: true, status: error.status, modelErrorCode: error.modelErrorCode, modelErrorType: error.modelErrorType });
+      throw wrapped;
     }
   }
   return joinChunkTexts(texts);
 }
 
 export async function runProvider(cfg, pcm, { signal } = {}) {
+  let active = cfg;
+  const replacement = createModelReplacement();
+  const needsChunks = (piece) => {
+    const provider = asrProvider(active);
+    return (['aliyun', 'baidu', 'tencent', 'iflytek'].includes(provider)
+      && piece.length > SHORT_API_CHUNK_SECONDS * 32000)
+      || (provider === 'openai' && piece.length + 44 > OPENAI_WAV_MAX_BYTES);
+  };
+  async function transcribe(piece) {
+    signal?.throwIfAborted();
+    if (needsChunks(piece)) return transcribeInChunks(piece, transcribe, { signal });
+    for (let attempt = 0; attempt <= MAX_REPLACEMENT_ENTRIES; attempt += 1) {
+      signal?.throwIfAborted();
+      try { return await runProviderOnce(active, piece, { signal }); }
+      catch (error) {
+        if (signal?.aborted || !isModelReplacementError(error, active.modelReplacement?.asr?.triggers)) throw error;
+        const next = replacement.advance('asr', active, error);
+        if (!next) throw error;
+        active = next;
+        // A new provider may have a shorter upload limit. Return its chunk
+        // pipeline outside this retry scope: a later chunk failure must NEVER
+        // replay earlier successful/billable chunks from this larger piece.
+        if (needsChunks(piece)) return transcribeInChunks(piece, transcribe, { signal });
+      }
+    }
+    throw new Error('语音转文字替换次数超过安全上限');
+  }
+  return transcribe(pcm);
+}
+
+async function runProviderOnce(cfg, pcm, { signal } = {}) {
   const provider = asrProvider(cfg);
   if (provider === 'local') return await localTranscribe(cfg, pcm, signal);
   if (provider === 'openai') {

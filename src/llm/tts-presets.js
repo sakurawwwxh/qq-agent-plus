@@ -333,3 +333,8 @@ export function ttsVoicesFor(serviceId, model) {
   return ttsVoiceOptions(serviceId, model).map((v) => v.id);
 }
 
+
+/** Custom endpoints cannot share an unqualified "custom" voice slot. */
+export function ttsVoiceSlot(baseUrl, model = '') {
+  return JSON.stringify([String(baseUrl || '').trim().replace(/\/+$/, ''), String(model || '').trim()]);
+}

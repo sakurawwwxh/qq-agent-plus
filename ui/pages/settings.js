@@ -10,6 +10,7 @@ import {
   renderExperimentalSettingsSection, renderSettings, renderThinkingSeg, thinkingStops
 } from '../app.js';
 import { api } from '../core/api.js';
+import { renderModelReplacementSection, hasUnsavedModelReplacement } from './model-replacement.js';
 import {
   MODEL_SERVICES_UI, THEME_VALUES, TIME_DAYS, TIME_RULE_LABELS
 } from '../core/constants.js';
@@ -131,10 +132,12 @@ function renderSettingsSidebar() {
     el.addEventListener('click', async () => {
       if (el.dataset.section === state.settingsSection) return;
       // 切分区会整块重绘表单：未保存的输入直接丢失，给一次确认（2026-10-30 全项目审查）。
-      if (state.settingsDirty
+      if ((state.settingsDirty || hasUnsavedModelReplacement())
         && !await askForConfirmation('当前分区有未保存的改动，切换后会丢失。确定切换？')) return;
       state.settingsSection = el.dataset.section;
       state.settingsDirty = false;
+      state.modelReplacementDirty = {};
+      state.modelReplacementTriggerDirty = {};
       renderSettingsSidebar();
       renderSettings();
     });
@@ -299,7 +302,8 @@ function bindDirtyTracking() {
   const box = $('#settings-form');
   if (!box || box.dataset.dirtyBound === '1') return;
   box.dataset.dirtyBound = '1';
-  const mark = () => {
+  const mark = (event) => {
+    if (event.target.closest('#model-replacement-editor')) return;
     state.settingsDirty = true;
     const note = $('#cfg-dirty-note');
     if (note) note.textContent = '有未保存改动';
@@ -423,6 +427,8 @@ function renderApiSection(c) {
     </div>
     <div class="hint" id="provider-action-hint">${esc(state.lastProviderHint || '')}</div>
 
+    <div class="settings-divider"></div>
+    ${renderModelReplacementSection(c)}
     <div class="settings-divider"></div>
     <h3>兜底模型</h3>
     <div class="hint">主模型鉴权失败、额度耗尽、可重试错误用尽，或两轮都被服务商审核拦截时，自动改用这里的模型再试一次；主模型正常时不会触发。切换服务商时必须单独填 Key，宿主不会把主渠道的 Key 发给另一家。</div>
