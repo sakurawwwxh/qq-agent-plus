@@ -51,6 +51,25 @@ export function registerLivingMemoryRoutes(router, deps = {}) {
       return json(res, 200, { ok: true, ...result });
     } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
   });
+  router.add('GET', '/api/living-memory/last-recall', async (req, res, params, url) => {
+    const chatKey = String(url.searchParams.get('chatKey') || '').trim();
+    if (!livingMemoryScopes([chatKey]).length) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
+    try { return json(res, 200, { ok: true, result: livingMemory.explainLastRecall(chatKey) }); }
+    catch (error) { return json(res, 502, { ok: false, error: String(error?.message ?? error) }); }
+  });
+  router.add('POST', '/api/living-memory/forget', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const scopeKey = String(body.scopeKey || '').trim();
+    const participant = String(body.participant || '').trim();
+    if (!livingMemoryScopes([scopeKey]).length || !participant) return json(res, 400, { ok: false, error: 'scopeKey/participant 格式错误' });
+    if (body.confirm !== true) return json(res, 409, { ok: false, error: '忘掉某人的记忆需要 body.confirm === true' });
+    try {
+      const result = await livingMemory.forgetParticipant({ scopeKey, participant });
+      auditWrite('living-memory.forget-person', `living-memory:${scopeKey}:${participant}`, { req, removed: result.removed });
+      emit('living-memory-update', { chatKey: scopeKey, phase: 'forget-person', removed: result.removed });
+      return json(res, 200, { ok: true, ...result });
+    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
+  });
   router.add('POST', '/api/living-memory/memories', async (req, res) => {
     const body = await readBody(req).catch(() => ({}));
     const scopeKey = String(body.scopeKey || '').trim();

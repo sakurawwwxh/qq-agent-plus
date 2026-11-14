@@ -4,6 +4,7 @@ import { adminOwnerUin } from '../core/config.js';
 import { sendOwnerText } from '../core/notify-owner.js';
 import { createActionStore } from './actions.js';
 import { createCommandService } from './commands.js';
+import { createGroupCommandService } from './group-commands.js';
 import { createInbox } from './inbox.js';
 import { createSendService } from './send.js';
 import { createStatusService } from './status.js';
@@ -11,7 +12,8 @@ import { setAdminServices } from './index.js';
 
 export function createAdminServices({
   dataDir, store, sender, onebot, effects, pluginRegistry,
-  getIdentityPilot, getConfig, getMcp, log = () => {}
+  getIdentityPilot, getConfig, getMcp, getOrchestrator = () => null, getGroupGame = () => null,
+  log = () => {}
 } = {}) {
   const config = getConfig;
   const logLine = log;
@@ -59,6 +61,14 @@ export function createAdminServices({
   const commands = createCommandService({
     send, inbox, status, actions, getConfig, reply: replyOwner, log
   });
+  const groupCommands = createGroupCommandService({
+    getConfig: config,
+    getStatus: () => status,
+    getOrchestrator,
+    getGroupGame,
+    send: (chatKey, text) => sender.sendTextBatch(chatKey, [text], {}),
+    log: logLine
+  });
 
   async function handlePrivateMessage(event) {
     if (event?.post_type !== 'message' || event?.message_type !== 'private') return false;
@@ -68,8 +78,12 @@ export function createAdminServices({
     return true;
   }
 
+  async function handleGroupMessage(message) {
+    return groupCommands.handleGroupMessage(message);
+  }
+
   const services = {
-    actions, send, inbox, status, commands, replyOwner, handlePrivateMessage
+    actions, send, inbox, status, commands, groupCommands, replyOwner, handlePrivateMessage, handleGroupMessage
   };
   setAdminServices(services);
   return services;

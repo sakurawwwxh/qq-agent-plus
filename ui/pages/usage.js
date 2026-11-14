@@ -15,6 +15,15 @@ import {
 } from '../core/format.js';
 import { state } from '../core/state.js';
 import { openPriceDialog } from './settings.js';
+
+const FEATURE_LABELS = {
+  chat: '聊天',
+  'living-memory': '长期记忆提炼',
+  'memory-consolidation': '记忆整理',
+  'group-digest': '群日报',
+  'admin-briefing': '管理员早报',
+  external: '其他后台'
+};
 /** 设置页「远程价格表」状态行：来源（在线/缓存/内置）、时间、条目数、错误。 */
 /**
  * 渠道价目表列表（设置页）：每个渠道的地址、条数、上次时间、错误 + 拉取/删除。
@@ -671,6 +680,14 @@ function renderUsagePage(stats, st, prices) {
           <tbody></tbody>
         </table>
       </div>
+
+      <div data-block="features">
+        <h3 class="usage-h3">今日按功能</h3>
+        <table class="usage-table" data-table="features">
+          <thead><tr><th>功能</th><th class="r">调用</th><th class="r">Token</th><th class="r">成本</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>`;
 
   // 「调用次数」卡片可点开明细（骨架重建后重新绑定，所以放在 renderUsagePage 里）
@@ -1038,6 +1055,17 @@ function updateUsagePage(stats, st, prices) {
       <td class="r">${((m.cacheHitRate || 0) * 100).toFixed(0)}%</td>
       <td class="r">${costCell(m)}</td>
     </tr>`, { collapsible: true, expandBtn: '#models-expand' });
+
+  const features = Object.entries(stats?.features || {})
+    .map(([key, value]) => ({ key, ...(value || {}) }))
+    .sort((a, b) => (Number(b.cost) || 0) - (Number(a.cost) || 0));
+  fill('features', features, (f) => `
+    <tr data-key="${esc(f.key)}">
+      <td>${esc(FEATURE_LABELS[f.key] || f.key)}</td>
+      <td class="r">${Number(f.calls) || 0}</td>
+      <td class="r">${fmtTok(Number(f.tokens) || 0)}</td>
+      <td class="r">${fmtYuan(Number(f.cost) || 0)}</td>
+    </tr>`);
 }
 
 async function loadUsageView({ force = false } = {}) {

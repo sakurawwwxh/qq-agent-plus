@@ -153,7 +153,8 @@ export function registerStatusRoutes(router, deps = {}) {
     try {
       const raw = String(url.searchParams.get('range') || url.searchParams.get('days') || '7');
       const stats = buildUsageStats({ range: raw });
-      return json(res, 200, { ok: true, range: raw, ...stats });
+      const todayUsage = sessions.todayUsage(todayKey()) || {};
+      return json(res, 200, { ok: true, range: raw, ...stats, features: todayUsage.byFeature || {} });
     } catch (error) {
       return json(res, 500, { ok: false, error: String(error?.message ?? error) });
     }

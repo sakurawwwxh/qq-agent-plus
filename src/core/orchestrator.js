@@ -4072,7 +4072,7 @@ export class Orchestrator {
       usage.calls = 1;
       const vendor = response?.originBaseUrl
         ? vendorOfBaseUrl(getConfig(), response.originBaseUrl) : '';
-      this.sessions?.recordExternalUsage?.(usage, { model: model || response?.model || '', vendor });
+      this.sessions?.recordExternalUsage?.(usage, { model: model || response?.model || '', vendor, feature: 'memory-consolidation' });
     } catch { /* 记账失败不影响主流程 */ }
   }
 

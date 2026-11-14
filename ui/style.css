@@ -6814,6 +6814,9 @@ html[data-side-rail='1'] .tab .pending-badge { top: 3px; right: 4px; min-width: 
 .lm-recall-row p { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-sm); line-height: 1.5; }
 .lm-recall-row > div:last-child { min-width: 150px; text-align: right; color: var(--accent); font-size: var(--fs-sm); }
 .lm-recall-row small { display: block; margin-top: 4px; color: var(--muted); }
+.lm-recall-sources { margin-top: 8px; font-size: var(--fs-sm); }
+.lm-recall-turn { margin: 6px 0 0 10px; padding-left: 8px; border-left: 2px solid var(--border); }
+.lm-recall-turn p { margin: 2px 0; color: var(--muted); }
 .lm-injected { margin-top: 12px; }
 .lm-injected summary { cursor: pointer; color: var(--accent); }
 .lm-injected pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-2); color: var(--muted); font: inherit; font-size: var(--fs-sm); }

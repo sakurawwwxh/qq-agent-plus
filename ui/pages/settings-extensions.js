@@ -218,6 +218,8 @@ function renderModerationSection(c) {
   const enabled = c.moderation?.enabled !== false;
   const actions = c.moderation?.actions || {};
   const groups = Array.isArray(c.moderation?.groups) ? c.moderation.groups.join(',') : '';
+  const adminCommands = c.admin?.groupCommands || {};
+  const adminCommandGroups = Array.isArray(adminCommands.chats) ? adminCommands.chats.join(',') : '';
   return `
     <h3 id="settings-moderation">群管理</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-moderation-enabled" ${enabled ? 'checked' : ''} />
@@ -230,6 +232,15 @@ function renderModerationSection(c) {
     </div>
     <div class="field"><label>只在哪些群生效（逗号分隔群号；留空 = 所有允许的群）</label>
       <input type="text" id="cfg-moderation-groups" value="${esc(groups)}" placeholder="433397830" /></div>
+    <h3>群内管理员只读命令</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-admin-group-commands" ${adminCommands.enabled === true ? 'checked' : ''} />
+      <label for="cfg-admin-group-commands">允许全局管理员在群内使用只读命令</label></div>
+    <div class="field"><label>允许的群号（逗号分隔；留空 = 所有允许的群）</label>
+      <input type="text" id="cfg-admin-group-chats" value="${esc(adminCommandGroups)}" placeholder="433397830" /></div>
+    <div class="hint">
+      群内只开放「状态」「行为卡」「最近决策」「结束游戏」；同意/拒绝/确认码仍必须私聊管理员，
+      不会把审批短码发到群里。命令消息不会进入模型或长期记忆。
+    </div>
     <div class="hint">
       只对全局管理员开放，而且必须是本批次最后一条发言；不能对自己或管理员执行。
       关掉总开关或某一项后，对应工具会从模型工具表里摘除，模型看不到也不会调用。

@@ -114,6 +114,11 @@ export function applyStableFeaturePolicy(config = {}) {
       .find(Boolean) || '';
   }
   admin.ownerUin = ownerUin;
+  // 群内 owner 只读命令：默认关闭，且默认作用于所有允许的群；可在控制台限定群。
+  admin.groupCommands = {
+    enabled: admin.groupCommands?.enabled === true,
+    chats: Array.isArray(admin.groupCommands?.chats) ? admin.groupCommands.chats.map(String) : []
+  };
 
   if (ownerUin) {
     const allow = objectSection(config, 'allow');

@@ -70,3 +70,25 @@ test('包月模式不把按量成本 0 误记成“未计价”', () => {
   const usage = reg.todayUsage(todayKey());
   assert.equal(usage.unpricedRuns, 0, '包月不是未定价');
 });
+
+test('recordExternalUsage 按功能累计今日成本，供用量页拆分', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.api = { ...cfg.api, model: 'deepseek-chat', costMode: 'official' };
+  setRuntimeConfig(cfg);
+  const reg = new SessionRegistry(0);
+  reg.recordExternalUsage(
+    { promptTokens: 1000, completionTokens: 100, totalTokens: 1100, cachedTokens: 0 },
+    { model: 'deepseek-chat', feature: 'living-memory' }
+  );
+  reg.recordExternalUsage(
+    { promptTokens: 2000, completionTokens: 200, totalTokens: 2200, cachedTokens: 0 },
+    { model: 'deepseek-chat', feature: 'group-digest' }
+  );
+  const usage = reg.todayUsage(todayKey());
+  assert.equal(usage.byFeature['living-memory'].tokens, 1100);
+  assert.equal(usage.byFeature['living-memory'].calls, 1);
+  assert.equal(usage.byFeature['group-digest'].tokens, 2200);
+  assert.ok(usage.byFeature['living-memory'].cost > 0);
+  assert.equal(usage.byFeature['living-memory'].cost + usage.byFeature['group-digest'].cost,
+    usage.estimatedYuan, '功能拆分之和等于今日估算金额');
+});

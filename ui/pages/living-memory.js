@@ -292,6 +292,7 @@ function memoryDetailHtml(memory) {
   const relations = (memory.relations || []).map((relation) => `<li>${esc(relation.source)} <b>${esc(relation.predicate || '关联')}</b> ${esc(relation.target)}</li>`).join('');
   const entities = (memory.entities || []).map((entity) => `<span>${esc(entity)}</span>`).join('');
   const tags = (memory.tags || []).map((tag) => `<span>${esc(tag)}</span>`).join('');
+  const participants = (memory.participants || []).map((person) => `<span>${esc(person)} <button type="button" class="btn btn-small" data-lm-forget-person="${esc(person)}" title="忘掉这个人在本会话的全部长期记忆">忘掉</button></span>`).join('');
   const source = memory.source || {};
   return `<div class="lm-detail-top">
     <button type="button" class="btn btn-small" data-lm-back>← 返回记忆库</button>
@@ -320,6 +321,7 @@ function memoryDetailHtml(memory) {
     <section class="lm-detail-section"><h4>记忆正文</h4><div class="lm-prose">${esc(memory.content || '')}</div></section>
     <section class="lm-detail-section"><h4>标签</h4><div class="lm-tags">${tags || '<span class="is-soft">无</span>'}</div></section>
     <section class="lm-detail-section"><h4>实体</h4><div class="lm-tags">${entities || '<span class="is-soft">无</span>'}</div></section>
+    <section class="lm-detail-section"><h4>涉及的人</h4><div class="lm-tags">${participants || '<span class="is-soft">无</span>'}</div></section>
     <section class="lm-detail-section"><h4>关系</h4>${relations ? `<ul class="lm-relations">${relations}</ul>` : '<p class="lm-muted">暂无关系</p>'}</section>
     <section class="lm-detail-section"><h4>来源</h4><p class="lm-muted">会话：${esc((source.sessionIds || []).join('、') || '手动创建')} · 聚合 ${num(source.turnCount)} 个回合</p></section>
   </article>`;
@@ -340,10 +342,17 @@ function renderMemoryView() {
 function renderRecall(result) {
   if (!result) return '<div class="lm-empty">输入问题后运行测试；结果会显示最终注入文本和排序理由。</div>';
   if (result.error) return `<div class="skills-error">${esc(result.error)}</div>`;
-  const rows = (result.entries || []).map((entry) => `<article class="lm-recall-row">
-    <div><strong>${esc(entry.summary)}</strong><p>${esc(entry.content)}</p></div>
-    <div><span>综合 ${Number(entry.retrieval?.score || 0).toFixed(3)}</span><small>语义 ${Number(entry.retrieval?.semantic || 0).toFixed(3)} · 关键词 ${Number(entry.retrieval?.lexical || 0)}</small></div>
-  </article>`).join('');
+  const rows = (result.entries || []).map((entry) => {
+    const rt = entry.retrieval || {};
+    const turns = Array.isArray(entry.sourceTurns) ? entry.sourceTurns : [];
+    const sourceHtml = turns.length
+      ? `<details class="lm-recall-sources"><summary>来源回合 · ${turns.length}</summary>${turns.map((turn) => `<div class="lm-recall-turn"><small>${esc(shortDate(turn.createdAt))} · ${esc(turn.id)}</small>${(turn.lines || []).map((line) => `<p>${esc(line.sender || line.role)}：${esc(line.text)}</p>`).join('')}</div>`).join('')}</details>`
+      : '';
+    return `<article class="lm-recall-row">
+    <div><strong>${esc(entry.summary)}</strong><p>${esc(entry.content)}</p>${sourceHtml}</div>
+    <div><span>综合 ${Number(rt.score || 0).toFixed(3)}</span><small>语义 ${Number(rt.semantic || 0).toFixed(3)} · 关键词 ${Number(rt.lexical || 0)} · 证据 ${Number(rt.evidence || 0).toFixed(3)} · RRF ${Number(rt.rrf || 0).toFixed(3)} · 新近 ${Number(rt.recency || 0).toFixed(3)}${rt.recentFallback ? ' · 近期兜底' : ''}</small></div>
+  </article>`;
+  }).join('');
   return `<div class="lm-recall-note"><strong>${esc(recallModeLabel(result.mode))}</strong>${result.vectorError ? ` · 向量降级：${esc(result.vectorError)}` : ''}</div>
     ${rows || '<div class="lm-empty">没有匹配记忆。</div>'}
     <details class="lm-injected"><summary>本轮会注入的上下文</summary><pre>${esc(result.injectedText || '影子模式或没有内容')}</pre></details>`;
@@ -358,6 +367,7 @@ function recallHtml() {
       <select id="lm-recall-scope" aria-label="召回测试范围">${scopeOptionsHtml(selectedScope()) || '<option value="">暂无会话</option>'}</select>
       <input id="lm-query" value="${esc(lm().query || '')}" placeholder="输入问题或关键词，例如：之前讨论过 NAS 向量记忆吗？" aria-label="召回测试问题" />
       <button type="button" class="btn btn-primary" id="lm-test">测试召回</button>
+      <button type="button" class="btn btn-small" id="lm-last-recall" title="查看最近一次聊天中实际触发的召回">最近实际召回</button>
     </div>
     <div id="lm-recall-result">${renderRecall(lm().recallResult)}</div>
   </section>`;
@@ -615,6 +625,27 @@ async function runRecallTest(button) {
   }
 }
 
+async function runLastRecall(button) {
+  const chatKey = selectedScope();
+  if (!chatKey) {
+    lm().pageError = '请选择会话';
+    renderPage();
+    return;
+  }
+  button.disabled = true;
+  try {
+    const data = await api(`/api/living-memory/last-recall?chatKey=${encodeURIComponent(chatKey)}`);
+    lm().recallResult = data?.result || { entries: [], injectedText: '', mode: '', error: '' };
+    lm().pageError = '';
+  } catch (error) {
+    lm().recallResult = { error: error.message };
+  } finally {
+    button.disabled = false;
+    const host = $('#lm-recall-result');
+    if (host) host.innerHTML = renderRecall(lm().recallResult);
+  }
+}
+
 async function createMemory(button) {
   const scopeKey = selectedScope();
   const summary = String($('#lm-new-summary')?.value || '').trim();
@@ -692,6 +723,7 @@ function bindPage(box) {
     if (event.target.closest('#lm-create')) { await createMemory(event.target.closest('#lm-create')); return; }
     if (event.target.closest('#lm-save-config')) { await saveConfig(event.target.closest('#lm-save-config')); return; }
     if (event.target.closest('#lm-test')) { await runRecallTest(event.target.closest('#lm-test')); return; }
+    if (event.target.closest('#lm-last-recall')) { await runLastRecall(event.target.closest('#lm-last-recall')); return; }
     if (event.target.closest('[data-lm-back]')) {
       lm().detail = null;
       lm().selectedMemoryId = '';
@@ -714,6 +746,24 @@ function bindPage(box) {
     if (remove) {
       try { await mutateMemory(remove.dataset.lmDelete, 'delete', '彻底删除这条长期记忆及其向量索引？此操作不可恢复。'); }
       catch (error) { lm().pageError = `操作失败：${error.message}`; renderPage(); }
+      return;
+    }
+    const forgetPerson = event.target.closest('[data-lm-forget-person]');
+    if (forgetPerson) {
+      const person = forgetPerson.dataset.lmForgetPerson || '';
+      const scopeKey = lm().detail?.scopeKey || selectedScope();
+      if (!await askForConfirmation(`忘掉「${person}」在 ${scopeTitle(scopeKey, lm().chats)} 的全部长期记忆？此操作不可恢复。`)) return;
+      try {
+        const result = await api('/api/living-memory/forget', {
+          method: 'POST',
+          body: JSON.stringify({ scopeKey, participant: person, confirm: true })
+        });
+        lm().detail = null;
+        lm().selectedMemoryId = '';
+        await loadLivingMemoryPage();
+        lm().pageError = `已忘掉 ${Number(result.removed) || 0} 条与「${person}」相关的记忆`;
+        renderPage();
+      } catch (error) { lm().pageError = `操作失败：${error.message}`; renderPage(); }
       return;
     }
     const open = event.target.closest('[data-lm-open]');

@@ -705,7 +705,7 @@ function buildApp({
         usage.calls = 1;
         const vendor = response?.originBaseUrl
           ? vendorOfBaseUrl(getConfig(), response.originBaseUrl) : '';
-        sessions.recordExternalUsage(usage, { model: model || response?.model || '', vendor });
+        sessions.recordExternalUsage(usage, { model: model || response?.model || '', vendor, feature: 'living-memory' });
       } catch { /* 记账失败不影响主流程 */ }
     }
   });
@@ -810,7 +810,8 @@ function buildApp({
   // 管理员私聊能力：跨群发送/统一审批/只读状态。仅 owner 私聊可见，模型只能创建待确认动作。
   const adminServices = createAdminServices({
     dataDir: DATA_DIR, store, sender, onebot, effects, pluginRegistry,
-    getIdentityPilot: () => identityPilot, getMcp: () => mcpManager, getConfig, log
+    getIdentityPilot: () => identityPilot, getMcp: () => mcpManager, getConfig, log,
+    getOrchestrator: () => orchestrator, getGroupGame: () => groupGame
   });
   // 生活层：宿主侧的觅食与候选队列。禁用时不建状态文件、不起定时器。
   const lifeFeed = new LifeFeedManager({
@@ -1470,7 +1471,7 @@ function buildApp({
         log(`[ingest] 管理员命令消息标记已读失败：${error?.message ?? error}`);
       }
     };
-    if (!isSelf && kind === 'group' && (getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId))) { await ackHandled(); return; }
+    if (!isSelf && kind === 'group' && ((getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId)) || await adminServices.handleGroupMessage({ chatKey, id, stored, backlog }))) { await ackHandled(); return; }
     // 群游戏私聊行动由引擎在入口接管：不回模型、不给插件观察者；解析不了才落回普通链路。
     if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
       && await groupGame.consumePrivateAction(chatKey, stored)) {
@@ -3451,9 +3452,7 @@ function buildApp({
             cacheControl = 'public, max-age=31536000, immutable';
             etag = `"${token}"`;   // 强 ETag（内容哈希）
           } else {
-            // 其余情况一律回源校验：内容哈希做**强** ETag（比体积+时间可靠），
-            // cache-control 保持 no-cache —— 每次都会带 If-None-Match 问一句，没变就是 304。
-            // js 走的永远是这一支（见 URL_TOKENIZED 的注释：模块 URL 必须唯一）。
+            // 其余情况回源校验：内容哈希做强 ETag，cache-control 保持 no-cache；js 永远走这一支。
             etag = `"${token}"`;
           }
         }

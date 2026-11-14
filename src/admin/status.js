@@ -35,7 +35,7 @@ export function createStatusService({
     try { mcp = getMcp?.()?.status?.() || []; } catch { mcp = []; }
     const adminPending = actions?.listPending?.().length || 0;
     const adminUnknown = actions?.listUnknown?.().length || 0;
-    return { cfg, outbox, queues, unknown, host, plugins, mcp, adminPending, adminUnknown };
+    return { cfg, outbox, queues, unknown, host, plugins, mcp, adminPending, adminUnknown, onebot: { connected: onebot?.connected === true } };
   }
 
   function format() {

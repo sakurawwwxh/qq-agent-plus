@@ -6,6 +6,7 @@ import { redactionReason, similarityTokens } from './util.js';
 import { readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from './config.js';
 import { LivingMemoryService } from './service.js';
+import { explainRecall } from './explain.js';
 
 const MAX_PENDING_TURNS = 40;
 const MAX_TRANSCRIPT_CHARS = 16000;
@@ -480,7 +481,36 @@ export class LivingMemoryRuntime {
       deadlineMs: cfg.recallTimeoutMs, rrfK: cfg.rrfK, recentMemoryCount: cfg.recentMemoryCount,
       semantic: true
     });
-    return { ...result, injectedText: renderContext(result.entries || [], cfg.maxInjectChars) };
+    return explainRecall({ ...result, injectedText: renderContext(result.entries || [], cfg.maxInjectChars) }, service.store);
+  }
+
+  /** 最近一次真实自动召回的解释（内存态；重启后为空）。 */
+  explainLastRecall(chatKey) {
+    const view = this.lastRecall.get(String(chatKey || ''));
+    if (!view) return null;
+    return explainRecall(view, this.#service({ create: false })?.store || null);
+  }
+
+  /** 忘掉某个人在指定范围内参与的所有记忆；只作用于一个 scope。 */
+  async forgetParticipant({ scopeKey, participant } = {}) {
+    const key = String(scopeKey || '').trim();
+    const target = String(participant || '').trim();
+    if (!this.applies(key)) throw new Error('当前会话不在长期记忆允许范围内');
+    if (!target) throw new Error('要忘掉的人不能为空');
+    const service = this.#service();
+    if (!service) throw new Error('长期记忆已停止');
+    const ids = [];
+    let offset = 0;
+    for (;;) {
+      const page = service.store.listMemories({ scopeKeys: [key], limit: 200, offset });
+      for (const entry of page.entries) {
+        if ((entry.participants || []).map(String).includes(target)) ids.push(entry.id);
+      }
+      offset += page.entries.length;
+      if (!page.entries.length || offset >= Number(page.total || 0) || offset >= 5000) break;
+    }
+    for (const id of ids) service.removeMemory(id);
+    return { removed: ids.length, ids };
   }
 
   #closeService() {

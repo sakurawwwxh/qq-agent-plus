@@ -165,6 +165,13 @@ async function saveConfig({ quiet = false } = {}) {
       },
       groups: parseList(val('#cfg-moderation-groups', (c.moderation?.groups || []).join(',')))
     };
+    patch.admin = {
+      ...(c.admin || {}),
+      groupCommands: {
+        enabled: chk('#cfg-admin-group-commands', c.admin?.groupCommands?.enabled === true),
+        chats: parseList(val('#cfg-admin-group-chats', (c.admin?.groupCommands?.chats || []).join(',')))
+      }
+    };
   }
 
   if (sec === 'messageTypes') {

@@ -750,6 +750,18 @@
     "keyEndpoint": false
   },
   {
+    "method": "GET",
+    "path": "/api/living-memory/last-recall",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/living-memory/forget",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
     "method": "POST",
     "path": "/api/living-memory/memories",
     "auth": true,

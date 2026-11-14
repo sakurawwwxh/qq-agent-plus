@@ -323,7 +323,7 @@ export class AdminBriefingManager {
         addUsage(usage, r?.usage);
         usage.calls = 1;
         const vendor = r?.originBaseUrl ? vendorOfBaseUrl(getConfig(), r.originBaseUrl) : '';
-        this.sessions?.recordExternalUsage?.(usage, { model: r?.model || '', vendor });
+        this.sessions?.recordExternalUsage?.(usage, { model: r?.model || '', vendor, feature: 'admin-briefing' });
       } catch { /* 记账失败不影响发送 */ }
 
       const text = String(r.message?.content || '').trim().slice(0, cfg.maxChars);
