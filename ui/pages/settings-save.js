@@ -981,6 +981,8 @@ async function saveConfig({ quiet = false } = {}) {
           try { return JSON.parse($('#conversation-group-json')?.value || '{}'); } catch { return {}; }
         })()
       },
+      burstMergeEnabled: chk('#cfg-burst-merge-enabled', c.conversation?.burstMergeEnabled !== false),
+      recallSyncEnabled: chk('#cfg-recall-sync-enabled', c.conversation?.recallSyncEnabled !== false),
       continuationWindowMs: clampInt(
         val('#cfg-cont-window', (c.conversation?.continuationWindowMs ?? 180000) / 1000),
         10, 1800, 180

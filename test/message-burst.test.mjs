@@ -36,4 +36,5 @@ test('直接互动窗口：群聊默认 1200，私聊默认 300，夹在 0–200
   assert.equal(directWakeDelayFor('group:1', { burstMergeDelayMs: 99999 }), 2000);
   assert.equal(directWakeDelayFor('private:1', { directWakeDelayMs: 0 }), 0);
   assert.equal(directWakeDelayFor('group:1', { burstMergeDelayMs: 'bad' }), 1200);
+  assert.equal(directWakeDelayFor('group:1', { conversation: { burstMergeEnabled: false }, burstMergeDelayMs: 1500, directWakeDelayMs: 450 }), 450, '关闭连发合并后群聊回落到直接互动窗口');
 });

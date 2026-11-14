@@ -268,6 +268,12 @@ return `
           <input type="number" id="cfg-max-batch-wait" min="100" max="20000" step="100" value="${esc(c.maxBatchWaitMs ?? 20000)}" />
           <div class="hint">连续来消息时最多等这么久就处理，默认 20000；调小更跟手，调大更容易合并。</div></div>
       </div>
+      <div class="field-row" style="margin-top:8px">
+        <div class="checkbox-row"><input type="checkbox" id="cfg-burst-merge-enabled" ${c.conversation?.burstMergeEnabled !== false ? 'checked' : ''} />
+          <label for="cfg-burst-merge-enabled">把同一发送者的连续消息合并理解，统一回应一次</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="cfg-recall-sync-enabled" ${c.conversation?.recallSyncEnabled !== false ? 'checked' : ''} />
+          <label for="cfg-recall-sync-enabled">自动同步 QQ 撤回消息（存档改占位、不再唤醒模型）</label></div>
+      </div>
     </details>
 
     <h3>所有模式 · 发送保护</h3>

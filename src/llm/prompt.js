@@ -1100,7 +1100,10 @@ function triggerLabels(entry, ctx) {
 /** 私聊/群聊时私聊始终高触发。 */
 export function buildTriggerBlock(triggerEntries, ctx) {
   const lines = [];
-  for (const group of groupMessageBursts(triggerEntries)) {
+  const groups = getConfig().conversation?.burstMergeEnabled === false
+    ? (Array.isArray(triggerEntries) ? triggerEntries : []).map((entry) => ({ entries: [entry] }))
+    : groupMessageBursts(triggerEntries);
+  for (const group of groups) {
     if (group.entries.length >= 2) {
       // 这是系统生成的分组说明，不是用户正文；每条消息仍各自一行，保留 #id 与标签。
       lines.push(`（同一发送者连续 ${group.entries.length} 条，按一段完整表达理解；引用时用各自的 #id）`);
@@ -1307,7 +1310,7 @@ export function buildUserPrompt(ctx) {
   // 最新消息始终位于动态输入末端，兼顾注意力与前缀缓存。
   const triggerBlock = buildTriggerBlock(ctx.triggerEntries, ctx);
   // 同一发送者连发时只给固定说明，不新增系统段头（避免提示词注入白名单膨胀）。
-  const burstNote = triggerBlock && hasBurst(ctx.triggerEntries)
+  const burstNote = triggerBlock && ctx.triggerEntries && getConfig().conversation?.burstMergeEnabled !== false && hasBurst(ctx.triggerEntries)
     ? '同一发送者连续发送的多条消息按一段完整表达理解，先合并意图，再统一回应一次，不要逐条对应回复；引用时再用对应 #id。'
     : '';
   if (ctx.manual && !ctx.paced) {

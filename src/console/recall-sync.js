@@ -2,6 +2,7 @@
 // 目标：待处理的消息不再唤醒模型；已存档的正文改成占位、清空媒体与引用，
 // 后续提示词与工具最多只看到“消息已撤回”。
 import { noticeStamp } from './notice-dedup.js';
+import { getConfig } from '../core/config.js';
 
 const RECALLED_TEXT = '[消息已撤回]';
 
@@ -48,6 +49,7 @@ export function markRecalled(store, chatKey, mid) {
  * 调用方应停止后续 notice 分发。
  */
 export function handleRecallNotice(event, { store, emit = () => {}, log = () => {}, dedup = null } = {}) {
+  if (getConfig().conversation?.recallSyncEnabled === false) return false;
   const emitEvent = emit;
   const chatKey = chatKeyOf(event);
   const mid = event?.message_id;

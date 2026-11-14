@@ -92,7 +92,11 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-humanize-cooldown-voice', 'cfg-humanize-cooldown-react',
       'cfg-context-layering', 'cfg-context-layer-messages', 'cfg-context-layer-chars',
       'cfg-sticker-collect-max-perchat',
-      'cfg-direct-wake-delay', 'cfg-max-batch-wait'
+      'cfg-direct-wake-delay', 'cfg-burst-merge-delay', 'cfg-burst-merge-enabled',
+      'cfg-recall-sync-enabled', 'cfg-max-batch-wait'
+    ],
+    'pages/settings-extensions.js': [
+      'cfg-admin-group-commands', 'cfg-admin-group-chats'
     ],
     'pages/moments.js': [
       'cfg-moments-visibility', 'cfg-moments-target-uins', 'cfg-moments-max-prompt', 'cfg-qzi-decision-rounds',
@@ -140,7 +144,9 @@ test('新增控件的保存代码读取同一个 id（渲染删了/保存改名�
     'cfg-humanize-cooldown-voice', 'cfg-humanize-cooldown-react',
     'cfg-sticker-collect-max-perchat', 'cfg-context-layering',
     'cfg-context-layer-messages', 'cfg-context-layer-chars',
-    'cfg-failure-notice', 'cfg-failure-notice-cooldown', 'cfg-catchup-count'
+    'cfg-failure-notice', 'cfg-failure-notice-cooldown', 'cfg-catchup-count',
+    'cfg-burst-merge-delay', 'cfg-burst-merge-enabled', 'cfg-recall-sync-enabled',
+    'cfg-admin-group-commands', 'cfg-admin-group-chats'
   ];
   assert.deepEqual(saveIds.filter((id) => !save.includes(`'#${id}'`)), [], 'settings-save.js 有保存 selector 缺失');
 

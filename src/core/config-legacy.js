@@ -381,7 +381,7 @@ export const DEFAULT_CONFIG = {
     rolloverArmedMs: 600000,         // 活跃线程撞硬上限后，一次性任意消息触发期限
     lifecycleContextCount: 100,      // 生命周期首次运行携带的历史条数
     lifecycleRolloverInputTokens: 32000, // 上次实际输入达到此值时，下一批先换代
-    maxTranscriptChars: 240000       // 生命周期追加式模型上下文硬预算
+    maxTranscriptChars: 240000, recallSyncEnabled: true, burstMergeEnabled: true // 撤回同步 / 同人连发合并（新功能默认开，可关）
   },
   // 发送保护
   send: {

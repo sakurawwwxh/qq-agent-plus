@@ -49,8 +49,9 @@ export function burstMeta(entries = []) {
  */
 export function directWakeDelayFor(chatKey, cfg = {}) {
   const group = String(chatKey || '').startsWith('group:');
-  const key = group ? 'burstMergeDelayMs' : 'directWakeDelayMs';
-  const fallback = group ? 1200 : 300;
+  const burstEnabled = cfg?.conversation?.burstMergeEnabled !== false;
+  const key = group && burstEnabled ? 'burstMergeDelayMs' : 'directWakeDelayMs';
+  const fallback = group && burstEnabled ? 1200 : 300;
   const value = Number(cfg?.[key]);
   return Math.max(0, Math.min(MAX_DIRECT_WAIT_MS, Number.isFinite(value) ? value : fallback));
 }
