@@ -60,7 +60,8 @@ export function createGroupCommandService({
     }
   };
 
-  async function handleGroupMessage({ chatKey, kind, stored, backlog = false } = {}) {
+  async function handleGroupMessage({ chatKey, kind, stored, backlog = false, onAccepted = null } = {}) {
+    const accepted = typeof onAccepted === 'function' ? onAccepted : null;
     if (kind !== 'group' || backlog || !stored || stored.self) return false;
     const cfg = getConfig?.() || {};
     const rule = cfg.admin?.groupCommands || {};
@@ -72,6 +73,11 @@ export function createGroupCommandService({
     if (!/^\d{5,15}$/.test(owner) || String(stored.senderId || '') !== owner) return false;
     const command = cleanCommand(stored.text);
     if (!['状态', '行为卡', '最近决策', '结束游戏'].includes(command)) return false;
+    // 先消费/标读，再执行命令：命令回复可能在发送队列里排队，不能让它在这段时间里
+    // 仍以 pending 身份被 drain 再领一遍。
+    if (accepted) {
+      try { await accepted(); } catch (error) { log('[admin:group] 命令消息收口失败：', error?.message ?? error); }
+    }
     try {
       if (command === '状态') {
         const snap = getStatus?.()?.snapshot?.() || {};

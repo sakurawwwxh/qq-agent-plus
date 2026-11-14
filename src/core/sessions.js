@@ -865,6 +865,7 @@ export class SessionRegistry {
       totalTokens += total;
       cachedTokens += Number(usage.cachedTokens) || 0;
       webSearchCount += Number(s.webSearchCount) || 0;
+      let inFlightCost = 0;
       try {
         const cfgNow = getConfig();
         const est = estimateCost({
@@ -877,10 +878,16 @@ export class SessionRegistry {
           at: Date.now(),
           vendor: s.vendor || vendorOfConfig(cfgNow)
         });
-        const cost = Number(est?.cost) || 0;
-        estimatedYuan += cost;
+        inFlightCost = Number(est?.cost) || 0;
+        estimatedYuan += inFlightCost;
         if (total > 0 && est?.unpriced === true) unpricedRuns += 1;
       } catch { /* 估价失败不影响 token 统计（最坏情况＝这项当天少算） */ }
+      const feature = String(s.feature || 'chat').slice(0, 40) || 'chat';
+      const bucket = byFeature[feature] || { tokens: 0, cost: 0, calls: 0 };
+      bucket.tokens = (Number(bucket.tokens) || 0) + total;
+      bucket.cost = (Number(bucket.cost) || 0) + inFlightCost;
+      bucket.calls = (Number(bucket.calls) || 0) + 1;
+      byFeature[feature] = bucket;
     }
     return { dayKey, promptTokens, completionTokens, totalTokens, cachedTokens, runs, webSearchCount, estimatedYuan, unpricedRuns, byFeature };
   }

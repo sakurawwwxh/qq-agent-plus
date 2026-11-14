@@ -41,12 +41,15 @@ test('todayUsage 计入在途会话的估算金额', () => {
   assert.equal(before.totalTokens, 200500, 'token 仍要照常累加');
   assert.ok(before.estimatedYuan > 0, '在途会话的花费要计入当日金额（否则并发时预算可被超出）');
   assert.equal(before.unpricedRuns, 0, '有价格的模型不该记成未计价');
+  assert.equal(before.byFeature.chat.tokens, 200500, '在途会话也要进入按功能拆分');
+  assert.equal(before.byFeature.chat.cost, before.estimatedYuan, '拆分的 chat 成本要与总估算一致');
 
   // 会话结束并落盘后，todayUsage 改用文件里的金额；两者必须一致（同一套估价口径）
   reg.finish('inflight-1', 'done');
   const after = reg.todayUsage(todayKey());
   assert.ok(Math.abs(after.estimatedYuan - before.estimatedYuan) < 1e-9,
     `在途估价与结束落盘不一致：before=${before.estimatedYuan} after=${after.estimatedYuan}`);
+  assert.equal(after.byFeature.chat.cost, after.estimatedYuan, '结束后拆分仍与总额一致');
   } finally {
     Date.now = realNow;
   }

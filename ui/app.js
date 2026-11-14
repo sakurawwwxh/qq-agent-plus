@@ -1277,6 +1277,9 @@ function connectSSE() {
     let phase = '';
     try { phase = JSON.parse(event.data)?.phase || ''; } catch { /* 忽略坏帧 */ }
     if (phase === 'recall' || phase === 'recall-error') return;
+    // 设置页/新建抽屉里可能有未保存输入：后台提炼完成不能把整页重绘掉。
+    const lmState = state.livingMemory;
+    if (lmState && (lmState.tab === 'settings' || lmState.createOpen)) return;
     loadLivingMemoryPage({ force: true });
   });
   es.addEventListener('onebot-status', () => {

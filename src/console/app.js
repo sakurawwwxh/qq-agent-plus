@@ -1471,7 +1471,7 @@ function buildApp({
         log(`[ingest] 管理员命令消息标记已读失败：${error?.message ?? error}`);
       }
     };
-    if (!isSelf && kind === 'group' && ((getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId)) || await adminServices.handleGroupMessage({ chatKey, id, stored, backlog }))) { await ackHandled(); return; }
+    if (!isSelf && kind === 'group' && ((getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId)) || await adminServices.handleGroupMessage({ chatKey, id, stored, backlog, onAccepted: ackHandled }))) { await ackHandled(); return; }
     // 群游戏私聊行动由引擎在入口接管：不回模型、不给插件观察者；解析不了才落回普通链路。
     if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
       && await groupGame.consumePrivateAction(chatKey, stored)) {

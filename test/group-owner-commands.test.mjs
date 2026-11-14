@@ -46,9 +46,14 @@ test('owner 群内状态/行为卡/最近决策/结束游戏都直接回复，�
     decision: { outcome: 'skipped', reason: '随机未命中', tier: 2, percent: 60, pendingCount: 4, hits: { probability: true } },
     game: { gameId: 'undercover' }
   });
+  const accepted = [];
   for (const command of ['状态', '/状态', '@机器人 状态', '行为卡', '最近决策', '结束游戏']) {
-    assert.equal(await service.handleGroupMessage({ chatKey: 'group:1', kind: 'group', stored: msg(command) }), true, command);
+    assert.equal(await service.handleGroupMessage({
+      chatKey: 'group:1', kind: 'group', stored: msg(command),
+      onAccepted: () => accepted.push(command)
+    }), true, command);
   }
+  assert.equal(accepted.length, 6, '命令执行前就要收口消息');
   assert.equal(sent.length, 5, '结束游戏由引擎自己播报，不重复补一条确认');
   assert.match(sent[0].text, /pending 2/);
   assert.match(sent.find((item) => /本群机器人说明/.test(item.text)).text, /回复策略/);
