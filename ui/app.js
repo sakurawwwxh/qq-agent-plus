@@ -36,7 +36,7 @@ import { pendingSessionDetail, refreshIntervalMs, startUpdateProgressTicker, sta
 
 // 导航/主题等静态节点上的 data-icon 在启动时统一注入 SVG（幂等，可重复调用）
 applyIcons(document);
-import { loadChats } from './pages/chat.js';
+import { loadChatMessages, loadChats } from './pages/chat.js';
 import { loadOverview } from './pages/overview.js';
 import {
   loadAssetObservatory, loadExperimentalFeatureStatuses, loadFriendOpportunities, loadFriendProposals,
@@ -1209,6 +1209,15 @@ function connectSSE() {
   es.addEventListener('chat-update', () => {
     if (state.tab === 'chats') scheduleChatsRefresh();
     scheduleStatusRefresh();
+  });
+  // 撤回改的是旧行，增量接口只拉 after=lastId；这里强制重拉当前会话，旧行才会变“已撤回”。
+  es.addEventListener('message-recalled', (ev) => {
+    let data = {};
+    try { data = JSON.parse(ev.data); } catch { data = {}; }
+    if (state.tab === 'chats' && data.chatKey && data.chatKey === state.currentChatKey) {
+      loadChatMessages(data.chatKey);
+    }
+    if (state.tab === 'chats') scheduleChatsRefresh();
   });
   es.addEventListener('memory-update', (ev) => {
     let data = {};

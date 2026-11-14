@@ -25,6 +25,8 @@ import {
 } from './config.js';
 import { cappedByTokenSaver, effectiveRunLimits, tokenSaverCapsOf } from './token-saver.js';
 import { filterBlockedHistory, purgeBlockedPending } from './blocklist.js';
+import { burstMeta, directWakeDelayFor } from './message-burst.js';
+import { buildDecisionSnapshot, createDecisionLog } from './decision-explanation.js';
 import { redactText } from './redact.js';
 import { recentContextFor } from '../living-memory/util.js';
 // ── 主动开话题的时间段：窗口外不主动开口（聊天回复不受影响）──
@@ -539,7 +541,7 @@ export class Orchestrator {
     this.wakeTimers = new Map();       // chatKey -> timer
     this.pendingWake = new Set();      // 防抖中等待聚批的 chatKey
     this.directPending = new Set();    // 这批等待来自 @/私聊/引用：普通消息不能把它延长回 8-12 秒
-    this.lastDecisions = new Map();    // chatKey -> 最近一次"不回"的档位/原因（内存态，够控制台排查）
+    this.lastDecisions = createDecisionLog({ file: path.join(DATA_DIR, 'decision-log.json') });
     this.pendingSessions = new Map();  // chatKey -> waiting sessionId（防抖期可见的“等待中”会话）
     this.firstPendingAt = new Map();
     this.controllers = new Map();
@@ -842,14 +844,18 @@ export class Orchestrator {
         return;
       }
     }
-    const directCfgMs = Number(getConfig().directWakeDelayMs);
-    const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
+    const directDelay = directWakeDelayFor(chatKey, getConfig());
     this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
   }
 
   /** 最近一次"为什么没回"（档位/原因/概率）；没有记录返回 null。 */
   decisionFor(chatKey) {
     return this.lastDecisions?.get(String(chatKey)) || null;
+  }
+
+  /** 最近决策历史（新→旧），供控制台解释“为什么回/不回”。 */
+  decisionsFor(chatKey, limit = 20) {
+    return this.lastDecisions?.list?.(String(chatKey), limit) || [];
   }
 
   /** 自主节奏是否作用于该会话（按 pacing.scope 判定）。 */
@@ -1534,14 +1540,8 @@ export class Orchestrator {
         const marked = this.store.markRead(chatKey, pendingEntries.map((m) => m.id));
         // 关键：让等待会话**干净消失**，而不是标成"中止"留在列表里
         if (waitingSessionId) this.#discardWaiting(waitingSessionId);
-        const decision = {
-          at: Date.now(),
-          tier: Number(tierResult0.tier) || 0,
-          reason: String(tierResult0.reason || '未触发'),
-          percent: Number(storeConfigForChat(chatKey).randomPercent) || 0
-        };
+        const decision = buildDecisionSnapshot({ chatKey, tierResult: tierResult0, pendingEntries, cfg: cfgNow, budget, selfId: this.onebot.selfId, conversationMode: conversation?.mode, outcome: 'skipped', roll: this.pendingRolls.get(chatKey)?.roll });
         this.lastDecisions.set(chatKey, decision);
-        if (this.lastDecisions.size > 500) this.lastDecisions.delete(this.lastDecisions.keys().next().value);
         this.emit('chat-update', chatKey);
         if (marked) {
           log.info(`[orchestrator] ${chatKey} ${marked} 条未命中触发条件（概率 ${decision.percent}%，${decision.reason}），已标记已读、不响应`);
@@ -1716,6 +1716,7 @@ export class Orchestrator {
           chatKey, triggerEntries, handoff, conversation, runResult
         });
       }
+      this.lastDecisions.set(chatKey, buildDecisionSnapshot({ chatKey, tierResult: tierResult || {}, pendingEntries, cfg: cfgNow, budget: budgetStatus(getConfig(), this.sessions?.todayUsage?.(todayKey()) || {}), selfId: this.onebot.selfId, conversationMode: conversation?.mode, outcome: session.sent?.length ? 'replied' : 'noreply' }));
       // 已读回执（platform.readReceipts，默认关）：这批处理完就在 QQ 里标已读，
       // 各端未读数不再堆积；默认关是因为它会改变"你自己打开机器人 QQ 时的未读观感"。
       if (getConfig().platform?.readReceipts === true) this.#markBatchRead(chatKey, triggerEntries);
@@ -2453,6 +2454,7 @@ export class Orchestrator {
       session.contextTier = tierInfo.tier;
       session.contextLimit = tierInfo.count;
       session.contextReason = tierInfo.reason || '';
+      session.burst = burstMeta(triggerEntries);
     }
     this.sessions.update(session.id);
     this.emit('session-update', session.id);
@@ -2994,8 +2996,7 @@ export class Orchestrator {
         const pending = this.store.peekUnread(chatKey, this.#unreadScanLimit()) || [];
         const direct = chatKey.startsWith('private:')
           || pending.some((m) => mentionsOrPokesBot(m, this.onebot.selfId));
-        const directCfgMs = Number(cfgNow.directWakeDelayMs);
-        const directDelay = Math.max(0, Math.min(2000, Number.isFinite(directCfgMs) ? directCfgMs : 300));
+        const directDelay = directWakeDelayFor(chatKey, cfgNow);
         log.info(`[wake] ${chatKey} 已有未读，主动唤醒改为普通回复`);
         this.scheduleWake(chatKey, direct ? directDelay : null, { direct });
         continue;

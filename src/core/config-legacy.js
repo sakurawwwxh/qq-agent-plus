@@ -354,7 +354,7 @@ export const DEFAULT_CONFIG = {
   wakeDelayMinMs: 8000,
   wakeDelayMaxMs: 12000,
   // 被 @ / 私聊 / 引用机器人时的短聚批：不再等 8-12 秒，但仍留一点窗口合并连发
-  directWakeDelayMs: 300,
+  directWakeDelayMs: 300, burstMergeDelayMs: 1200,
   drainDelayMs: 1000,
   maxBatchWaitMs: 20000,
   // 模型最终失败时，直接互动（@/私聊/引用）给一句短兜底；普通群消息不发

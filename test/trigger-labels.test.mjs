@@ -149,8 +149,10 @@ test('端到端：本次唤醒那一段里不再把别人的点名标成（@我�
     ],
     ...CTX
   }).split('【本次唤醒】')[1];
-  const first = batch.split('\n')[1];
-  const second = batch.split('\n')[2];
+  const lines = batch.split('\n');
+  const first = lines.find((line) => line.includes('@小呱呱 /远行商人'));
+  const second = lines.find((line) => line.includes('@小鲸鱼 帮我看下'));
+  assert.ok(first && second, batch);
   assert.match(first, /（艾特别人）$/, `别人被 @ 的那条不该写 @我：${first}`);
   assert.ok(!first.includes('@我'));
   assert.ok(second.includes('@我'), `真被 @ 的那条要写 @我：${second}`);

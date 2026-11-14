@@ -74,6 +74,12 @@ export function registerSessionRoutes(router, deps = {}) {
     }));
     return json(res, 200, { chats });
   });
+  router.add('GET', '/api/chats/decisions', async (req, res, params, url) => {
+    const chatKey = String(url.searchParams.get('chatKey') || '').trim();
+    if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
+    const limit = Math.max(1, Math.min(50, Number(url.searchParams.get('limit')) || 20));
+    return json(res, 200, { ok: true, chatKey, decisions: orchestrator.decisionsFor(chatKey, limit) });
+  });
   router.add('POST', '/api/pause', async (req, res) => {
     const body = await readBody(req);
     const wasPaused = orchestrator.paused;

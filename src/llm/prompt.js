@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { asrAvailable, getConfig, imageGenAvailable } from '../core/config.js';
 import { platformGateAllowed, platformQuotaLimit, privateFileMaxKiB } from '../core/platform-gates.js';
 import { visionEnabled, stickerVisionEnabled } from './vision-scan.js';
+import { groupMessageBursts, hasBurst } from '../core/message-burst.js';
 // 与 orchestrator 摘 send_voice 的条件同源（enabled && baseUrl 都齐才算能用）：
 // 只看 enabled 会在"勾了启用但没填地址"时教一个不存在的工具（2026-10-07 审计 P0）
 import { ttsConfigured } from './tts-openai.js';
@@ -1099,10 +1100,16 @@ function triggerLabels(entry, ctx) {
 /** 私聊/群聊时私聊始终高触发。 */
 export function buildTriggerBlock(triggerEntries, ctx) {
   const lines = [];
-  for (const m of triggerEntries) {
-    const labels = triggerLabels(m, ctx);
-    const labelStr = labels.length ? `（${labels.join('/')}）` : '';
-    lines.push(`${formatEntry(m)}${labelStr}`);
+  for (const group of groupMessageBursts(triggerEntries)) {
+    if (group.entries.length >= 2) {
+      // 这是系统生成的分组说明，不是用户正文；每条消息仍各自一行，保留 #id 与标签。
+      lines.push(`（同一发送者连续 ${group.entries.length} 条，按一段完整表达理解；引用时用各自的 #id）`);
+    }
+    for (const m of group.entries) {
+      const labels = triggerLabels(m, ctx);
+      const labelStr = labels.length ? `（${labels.join('/')}）` : '';
+      lines.push(`${formatEntry(m)}${labelStr}`);
+    }
   }
   return lines.join('\n');
 }
@@ -1299,19 +1306,23 @@ export function buildUserPrompt(ctx) {
 
   // 最新消息始终位于动态输入末端，兼顾注意力与前缀缓存。
   const triggerBlock = buildTriggerBlock(ctx.triggerEntries, ctx);
+  // 同一发送者连发时只给固定说明，不新增系统段头（避免提示词注入白名单膨胀）。
+  const burstNote = triggerBlock && hasBurst(ctx.triggerEntries)
+    ? '同一发送者连续发送的多条消息按一段完整表达理解，先合并意图，再统一回应一次，不要逐条对应回复；引用时再用对应 #id。'
+    : '';
   if (ctx.manual && !ctx.paced) {
     parts.push(triggerBlock
-      ? `【本次唤醒】管理员从控制台主动要求你立即处理以下未读消息，不受普通响应档位限制。请结合上下文自行决定是否发言：\n${triggerBlock}`
+      ? `【本次唤醒】管理员从控制台主动要求你立即处理以下未读消息，不受普通响应档位限制。请结合上下文自行决定是否发言：${burstNote}\n${triggerBlock}`
       : '【本次唤醒】管理员从控制台主动唤醒了你。当前没有未读消息，请查看最近聊天状态，自行决定是否需要发言；不需要时可以直接结束。');
   } else if (ctx.paced) {
     // 到点唤醒（定时提醒 / 自己安排的稍后发言）不是管理员点的：说成"管理员从控制台唤醒"
     // 是事实错误，模型会顺着它把提醒说成"管理员托的"（2026-10-10 复核）。具体要做什么
     // 由后面那段【本次唤醒】的说明（wakeNote）给出；这里只给中性交代。
     parts.push(triggerBlock
-      ? `【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：\n${triggerBlock}`
+      ? `【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：${burstNote}\n${triggerBlock}`
       : '【本次唤醒】到点了，看看群里的最近情况；具体要做什么以下面的说明为准。');
   } else {
-    parts.push(`【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：\n${triggerBlock}`);
+    parts.push(`【本次唤醒】以下是你还没看过的最新消息（每条前的 #数字 是消息 id，引用回复/看图时用它）：${burstNote}\n${triggerBlock}`);
   }
 
   return parts.join('\n\n');

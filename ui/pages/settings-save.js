@@ -962,6 +962,7 @@ async function saveConfig({ quiet = false } = {}) {
     patch.wakeDelayMs = Math.round((wakeDelayMinMs + wakeDelayMaxMs) / 2);
     patch.drainDelayMs = numKeep(val('#cfg-draindelay', c.drainDelayMs), c.drainDelayMs, 0, 600000, 1200);
     patch.directWakeDelayMs = intKeep(val('#cfg-direct-wake-delay', c.directWakeDelayMs ?? 300), c.directWakeDelayMs ?? 300, 0, 2000, 300);
+    patch.burstMergeDelayMs = intKeep(val('#cfg-burst-merge-delay', c.burstMergeDelayMs ?? 1200), c.burstMergeDelayMs ?? 1200, 0, 2000, 1200);
     patch.maxBatchWaitMs = intKeepPositive(val('#cfg-max-batch-wait', c.maxBatchWaitMs ?? 20000), c.maxBatchWaitMs, 100, 20000, 20000);
     patch.maxConcurrentRuns = Number(val('#cfg-maxruns', c.maxConcurrentRuns)) || 2;
     patch.conversation = {

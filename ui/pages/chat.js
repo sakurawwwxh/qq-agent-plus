@@ -258,9 +258,12 @@ return `
     <details class="collapsible settings-advanced" id="wake-batch-advanced">
       <summary>高级：直接互动与攒批窗口</summary>
       <div class="field-row" style="margin-top:8px">
-        <div class="field"><label for="cfg-direct-wake-delay">直接互动合并窗口（毫秒）</label>
+        <div class="field"><label for="cfg-direct-wake-delay">私聊直接互动窗口（毫秒）</label>
           <input type="number" id="cfg-direct-wake-delay" min="0" max="2000" step="50" value="${esc(c.directWakeDelayMs ?? 300)}" />
-          <div class="hint">被 @ / 私聊 / 引用时不再等常规 8–12 秒，只留这点时间合并连发；默认 300，最大 2000。</div></div>
+          <div class="hint">私聊不再等常规 8–12 秒，只留这点时间合并连发；默认 300，最大 2000。</div></div>
+        <div class="field"><label for="cfg-burst-merge-delay">群聊 @ 连发合并窗口（毫秒）</label>
+          <input type="number" id="cfg-burst-merge-delay" min="0" max="2000" step="50" value="${esc(c.burstMergeDelayMs ?? 1200)}" />
+          <div class="hint">群聊被 @/引用/拍一拍后，等这点时间把同一人的后续消息合并成一段；默认 1200。</div></div>
         <div class="field"><label for="cfg-max-batch-wait">普通消息最长攒批（毫秒）</label>
           <input type="number" id="cfg-max-batch-wait" min="100" max="20000" step="100" value="${esc(c.maxBatchWaitMs ?? 20000)}" />
           <div class="hint">连续来消息时最多等这么久就处理，默认 20000；调小更跟手，调大更容易合并。</div></div>
@@ -652,6 +655,7 @@ async function loadChats({ quiet = false } = {}) {
     const data = await api('/api/chats');
     state.chats = data.chats || [];
     renderChatList();
+    updateChatDecisionHeader();
     if (state.currentChatKey) {
       // 打开着某群详情时也刷新该群消息。
       // keepView=true：只更新内容，不动分页与滚动位置 ——
@@ -1022,6 +1026,31 @@ async function loadOlderChatMessages() {
  *      1. 浏览器丢失 scrollTop → 表现为"明明在往下滚，却自己弹回上面"
  *      2. 工具栏事件被反复绑定 → 点一次发好几条
  */
+function renderChatDecision(decision) {
+  if (!decision) return '';
+  const hits = [];
+  if (decision.hits?.atMe) hits.push('@我');
+  if (decision.hits?.pokeMe) hits.push('拍一拍');
+  if (decision.hits?.replyToMe) hits.push('引用我');
+  if (decision.hits?.keyword) hits.push('关键词');
+  if (decision.hits?.probability) hits.push('概率');
+  const budget = decision.budget?.enabled
+    ? ` · 预算 ¥${Number(decision.budget.spentYuan || 0).toFixed(2)}/¥${Number(decision.budget.limitYuan || 0).toFixed(2)}${decision.budget.exceeded ? '（已超）' : ''}`
+    : '';
+  const burst = decision.burst?.burstGroups
+    ? ` · 合并 ${decision.burst.burstMessages} 条连发`
+    : '';
+  return `<div class="chat-decision"><strong>最近决策：${esc(decision.outcome === 'skipped' ? '未回复' : decision.outcome === 'replied' ? '已回复' : decision.outcome === 'noreply' ? '运行了但未发言' : decision.outcome || '已处理')}</strong>
+    <span>${esc(decision.reason || '未触发')} · 档位 ${esc(decision.tier ?? '-')} · 概率 ${esc(decision.percent ?? 0)}% · 待处理 ${esc(decision.pendingCount ?? 0)} 条${hits.length ? ` · 命中 ${esc(hits.join('/'))}` : ''}${budget}${burst}</span></div>`;
+}
+
+function updateChatDecisionHeader() {
+  const host = $('#chat-decision-host');
+  if (!host || !state.currentChatKey) return;
+  const meta = state.chats.find((c) => c.key === state.currentChatKey) || {};
+  host.innerHTML = renderChatDecision(meta.lastDecision);
+}
+
 function renderChatMessages() {
   const key = state.currentChatKey;
   if (!key) return;
@@ -1041,6 +1070,7 @@ function renderChatMessages() {
     <div class="detail-header">
       <h2>${esc(name)} ${meta.unread ? `<span class="unread-pill">${meta.unread} 未读</span>` : ''}</h2>
       <div class="sub"><span data-field="chat-msg-count"></span><span>${esc(threadStatus)}</span></div>
+      <div id="chat-decision-host">${renderChatDecision(meta.lastDecision)}</div>
     </div>
     <div class="chat-toolbar">
       <button class="btn btn-small" id="chat-wake-btn">主动唤醒</button>
@@ -1158,7 +1188,7 @@ function chatMessagesNewestFirst() {
 /** 单行消息 HTML（全量渲染与滚动追加共用同一个模板，保证两处长得一样）。 */
 function chatMsgRowHtml(m) {
   return `
-    <tr class="${m.read ? '' : 'unread'}">
+    <tr class="${m.read ? '' : 'unread'}${m.eventKind === 'recalled' ? ' chat-msg-recalled' : ''}">
       <td class="t">${fmtTime(m.ts)}</td>
       <td class="w ${m.self ? 'self' : ''}">${m.self ? '我' : esc(m.senderName)}</td>
       <td class="text">${esc(m.text)}${m.read ? '' : ' <span class="unread-pill">未读</span>'}</td>
@@ -1247,4 +1277,4 @@ function conversationModeForChat(chatKey, cfg = state.config) {
 }
 
 
-export { appendChatMessageRows, bindHumanizePreset, bindHumanizeRecommend, bindProactiveWindowEditor, loadChats, loadHumanizeState, renderChatSection, updateChatMessagesBody };
+export { appendChatMessageRows, bindHumanizePreset, bindHumanizeRecommend, bindProactiveWindowEditor, loadChatMessages, loadChats, loadHumanizeState, renderChatSection, updateChatMessagesBody };

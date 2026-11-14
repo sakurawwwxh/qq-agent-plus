@@ -135,7 +135,10 @@ The pre-run debounce is a random duration between `wakeDelayMinMs` and
 `wakeDelayMaxMs` for each newly scheduled batch. The defaults are 8000 and
 12000 milliseconds. Repeated messages redraw the delay while
 `maxBatchWaitMs=20000` still caps total aggregation time from the first pending
-message. Explicit manual and drain delays remain deterministic.
+message. Direct group interactions (`@`, reply-to-bot, poke) use
+`burstMergeDelayMs` (default 1200) so a sender's follow-up messages are merged
+before the first response; private chats keep the shorter `directWakeDelayMs`
+(default 300). Explicit manual and drain delays remain deterministic.
 
 ## Context Inspector
 

@@ -11,6 +11,7 @@ import { createMetrics } from './metrics.js';
 import { registerStorageRoutes } from './storage.js';
 import { createSseSender } from './sse.js';
 import { createNoticeDedup, emojiNoticeKey, pokeNoticeKey } from './notice-dedup.js';
+import { handleRecallNotice } from './recall-sync.js';
 
 import { asrApiKey, asrAvailable, asrConfigured, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, conversationConfigForChat, findWhisperBinSync, getConfig, getConfigConflict, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, incidentPilotEnabled, slangPilotEnabled, storeConfigForChat, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { redactText } from '../core/redact.js';
@@ -1470,9 +1471,7 @@ function buildApp({
       }
     };
     if (!isSelf && kind === 'group' && (getConfig().blocklist?.[id] || []).map(String).includes(String(stored.senderId))) { await ackHandled(); return; }
-    // 群游戏的私聊行动（狼人杀这类"夜里私聊提交"的游戏）：属于进行中的局就由引擎在入口
-    // 接管（发回执/发查验结果），并就地标记已读 —— 不再唤醒模型，也不给插件观察者看。
-    // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
+    // 群游戏私聊行动由引擎在入口接管：不回模型、不给插件观察者；解析不了才落回普通链路。
     if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
       && await groupGame.consumePrivateAction(chatKey, stored)) {
       await ackHandled();
@@ -2022,6 +2021,7 @@ function buildApp({
       }
       return;
     }
+    if (event.post_type === 'notice' && (event.notice_type === 'group_recall' || event.notice_type === 'friend_recall')) return handleRecallNotice(event, { store, emit, log, dedup: noticeDedup });
     if (event.post_type === 'notice' && event.notice_type === 'notify' && event.sub_type === 'poke') {
       return ingestPoke(event, arrivedInactive);
     }

@@ -172,7 +172,7 @@ describe('Orchestrator', () => {
       mid: 9001, text: '@bot 在吗', senderId: '42', senderName: 'member-42', mentionsSelf: true
     });
     runner.onIncoming('group:1', direct);
-    assert.equal(delays.at(-1), cfg.directWakeDelayMs, '被 @ 时应走 directWakeDelayMs 的短聚批');
+    assert.equal(delays.at(-1), cfg.burstMergeDelayMs ?? 1200, '群聊 @ 应走 burstMergeDelayMs 的连发合并窗口');
 
     const before = delays.length;
     const ordinary = store.appendIncoming('group:1', {
@@ -182,9 +182,9 @@ describe('Orchestrator', () => {
     assert.equal(delays.length, before, '普通消息不能把已经排好的直接互动短聚批顶回长窗口');
   });
 
-  it('directWakeDelayMs = 0 是合法值：直接互动不等待，不能回落 300ms', async (t) => {
+  it('burstMergeDelayMs = 0 是合法值：群聊直接互动不等待，不能回落 1200ms', async (t) => {
     const { runner, store, cfg } = fixture(t);
-    cfg.directWakeDelayMs = 0;
+    cfg.burstMergeDelayMs = 0;
     const delays = [];
     const original = runner.scheduleWake.bind(runner);
     runner.scheduleWake = (chatKey, delay = null, options = {}) => {

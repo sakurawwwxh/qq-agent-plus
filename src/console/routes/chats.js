@@ -117,6 +117,7 @@ export function registerChatRoutes(router, deps = {}) {
       id: m.id, mid: m.mid, ts: m.ts, senderId: m.senderId, senderName: m.senderName,
       // 与提示词同一套渲染：正文缺引用块时补上（回复 + 合并转发卡片那类记录）
       text: textWithQuote(m), self: m.self, read: m.read, reply: m.reply,
+      eventKind: m.eventKind || 'message',
       media: m.media || []
     }));
     const meta = store.getChatMeta?.(chatKey) || {};

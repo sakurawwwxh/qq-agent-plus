@@ -551,6 +551,19 @@ function renderSessionContextInspector(s) {
     </section>`;
 }
 
+function renderSessionDecision(s) {
+  const bits = [];
+  if (s.contextTier !== undefined && s.contextTier !== null) bits.push(`档位 ${s.contextTier}`);
+  if (s.contextLimit !== undefined && s.contextLimit !== null) bits.push(`上下文 ${s.contextLimit} 条`);
+  if (s.contextReason) bits.push(s.contextReason);
+  if (s.rounds) bits.push(`${s.rounds} 轮模型`);
+  if (s.budgetStopped) bits.push(`预算停止：${s.budgetStopReason || '已到上限'}`);
+  if (s.livingMemory?.recalled) bits.push(`召回记忆 ${s.livingMemory.recalled} 条`);
+  if (s.burst?.burstGroups) bits.push(`合并 ${s.burst.burstMessages} 条同人连发`);
+  if (!bits.length) return '';
+  return `<div class="chat-decision"><strong>本轮决策</strong><span>${esc(bits.join(' · '))}</span></div>`;
+}
+
 function renderSessionDetail(s, {
   scrollMode = null,
   scrollTop = null,
@@ -560,7 +573,7 @@ function renderSessionDetail(s, {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.conversationMode || 'legacy'}|${s.threadState || ''}|${s.lifecycle?.state || ''}|${s.lifecycle?.deadline || 0}|${s.triggerKind || ''}|${s.rounds || 0}|${s.inputRound || 0}|${s.inputPayloadChars || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${s.sessionMetrics?.estimatedCost || 0}|${state.sessionInspectorTab}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
+  const fp = `${s.id}|${s.status}|${s.conversationMode || 'legacy'}|${s.threadState || ''}|${s.lifecycle?.state || ''}|${s.lifecycle?.deadline || 0}|${s.triggerKind || ''}|${s.rounds || 0}|${s.inputRound || 0}|${s.inputPayloadChars || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${s.sessionMetrics?.estimatedCost || 0}|${s.contextTier ?? ''}|${s.contextLimit ?? ''}|${s.contextReason || ''}|${s.budgetStopped ? 1 : 0}|${s.livingMemory?.recalled || 0}|${s.burst?.burstGroups || 0}|${s.burst?.burstMessages || 0}|${state.sessionInspectorTab}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
   if (state.lastDetailFp === fp) return;
   const firstRender = state.lastDetailFp === null;
   state.lastDetailFp = fp;
@@ -592,6 +605,7 @@ function renderSessionDetail(s, {
       </div>
     </div>
     ${renderSessionModeBand(s)}
+    ${renderSessionDecision(s)}
     ${renderLifecycleOverview(s)}
     ${renderSessionThreadTimeline(s)}`);
 
@@ -608,6 +622,14 @@ function renderSessionDetail(s, {
       lifecycle: s.lifecycle || null,
       triggerKind: s.triggerKind || '',
       triggerReason: s.triggerReason || '',
+      contextTier: s.contextTier ?? null,
+      contextLimit: s.contextLimit ?? null,
+      contextReason: s.contextReason || '',
+      rounds: s.rounds || 0,
+      budgetStopped: s.budgetStopped === true,
+      budgetStopReason: s.budgetStopReason || '',
+      livingMemory: s.livingMemory || null,
+      burst: s.burst || null,
       promptLayout: s.promptLayout || '',
       callUsage: s.callUsage || [],
       sessionMetrics: metrics,

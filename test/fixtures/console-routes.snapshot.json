@@ -1236,6 +1236,12 @@
     "keyEndpoint": false
   },
   {
+    "method": "GET",
+    "path": "/api/chats/decisions",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
     "method": "POST",
     "path": "/api/pause",
     "auth": true,
