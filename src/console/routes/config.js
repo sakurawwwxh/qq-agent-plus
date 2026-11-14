@@ -1,3 +1,6 @@
+import { ttsVoiceSlot } from '../../llm/tts-presets.js';
+import { configureModelReplacement, REPLACEMENT_CHANNELS } from '../../core/model-replacement-config.js';
+import { replacementTargetPatch } from '../../core/model-replacement-targets.js';
 // 配置读取 / 保存 / 重载路由（从 console/app.js 拆出，2026-10-31 结构整治 M3）。
 // 这是全站最大的写接口（约 600 行）：密钥归属钉、__replace__ 语义、hasXxx 回填、
 // 保存失败回滚都在原处逐字保留 —— 拆分只搬位置，不改逻辑。
@@ -80,12 +83,54 @@ export function registerConfigRoutes(router, deps = {}) {
     const safe = safeConfigWithAsrStatus(cfgNow);
     return json(res, 200, safe);
   });
+  // Only the named queue is writable here; never apply other form settings or
+  // accept a client-supplied cursor. Share the config write lock with save/reload.
+  router.add('POST', '/api/model-replacement', serializeConfigWrite(async (req, res) => {
+    const body = await readBody(req);
+    const rulesOnly = body && Object.hasOwn(body, 'triggers');
+    const allowed = rulesOnly ? ['channel', 'triggers', 'revision'] : ['channel', 'enabled', 'entries', 'revision'];
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !REPLACEMENT_CHANNELS.includes(body.channel)
+      || Object.keys(body).some((key) => !allowed.includes(key))
+      || (!rulesOnly && typeof body.enabled !== 'boolean') || !Number.isSafeInteger(body.revision) || body.revision < 0) {
+      return json(res, 400, { error: '请提交单条链的 channel、revision，以及开关和列表，或单独的 triggers。' });
+    }
+    const current = getConfig();
+    let prepared;
+    try {
+      prepared = configureModelReplacement(current.modelReplacement, { [body.channel]: body });
+      const chain = prepared[body.channel];
+      if (!rulesOnly && chain.enabled) for (const entry of chain.entries) {
+        if (entry) replacementTargetPatch(current, body.channel, entry);
+      }
+    } catch (error) {
+      return json(res, error.httpStatus || 400, { error: error.message, code: error.code || '' });
+    }
+    const before = structuredClone(current);
+    let next;
+    try {
+      next = updateConfig({ modelReplacement: prepared });
+    } catch (error) {
+      auditWrite('config.update', 'config', { req, before, ok: false, error: String(error?.message ?? error) });
+      if (error?.code === 'CONFIG_CONFLICT') return json(res, 409, {
+        ok: false, code: error.code, error: error.message,
+        configConflict: error.configConflict || getConfigConflict()
+      });
+      throw error;
+    }
+    auditWrite('config.update', 'config', { req, before, after: next, changed: changedTopKeys(before, next) });
+    emit('status', { configUpdated: true });
+    return json(res, 200, { ok: true, channel: body.channel, chain: next.modelReplacement[body.channel] });
+  }));
   router.add('POST', '/api/config', serializeConfigWrite(async (req, res) => {
     const patch = await readBody(req);
     // readBody 可能很慢（设置页整包可达数 MB），期间别的保存/接口写入可能已经落盘。
     // 快照必须取在读完之后：下面 tts/imageGen/asr 的 keys、voices 都是"服务端维护的映射"，
     // 用旧快照重建会把并发请求刚写进去的 Key 静默抹掉。
     const cfgNow = getConfig();
+    // Replacement queues have their own single-channel write endpoint. Even a
+    // stale/older settings page must not overwrite their runtime progress.
+    if (patch && typeof patch === 'object') delete patch.modelReplacement;
     // 审计（#5）：getConfig() 返回引用，patch 应用后会被就地改写 —— 必须先拍快照，
     // 否则 before 会被写成 after（等于没记；方案附录 J.2）。与合并用同一份快照，
     // 避免把并发请求的改动算到本次请求头上。
@@ -245,6 +290,11 @@ export function registerConfigRoutes(router, deps = {}) {
       // 切回来时 UI 从 voices[这家] 恢复，不会把上一家的音色（如 MiMo 的 Chloe）发给豆包。
       const nextTtsVoices = { ...(cfgNow.tts?.voices || {}) };
       const submittedVoice = String(ttsBody.voice ?? '').trim();
+      const nextVoiceSlots = { ...(cfgNow.tts?.voiceSlots || {}) };
+      if (cfgNow.tts?.voice) nextVoiceSlots[ttsVoiceSlot(cfgNow.tts.baseUrl, cfgNow.tts.model)] = cfgNow.tts.voice;
+      if (submittedVoice) nextVoiceSlots[ttsVoiceSlot(baseForLookup, ttsBody.model ?? cfgNow.tts?.model)] = submittedVoice;
+      ttsBody.voiceSlots = nextVoiceSlots; // maintained by the server, not accepted from a stale form
+
       if (submittedVoice) nextTtsVoices[targetId] = submittedVoice;
       ttsBody.voices = nextTtsVoices;
       const nextTtsKeys = keyInput && keyInput !== '******'

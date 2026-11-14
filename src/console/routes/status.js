@@ -135,6 +135,7 @@ export function registerStatusRoutes(router, deps = {}) {
       // 当前版本号（package.json 的 version）：控制台侧栏与控制页的版本徽标用它。
       // 之前控制页只显示部署提交号（sha），用户看不出"这是哪个版本"。
       version,
+      modelReplacement: Object.fromEntries(Object.entries(cfgNow.modelReplacement || {}).map(([key, value]) => [key, { revision: value.revision, enabled: value.enabled, nextIndex: value.nextIndex, lastModel: value.lastModel }])),
       // 省 Token 模式：模式 + 每项的"用户值 / 生效值"（设置页渲染用）
       tokenSaver,
       ...(cfgNow.timeControl?.enabled ? {

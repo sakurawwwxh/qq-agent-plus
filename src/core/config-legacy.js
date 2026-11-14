@@ -1,5 +1,6 @@
 // 配置管理：data/config.json，UI 可写。所有字段都有默认值。
 import fs from 'node:fs';
+import { normalizeModelReplacement } from './model-replacement-config.js';
 import os from 'node:os';
 import path from 'node:path';
 import { sanitizeBlacklistKeywordRulesWithReport } from './keyword-rules.js';
@@ -17,7 +18,6 @@ import { normalizeTokenSaverMode } from './token-saver.js';   // 零依赖模块
 import { normalizeMomentWindows } from '../features/moment-schedule.js';
 import { PLATFORM_GATE_KEYS, PRIVATE_FILE_DEFAULT_MAX_KIB, privateFileMaxKiB } from './platform-gates.js';
 import { LIVING_MEMORY_DEFAULTS, normalizeLivingMemoryConfig } from '../living-memory/config.js';
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 控制台把 updateConfig 的校验失败映射成 400：用显式标记，不靠匹配错误文案
 //（英文校验信息会被当成 500，文件系统错误也可能反而被误判成用户输入）。
@@ -46,8 +46,8 @@ let pendingExternalDiskText = null;
 export function getConfigConflict() {
   return lastConfigConflict ? { ...lastConfigConflict } : null;
 }
-
 export const DEFAULT_CONFIG = {
+  modelReplacement: normalizeModelReplacement({}),
   // OpenAI 兼容 API（必填才能跑）
   api: {
     // 每日花费上限（改进方案 #8，默认关闭＝升级不改变任何行为）。按**估算价**累计当日用量，
@@ -1405,13 +1405,13 @@ function warnDroppedBlacklistRules(dropped, shapeInvalid) {
     + (shapeInvalid ? '（blacklistKeywords 必须是数组）' : '')
     + (detail ? `：${detail}` : ''));
 }
-
 function migrateConfig(parsed) {
   // 顶层必须是对象：手改坏的 config.json 可能是 null / 5 / "x" / true（都是合法 JSON）。
   // 放它过去，下面 out.persona = … 那一步就会抛（Cannot create property 'persona' on number '5'），
   // 被 loadConfig 的 catch 吞掉后静默退回默认值、还会被持久化 —— 用户配置整份没了。
   if (!isPlainObject(parsed)) parsed = {};
   const out = structuredClone(parsed);
+  out.modelReplacement = normalizeModelReplacement(out.modelReplacement);
   // 名单/数组段统一归一化：手改或 API 传成字符串/对象时，入站路径的 .map、
   // 模型请求的 .find、设置页的 .join 会直接抛，机器人静默不回复。
   // 这里按"空名单/空数组"恢复，而不是把类型错误带进运行期。

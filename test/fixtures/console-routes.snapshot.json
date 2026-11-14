@@ -787,6 +787,12 @@
   },
   {
     "method": "GET",
+    "path": "/api/model-replacement/catalog",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
     "path": "/api/providers",
     "auth": true,
     "keyEndpoint": false
@@ -1052,6 +1058,12 @@
   {
     "method": "GET",
     "path": "/api/config",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/model-replacement",
     "auth": true,
     "keyEndpoint": false
   },

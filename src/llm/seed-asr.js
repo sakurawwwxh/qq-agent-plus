@@ -3,6 +3,7 @@
 // field but counts as global seq=1; audio chunks start at seq=2, last = -seq.
 // Returns final transcript text; throws on server error.
 import WebSocket from 'ws';
+import { modelHttpError } from './model-http-error.js';
 import { gzipSync } from 'node:zlib';
 import { randomUUID } from 'node:crypto';
 
@@ -119,6 +120,7 @@ export async function seedAsrTranscribe(pcmBuffer, {
       if (code === 1000) return finish(resolve, text);
       finish(reject, new Error(`ASR 连接中断（close ${code}），转写不完整`));
     });
+    ws.on('unexpected-response', (_req, res) => { res.resume(); finish(reject, modelHttpError(`ASR 连接失败 HTTP ${res.statusCode}`, res.statusCode)); });
     ws.on('error', (e) => finish(reject, new Error(`ASR 连接失败：${e.message}`)));
   });
 }
