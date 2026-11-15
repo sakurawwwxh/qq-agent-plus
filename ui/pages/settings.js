@@ -11,6 +11,7 @@ import {
 } from '../app.js';
 import { api } from '../core/api.js';
 import { renderModelReplacementSection, hasUnsavedModelReplacement } from './model-replacement.js';
+import './vision-scan.js';
 import {
   MODEL_SERVICES_UI, THEME_VALUES, TIME_DAYS, TIME_RULE_LABELS
 } from '../core/constants.js';
@@ -397,6 +398,7 @@ function renderApiSection(c) {
       </div>
       <div class="hint" id="provider-hint">${currentProvider ? `当前：${esc(currentProvider.displayName)} · ${esc(c.api.model || '未选模型')} @ ${esc(currentProvider.baseURL)}${currentProvider.hasKey ? ' · 已保存 API Key（不显示）' : ' · 未保存 API Key'}` : '尚未选择模型'}</div>
       <div class="hint" id="model-vision-hint" style="margin-top:6px"></div>
+      <div style="margin-top:6px"><button type="button" class="btn btn-small" id="vision-scan-btn">扫描图片能力</button><span id="vision-scan-result" class="muted" style="margin-left:8px"></span></div>
       <input type="hidden" id="cfg-provider" value="${esc(c.api.provider || '')}" />
       <input type="hidden" id="cfg-model" value="${esc(c.api.model || '')}" />
     </div>

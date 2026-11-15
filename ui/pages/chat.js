@@ -15,6 +15,7 @@ import {
   sliderToTierUI_tierToSlider
 } from '../core/format.js';
 import { state } from '../core/state.js';
+import { loadChatDecisionHistory } from './chat-decisions.js';
 
 /** 主动开话题的一个时段行（新增/删除共用同一份 HTML，避免两处漂移）。 */
 export function proactiveWindowRowHtml(window = {}) {
@@ -993,6 +994,7 @@ async function loadChatMessages(key, { keepView = false } = {}) {
     state.chatNextBefore = Number(data.nextBefore) || 0;
     state.chatMsgLimit = CHAT_MSG_PAGE;
     renderChatMessages();
+    void loadChatDecisionHistory(key);
   } catch (e) {
     if (state.currentChatKey !== key) return;
     const box = $('#chat-detail');
@@ -1077,6 +1079,10 @@ function renderChatMessages() {
       <h2>${esc(name)} ${meta.unread ? `<span class="unread-pill">${meta.unread} 未读</span>` : ''}</h2>
       <div class="sub"><span data-field="chat-msg-count"></span><span>${esc(threadStatus)}</span></div>
       <div id="chat-decision-host">${renderChatDecision(meta.lastDecision)}</div>
+      <details id="chat-decision-history" class="hint" style="margin-top:6px">
+        <summary style="cursor:pointer">最近决策记录</summary>
+        <div data-chat-decisions><div class="hint">加载中…</div></div>
+      </details>
     </div>
     <div class="chat-toolbar">
       <button class="btn btn-small" id="chat-wake-btn">主动唤醒</button>

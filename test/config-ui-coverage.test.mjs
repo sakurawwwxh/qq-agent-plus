@@ -81,7 +81,8 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-mt-enrich-timeout', 'cfg-catchup-count',
       'cfg-search-maxresults', 'cfg-ds-needcontent', 'cfg-tavily-depth',
       'cfg-mem-handoff-ttl', 'cfg-mem-handoff-max',
-      'cfg-mute-enabled', 'cfg-mute-dryrun', 'cfg-mute-max', 'cfg-mute-cooldown', 'cfg-mute-daily'
+      'cfg-mute-enabled', 'cfg-mute-dryrun', 'cfg-mute-max', 'cfg-mute-cooldown', 'cfg-mute-daily',
+      'vision-scan-btn'
     ],
     'pages/chat.js': [
       'cfg-failure-notice', 'cfg-failure-notice-cooldown',
@@ -93,7 +94,7 @@ test('本轮补齐的设置入口都有稳定控件（删改会红）', () => {
       'cfg-context-layering', 'cfg-context-layer-messages', 'cfg-context-layer-chars',
       'cfg-sticker-collect-max-perchat',
       'cfg-direct-wake-delay', 'cfg-burst-merge-delay', 'cfg-burst-merge-enabled',
-      'cfg-recall-sync-enabled', 'cfg-max-batch-wait'
+      'cfg-recall-sync-enabled', 'cfg-max-batch-wait', 'chat-decision-history'
     ],
     'pages/settings-extensions.js': [
       'cfg-admin-group-commands', 'cfg-admin-group-chats'
