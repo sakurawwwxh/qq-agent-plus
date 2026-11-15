@@ -40,3 +40,10 @@ async function loadChatDecisionHistory(key) {
 }
 
 export { loadChatDecisionHistory };
+
+// <details> 的 toggle 不冒泡，用捕获阶段监听；展开时补一次最新历史。
+document.addEventListener('toggle', (event) => {
+  const details = event.target;
+  if (details?.id !== 'chat-decision-history' || !details.open) return;
+  void loadChatDecisionHistory(state.currentChatKey);
+}, true);

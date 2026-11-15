@@ -81,6 +81,22 @@ test('skip blanks; one target disables immediately; final 403 never loops', asyn
   assert.equal(e.get().api.model, 'A');
 });
 
+test('deleted/credential-less target is skipped so later targets still run', async () => {
+  const c = fixture('chat', [null, null]);
+  c.modelReplacement.chat.entries = [entry('missing'), entry('A')];
+  c.modelReplacement.chat.enabled = true;
+  const e = engine(c); const tried = [];
+  const result = await e.run('chat', c, async (cfg) => {
+    tried.push(cfg.api.model);
+    if (cfg.api.model === 'A') return 'ok';
+    throw modelHttpError('forbidden', 403);
+  });
+  assert.equal(result, 'ok');
+  assert.deepEqual(tried, ['D', 'A']);
+  assert.equal(e.get().modelReplacement.chat.nextIndex, 2);
+  assert.equal(e.get().modelReplacement.chat.enabled, false);
+});
+
 test('duplicates/current-model positions remain bounded and do not resend an identical failure', async () => {
   const initial = fixture('chat', ['D', 'A', 'A', 'C']);const e = engine(initial);const tried = [];
   await e.run('chat', initial, async (c) => { tried.push(c.api.model);if (c.api.model === 'C') return true;throw modelHttpError('forbidden', 403); });
@@ -177,6 +193,7 @@ test('chat integration: chain runs before existing fallback; explicit per-task o
   });
   const out = await chatCompletionWithRetry({ messages: [{ role: 'user', content: 'test' }] }, 0);
   assert.equal(out.model, 'C');assert.deepEqual(seen, ['D', 'A', 'B', 'C']);assert.equal(getConfig().api.model, 'C');
+  assert.equal(out.channelChanged, true, '跨 host 替换必须标记 channelChanged，供会话按实际渠道记 vendor');
   updateConfig(fixture());seen.length = 0;
   await assert.rejects(chatCompletionWithRetry({ messages: [], overrides: { ...getConfig().api, apiKey: 'key-D' } }, 0), /403/);
   assert.deepEqual(seen, ['D']);assert.equal(getConfig().modelReplacement.chat.nextIndex, 0);
@@ -446,7 +463,9 @@ test('final model quota429 goes to fallback without repeated futile calls or res
       ? new Response(JSON.stringify({ model, choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
       : new Response(JSON.stringify({ error: { code: 'insufficient_quota' } }), { status: 429 });
   });
-  assert.equal((await chatCompletionWithRetry({ messages: [{ role: 'user', content: 'test' }] })).viaFallback, true);
+  const out = await chatCompletionWithRetry({ messages: [{ role: 'user', content: 'test' }] });
+  assert.equal(out.viaFallback, true);
+  assert.equal(out.channelChanged, true, '替换后的兜底也必须相对最初主渠道标记渠道变化');
   assert.deepEqual(seen, ['D', 'A', 'F']); assert.equal(getConfig().api.model, 'A');
   assert.equal(getConfig().modelReplacement.chat.enabled, false);
 });

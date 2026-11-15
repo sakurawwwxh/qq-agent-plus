@@ -143,13 +143,14 @@ async function detectModelVisionRequest({ baseUrl, apiKey, model }, timeoutMs, s
  * 扫描目录（providerId 过滤可选）。并发受控，结果逐个写进 config 并通过 emit 汇报进度。
  * 返回 { total, results }。
  */
-export async function scanModelsVision({ providers, emit = null, limit = 3, timeoutMs = 25000, onlyProviderIds = null } = {}) {
+export async function scanModelsVision({ providers, emit = null, limit = 3, timeoutMs = 25000, onlyProviderIds = null, onlyModels = null } = {}) {
   assertTimeAllowed('');
   const tasks = [];
   for (const p of providers || []) {
     if (onlyProviderIds && !onlyProviderIds.includes(p.id)) continue;
     if (!p.baseURL || !p.apiKey) continue; // 缺端点/密钥的提供商无从探测
     for (const model of p.models || []) {
+      if (onlyModels && !onlyModels.includes(model)) continue;
       tasks.push({ providerId: p.id, model, baseURL: p.baseURL, apiKey: p.apiKey });
     }
   }

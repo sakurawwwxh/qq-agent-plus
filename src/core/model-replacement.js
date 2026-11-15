@@ -27,7 +27,15 @@ export function createModelReplacement(options = {}) {
     for (let i = chain.nextIndex; i < chain.entries.length; i += 1) {
       const entry = chain.entries[i];
       if (!entry) continue;
-      const target = replacementTargetPatch(current, channel, entry);
+      let target;
+      try {
+        target = replacementTargetPatch(current, channel, entry);
+      } catch (error) {
+        // 目标模型/凭据可能在链保存后被删除或轮换。跳过这一项继续找后面的有效项；
+        // 绝不能把配置错误当成模型错误抛出去，否则会绕过原有兜底模型。
+        log.warn(`${channel} 替换目标 ${entry.model} 不可用，跳过：${error?.message ?? error}`);
+        continue;
+      }
       const candidate = { ...current, ...target };
       const last = !chain.entries.slice(i + 1).some(Boolean);
       const updated = { ...chain, nextIndex: i + 1, enabled: !last,

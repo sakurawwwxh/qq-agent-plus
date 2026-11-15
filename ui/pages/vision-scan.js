@@ -26,11 +26,12 @@ function paintModelVerdict(providerId) {
 
 async function runVisionScan(button) {
   const providerId = String(state.config?.api?.provider || '').trim();
-  if (!providerId) {
-    setResult('当前是手动地址模式：请先在模型 API 里选择服务商，再扫描图片能力。');
+  const model = String(state.config?.api?.model || '').trim();
+  if (!providerId || !model) {
+    setResult('请先在模型 API 里选择服务商和模型，再扫描图片能力。');
     return;
   }
-  if (!await askForConfirmation(`会向「${providerId}」发送最多 3 次图片探测请求，可能产生少量费用。确定扫描？`)) return;
+  if (!await askForConfirmation(`会向「${providerId}」的当前模型「${model}」发送 1 次图片探测请求，可能产生少量费用。确定扫描？`)) return;
   const idle = button.textContent;
   button.disabled = true;
   button.textContent = '扫描中…';
@@ -38,7 +39,7 @@ async function runVisionScan(button) {
   try {
     await api('/api/vision/scan', {
       method: 'POST',
-      body: JSON.stringify({ providerIds: [providerId] })
+      body: JSON.stringify({ providerIds: [providerId], models: [model] })
     });
     for (let i = 0; i < 80; i += 1) {
       await wait(1500);
@@ -48,7 +49,10 @@ async function runVisionScan(button) {
       if (!state.visionScanning) break;
     }
     paintModelVerdict(providerId);
-    setResult(state.visionScanning ? '扫描仍在后台进行，稍后刷新结果。' : '扫描完成。');
+    const result = (state.visionResults || {})[`${providerId}|||${model}`];
+    setResult(state.visionScanning ? '扫描仍在后台进行，稍后刷新结果。'
+      : result?.source === 'probe' ? '扫描完成。'
+        : '扫描结束，但没有拿到当前模型的探测结果（可能失败，请查看服务日志）。');
   } catch (error) {
     setResult(`扫描失败：${error.message}`);
   } finally {

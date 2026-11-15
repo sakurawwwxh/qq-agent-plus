@@ -973,6 +973,7 @@ async function loadChatMessages(key, { keepView = false } = {}) {
       const lastId = Number(state.chatMessages[state.chatMessages.length - 1]?.id) || 0;
       const data = await api(`${base}?limit=${CHAT_MSG_PAGE}&after=${lastId}`);
       if (state.currentChatKey !== key) return;
+      if (document.querySelector('#chat-decision-history')?.open) void loadChatDecisionHistory(key);
       const fresh = data.messages || [];
       if (!fresh.length) return;
       // 必须换新数组：chatMessagesNewestFirst() 用数组引用做排序缓存 key，

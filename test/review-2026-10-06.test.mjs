@@ -182,6 +182,25 @@ test('vision-scan：扫描进行中的定时器那次落盘失败也被兜住（
   );
 });
 
+test('vision-scan：onlyModels 只探测指定模型（控制台按钮的成本上限）', async (t) => {
+  const { scanModelsVision } = await import('../src/llm/vision-scan.js');
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, req) => {
+    calls.push(JSON.parse(req.body).model);
+    return Response.json({ choices: [{ message: { content: '能看到' } }], usage: { total_tokens: 1 } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const result = await scanModelsVision({
+    providers: [{ id: 'p1', baseURL: 'https://p1.invalid/v1', apiKey: 'k', models: ['m1', 'm2', 'm3'] }],
+    onlyModels: ['m2'],
+    limit: 3,
+    timeoutMs: 5000
+  });
+  assert.equal(result.total, 1);
+  assert.deepEqual(calls, ['m2']);
+});
+
 // ── P2-6：replaceKnownFriends 尊重手工好友 override（双向）──
 test('identity-store：快照刷新不清掉手工好友标记，override=0 也压得住好友列表', async (t) => {
   const dir = fs.mkdtempSync(path.join(root, 'idstore-'));

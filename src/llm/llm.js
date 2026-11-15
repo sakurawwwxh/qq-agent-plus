@@ -338,6 +338,9 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   llmRuntimeStats.requests += 1;
   let response = null;
   let primaryError = null;
+  // 替换链可能把请求切到另一个 host；vendor 必须按**本次实际端点**记，
+  // 不能沿用会话开始时的主渠道（否则花费/预算按错价计算）。
+  const initialBase = String(getConfig()?.api?.baseUrl || '');
   try {
     response = args.overrides
       ? await runCompletionWithRetries(args, retries)
@@ -361,7 +364,9 @@ export async function chatCompletionWithRetry(args, retries = 2) {
     // 兜底不可用时把**本次结果**如实返回；null 只能来自内部异常路径（throw null 已被上面堵死），
     // 但调用方（orchestrator 等）会直接读 response.model / .message —— 这里显式兜一层，别让它崩在调用方。
     if (!response) throw new Error('模型请求没有返回结果');
-    return response;
+    const changed = !args.overrides && Boolean(response.originBaseUrl)
+      && hostOf(response.originBaseUrl) !== hostOf(initialBase);
+    return changed ? { ...response, channelChanged: true } : response;
   }
 
   const why = primaryError
@@ -371,11 +376,11 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   llmRuntimeStats.fallbackUses += 1;
   try {
     const fbResponse = await runCompletionWithRetries({ ...args, overrides: fb }, 1);
-    // 2026-10-06 复审 P3：标记本次是否真的换了渠道（兜底端点与主渠道 host 不同）。
+    // 2026-10-06 复审 P3：标记本次是否真的换了渠道（兜底端点与**本次请求最初**的主渠道 host 不同）。
     // 同渠道换模型不算换渠道 —— vendor 不变；跨渠道时调用方把成本记到实际渠道名下。
-    const primaryBase = String(effectiveApi().baseUrl || '');
+    // 比较基准必须是 initialBase：替换链可能已经把当前 api.baseUrl 改到目标渠道了。
     const channelChanged = Boolean(fbResponse.originBaseUrl)
-      && hostOf(fbResponse.originBaseUrl) !== hostOf(primaryBase);
+      && hostOf(fbResponse.originBaseUrl) !== hostOf(initialBase);
     return { ...fbResponse, viaFallback: true, channelChanged };
   } catch (error) {
     llmRuntimeStats.failures += 1;

@@ -2971,13 +2971,13 @@ function buildApp({
     // 把要花钱的模型探测跑两遍并交错覆盖结果（2026-10-03 全量审查）。顺序与 /api/memory-files/consolidate 一致。
     const body = await readBody(req).catch(() => ({}));
     if (visionScan.running) return json(res, 409, { ok: false, error: '已有一次扫描正在进行' });
-    const onlyProviderIds = Array.isArray(body?.providerIds) ? body.providerIds.map(String) : null;
+    const onlyProviderIds = Array.isArray(body?.providerIds) ? body.providerIds.map(String) : null, onlyModels = Array.isArray(body?.models) ? body.models.map(String) : null;
     visionScan.running = true;
     emit('vision-scan', { phase: 'start' });
     scanModelsVision({
       providers: currentProviders(),
       emit,
-      onlyProviderIds,
+      onlyProviderIds, onlyModels,
       timeoutMs: 25000,
       limit: 3
     })
