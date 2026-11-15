@@ -260,10 +260,9 @@ function cardifySettings(box) {
   const children = [...box.children];
   let card = null;
   for (const node of children) {
-    if (node.classList.contains('save-bar') || node.classList.contains('settings-divider')) {
-      card = null;
-      continue;
-    }
+    // 分卡后卡片自带 16px 间距；旧分隔线留在 DOM 会再叠 22px×2（上下文分层上方实测 61px）。
+    if (node.classList.contains('settings-divider')) { node.remove(); card = null; continue; }
+    if (node.classList.contains('save-bar')) { card = null; continue; }
     // 平台能力/时间控制等分区自己就是 <section>（甚至已有 .plat-card 卡片样式）：
     // 再包一层会变成卡片套卡片。h3 在里层，交给原样式。
     if (node.tagName === 'SECTION') {
@@ -286,6 +285,7 @@ function cardifySettings(box) {
     }
     card.appendChild(node);
   }
+  box.querySelectorAll('.settings-divider').forEach((node) => node.remove());
 }
 
 /** 单勾选 + 单标签的行改成右侧开关；多选列表/带额外说明的行保持原样。 */
