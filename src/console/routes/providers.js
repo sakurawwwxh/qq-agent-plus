@@ -1,3 +1,5 @@
+import { replacementCatalog } from '../../core/model-replacement-targets.js';
+import { REPLACEMENT_CHANNELS } from '../../core/model-replacement-config.js';
 // 提供商（模型接入）与本机 ASR 安装路由
 // （从 console/app.js 拆出，2026-10-31 结构整治 M2）。
 // 这里只搬路由；ASR 安装的状态机（子进程/日志/删除托管目录）仍留在 createApp 里，
@@ -29,6 +31,11 @@ export function registerProviderRoutes(router, deps = {}) {
     || !startAsrInstall || !getAsrRunning || !log) {
     throw new Error('registerProviderRoutes 需要 router/json/readBody/getConfig/auditWrite/密钥守卫/ASR 闭包/log');
   }
+
+  router.add('GET', '/api/model-replacement/catalog', async (req, res) => {
+    const cfg = getConfig();
+    return json(res, 200, Object.fromEntries(REPLACEMENT_CHANNELS.map((channel) => [channel, replacementCatalog(cfg, channel)])));
+  });
 
   router.add('GET', '/api/providers', async (req, res) => {
     const providers = currentProviders().map((p) => ({

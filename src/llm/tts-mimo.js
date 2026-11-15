@@ -8,6 +8,7 @@
 //   · model: mimo-v2.5-tts（复刻音色用 mimo-v2.5-tts-voiceclone，voice 传 data:audio/...;base64,...）
 //   · 有导演指令时 2.1s，没有时 1.8s；同一句的停顿与语气明显不同
 // 这里只做说话，不做唱歌：唱歌要换声线/伴奏，属于另一条链路，别在这个适配器里混。
+import { modelHttpError } from './model-http-error.js';
 import { callJson } from './tts-http.js';
 
 export const MIMO_DEFAULT_URL = 'https://token-plan-cn.xiaomimimo.com/v1/chat/completions';
@@ -101,7 +102,7 @@ export async function synthesizeMimo({
   if (director) messages.push({ role: 'user', content: director });
   messages.push({ role: 'assistant', content: body });
 
-  const { status, parsed, text: raw } = await callJson(fetchFn, url, {
+  const { ok, status, parsed, text: raw } = await callJson(fetchFn, url, {
     headers: { 'api-key': key },
     body: { model, messages, audio: { format, voice } },
     timeoutMs: cfg?.timeoutMs,
@@ -109,10 +110,10 @@ export async function synthesizeMimo({
   });
 
   const data = parsed?.choices?.[0]?.message?.audio?.data;
-  if (!data) {
+  if (ok === false || !data) {
     const detail = String(parsed?.error?.message || parsed?.message || raw || '').trim().slice(0, 200);
-    throw new Error(`MiMo 语音合成失败 HTTP ${status}${detail ? `：${detail}` : ''}`
-      + '（检查 Key、模型名、音色；token-plan 的地址应以 /v1 结尾）');
+    throw modelHttpError(`MiMo 语音合成失败 HTTP ${status}${detail ? `：${detail}` : ''}`
+      + '（检查 Key、模型名、音色；token-plan 的地址应以 /v1 结尾）', status, parsed);
   }
   const base64 = String(data).replace(/^data:[^,]*,/, '');
   const buffer = Buffer.from(base64, 'base64');

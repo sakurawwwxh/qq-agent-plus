@@ -1,3 +1,4 @@
+import { modelHttpError } from './model-http-error.js';
 // 腾讯云语音识别「一句话识别」：POST asr.tencentcloudapi.com，TC3-HMAC-SHA256 签名，音频 base64。
 // 限制：单次 ≤60 秒、base64 后 ≤3MB（由上层分片）；16k_zh 支持 wav/pcm/mp3/m4a 等。
 //
@@ -106,7 +107,7 @@ export async function tencentTranscribe(wavBuffer, {
         : (/LimitExceeded|RequestLimitExceeded/i.test(String(err.Code)) ? '（请求超限：当日/当月免费额度可能用完了）' : '');
       throw new Error(`腾讯云语音识别失败：${err.Message || err.Code}（${err.Code}）${hint}`);
     }
-    if (!res.ok) throw new Error(`腾讯云语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`);
+    if (!res.ok) throw modelHttpError(`腾讯云语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`, res.status, body);
     return String(data?.Response?.Result ?? '').trim();
   } finally {
     clearTimeout(timer);

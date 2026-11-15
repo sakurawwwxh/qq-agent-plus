@@ -1,3 +1,4 @@
+import { modelHttpError } from './model-http-error.js';
 // 阿里云百炼（DashScope）语音识别：走它的 OpenAI 兼容 chat 端点，把音频作为 input_audio 塞进消息。
 // 为什么不用 /audio/transcriptions：实测（2026-09-26，国内 VPS 无 Key）该路由 404，而同一主机上
 // 故意问一个不存在的路由也 404（先路由后鉴权）→ 那个路由确实不存在；DashScope 的 ASR 是
@@ -46,7 +47,7 @@ export async function dashscopeTranscribe(wavBuffer, {
     });
     // 有界读（1MB）：转写结果本应很小，超限视为上游异常并中断（2026-10-09 审查）
     const text = await readTextBounded(res, 1024 * 1024);
-    if (!res.ok) throw new Error(`语音识别服务返回 ${res.status}：${String(text).slice(0, 200)}`);
+    if (!res.ok) throw modelHttpError(`语音识别服务返回 ${res.status}：${String(text).slice(0, 200)}`, res.status, text);
     let data = null;
     try { data = JSON.parse(text); } catch { /* 有的网关直接回纯文本 */ }
     const content = data?.choices?.[0]?.message?.content;

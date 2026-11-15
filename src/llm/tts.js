@@ -7,6 +7,9 @@
 // volc / minimax 按官方文档实现、机器上没有凭据未实测；doubao 2026-09-28 用真实账号实测通过
 // （音频、语速、音量、格式、错误码都核过）。mimo 2026-10-25 用 token-plan 账号实测通过。
 import crypto from 'node:crypto';
+import { getConfig } from '../core/config.js';
+import { modelHttpError } from './model-http-error.js';
+import { withModelReplacement } from '../core/model-replacement.js';
 import { synthesizeSpeech as openaiSpeech } from './tts-openai.js';
 import { synthesizeDoubao, explainVolcError } from './tts-doubao.js';
 import { synthesizeMimo } from './tts-mimo.js';
@@ -52,14 +55,14 @@ export async function synthesizeVolc({ cfg, text, signal = null, fetchFn = fetch
     },
     request: { reqid: crypto.randomUUID(), text: body, operation: 'query', with_frontend: 1, frontend_type: 'unitTson' }
   };
-  const { status, parsed, text: raw } = await callJson(fetchFn, base, {
+  const { ok, status, parsed, text: raw } = await callJson(fetchFn, base, {
     headers: { authorization: `Bearer;${token}` },
     body: req,
     timeoutMs: cfg?.timeoutMs,
     signal
   });
-  if (!parsed || (parsed.code !== 3000 && !parsed.data)) {
-    throw new Error(`火山语音合成失败 HTTP ${status}：${explainVolcError(parsed?.code, parsed?.message || raw)}`);
+  if (ok === false || !parsed || (parsed.code !== 3000 && !parsed.data)) {
+    throw modelHttpError(`火山语音合成失败 HTTP ${status}：${explainVolcError(parsed?.code, parsed?.message || raw)}`, status, parsed);
   }
   const buffer = Buffer.from(String(parsed.data), 'base64');
   if (!buffer.length) throw new Error('火山语音合成返回了空音频');
@@ -97,15 +100,15 @@ export async function synthesizeMinimax({ cfg, text, signal = null, fetchFn = fe
     audio_setting: { sample_rate: 32000, bitrate: 128000, format: 'mp3' }
   };
   const url = `${base}/v1/t2a_v2?GroupId=${encodeURIComponent(groupId)}`;
-  const { status, parsed, text: raw } = await callJson(fetchFn, url, {
+  const { ok, status, parsed, text: raw } = await callJson(fetchFn, url, {
     headers: { authorization: `Bearer ${key}` },
     body: req,
     timeoutMs: cfg?.timeoutMs,
     signal
   });
   const statusCode = parsed?.base_resp?.status_code;
-  if (!parsed || (statusCode !== undefined && statusCode !== 0) || !parsed?.data?.audio) {
-    throw new Error(`MiniMax 语音合成失败 HTTP ${status}：${String(parsed?.base_resp?.status_msg || raw).slice(0, 200)}`);
+  if (ok === false || !parsed || (statusCode !== undefined && statusCode !== 0) || !parsed?.data?.audio) {
+    throw modelHttpError(`MiniMax 语音合成失败 HTTP ${status}：${String(parsed?.base_resp?.status_msg || raw).slice(0, 200)}`, status, parsed);
   }
   const buffer = Buffer.from(String(parsed.data.audio), 'hex');   // T2A v2 的音频是 hex 编码
   if (!buffer.length) throw new Error('MiniMax 语音合成返回了空音频');
@@ -114,6 +117,12 @@ export async function synthesizeMinimax({ cfg, text, signal = null, fetchFn = fe
 
 /** 统一入口：按 cfg.provider 分发（缺省 openai 兼容）。 */
 export async function synthesizeSpeech(args = {}) {
+  const current = getConfig();
+  const initial = { ...current, tts: args.cfg || current.tts };
+  return withModelReplacement('tts', initial, (cfg) => synthesizeSpeechOnce({ ...args, cfg: cfg.tts }), { signal: args.signal });
+}
+
+async function synthesizeSpeechOnce(args = {}) {
   // 地址决定实际打到谁家：先用 baseUrl 反查预设（火山 v1 与豆包 v3 同域名、按路径区分），
   // 认不出才用配置里的 provider（手写的 config.json 也就不用再猜 provider）
   const declared = String(args?.cfg?.provider || '').trim().toLowerCase();

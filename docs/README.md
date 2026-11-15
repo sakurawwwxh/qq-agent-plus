@@ -23,6 +23,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [MODEL-REPLACEMENT.md](MODEL-REPLACEMENT.md) | 模型替换链：四条独立队列、可选错误条件自动切换、独立保存与计费安全 |
 | [CONVERSATION_MODES.md](CONVERSATION_MODES.md) | 对话引擎三模式（legacy / threaded / lifecycle）的差异与选择 |
 | [DAILY_MOMENTS.md](DAILY_MOMENTS.md) | QQ 空间动态：来源（人设自己 / 群聊 / 混合）、默认草稿与编辑、去重、计划与时间口径 |
 | [QZONE_INTERACTIONS.md](QZONE_INTERACTIONS.md) | 好友动态与评论回复的巡检节奏与退避 |

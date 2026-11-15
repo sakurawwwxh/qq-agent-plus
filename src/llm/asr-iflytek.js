@@ -7,6 +7,7 @@
 // 真机上若 app_id/Key 不对或签名过期，讯飞会回明确错误码（10105/10106/11200 等），会原文透出。
 import crypto from 'node:crypto';
 import WebSocket from 'ws';
+import { modelHttpError } from './model-http-error.js';
 import { asrApiKey, asrSecretKey, getConfig } from '../core/config.js';
 
 export const IFLYTEK_HOST = 'iat-api.xfyun.cn';
@@ -131,6 +132,7 @@ export async function iflytekTranscribe(pcmBuffer, {
       text += iflytekTextOf(message);
       if (Number(message?.data?.status) === 2) settle(resolve, text.trim());
     });
+    ws.on('unexpected-response', (_req, res) => { res.resume(); settle(reject, modelHttpError(`讯飞连接失败 HTTP ${res.statusCode}`, res.statusCode)); });
     ws.on('error', (error) => settle(reject, new Error(`讯飞连接失败：${String(error?.message ?? error)}`)));
     ws.on('close', (code) => {
       // 正常收尾讯飞也会关连接（1000）；已经拿到最终结果时上面已经 settle 了。

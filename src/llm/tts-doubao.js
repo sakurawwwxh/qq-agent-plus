@@ -10,6 +10,7 @@
 // 参数口径（实测）：speech_rate 与 v1 的 speed_ratio 同量纲（-50~100，即 (倍率-1)*100）；
 // loudness_ratio 是倍率（(0,10]），所以 dB 增益要按 10^(dB/20) 换算；format 支持 mp3/wav/ogg_opus。
 import crypto from 'node:crypto';
+import { modelHttpError } from './model-http-error.js';
 import { callJson } from './tts-http.js';
 
 const DEFAULT_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional';
@@ -120,20 +121,20 @@ export async function synthesizeDoubao({ cfg, text, signal = null, fetchFn = fet
       ? { 'X-Api-App-Id': appId, 'X-Api-Access-Key': key }
       : { 'X-Api-Key': key })
   };
-  const { status, text: raw } = await callJson(fetchFn, base, {
+  const { ok, status, text: raw } = await callJson(fetchFn, base, {
     headers,
     body: { user: { uid: 'qq-agent-plus' }, req_params: { text: body, speaker: voice, audio_params: audioParams } },
     timeoutMs: cfg?.timeoutMs,
     signal
   });
   const { buffer, code, message, headerCode, headerMessage, parsedLines } = parseTtsStream(raw);
-  if (!buffer.length) {
+  if (ok === false || !buffer.length) {
     const errCode = headerCode || code;
     const detail = errCode
       ? explainVolcError(errCode, headerMessage || message)
       : `响应里没有音频数据：${String(raw).slice(0, 200)}`;
-    throw new Error(`豆包语音合成失败 HTTP ${status}：${detail}`
-      + (parsedLines ? '' : '（响应不像 NDJSON，检查「服务地址」是不是填成了 v1 或别家接口）'));
+    throw modelHttpError(`豆包语音合成失败 HTTP ${status}：${detail}`
+      + (parsedLines ? '' : '（响应不像 NDJSON，检查「服务地址」是不是填成了 v1 或别家接口）'), status, raw);
   }
   return { buffer, format };
 }

@@ -1,3 +1,4 @@
+import { modelHttpError } from './model-http-error.js';
 // OpenAI 兼容的语音合成（POST {base}/audio/speech），供「发语音」工具使用。
 // 与 ASR 侧的多供应商结构对称：这里先只做兼容端点（硅基流动 / OpenAI / 自建网关），
 // 原生厂商（火山/讯飞）等有需求再加适配器。
@@ -69,9 +70,9 @@ export async function synthesizeSpeech({
       signal: controller.signal
     });
     if (!res.ok) {
-      let detail = '';
-      try { detail = String(await readTextBounded(res, 4096)).slice(0, 200); } catch { /* 忽略 */ }
-      throw new Error(`语音合成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`);
+      let detail = '', errorBody = '';
+      try { errorBody = await readTextBounded(res, 4096); detail = String(errorBody).slice(0, 200); } catch { /* 忽略 */ }
+      throw modelHttpError(`语音合成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status, errorBody);
     }
     // 有界读取：上游返回超大/畸形响应时中途取消，而不是先整包读入再判长度（2026-10-09 审查）
     let buffer;

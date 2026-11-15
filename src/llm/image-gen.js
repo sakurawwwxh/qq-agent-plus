@@ -1,3 +1,6 @@
+import { getConfig } from '../core/config.js';
+import { withModelReplacement } from '../core/model-replacement.js';
+import { modelHttpError } from './model-http-error.js';
 // 图片生成适配器：OpenAI 兼容的 POST {base}/images/generations（2026-09 主流网关与自建都收敛到这个形状）。
 // 与 TTS 侧同构：只做兼容端点，原生厂商适配器等有需求再加。
 //
@@ -131,7 +134,18 @@ export function resolveImageGenAuth({ imageGen, api, apiKey } = {}) {
  * 返回 { buffer, format?, revisedPrompt? }；url 形态的图片在这里就下载好（调用方只拿到字节）。
  * 失败抛带可读原因的错。
  */
-export async function generateImage({
+export async function generateImage(args = {}) {
+  const current = getConfig();
+  const initial = { ...current, ...(args.cfg?.imageGen ? args.cfg : {}),
+    api: args.apiCfg || args.cfg?.api || current.api,
+    imageGen: args.cfg?.imageGen || args.cfg || current.imageGen };
+  return withModelReplacement('imageGen', initial, (cfg) => generateImageOnce({
+    ...args, cfg, apiCfg: cfg.api,
+    apiKey: cfg === initial ? args.apiKey : (cfg.providerKeys?.[cfg.api?.provider] || cfg.api?.apiKey || '')
+  }), { signal: args.signal });
+}
+
+async function generateImageOnce({
   cfg,
   apiCfg = null,
   apiKey = '',
@@ -206,7 +220,7 @@ export async function generateImage({
     try { parsed = JSON.parse(text); } catch { /* 下面按原文报错 */ }
     if (!res.ok) {
       const detail = String(parsed?.error?.message || parsed?.message || text || '').slice(0, 300);
-      throw new Error(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`);
+      throw modelHttpError(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status, text);
     }
     const item = Array.isArray(parsed?.data) ? parsed.data[0] : null;
     if (!item) throw new Error(`图片生成没有返回图片：${String(text).slice(0, 200)}`);
@@ -251,7 +265,7 @@ async function modelscopeImage({ base, body, model, size, extra, auth, controlle
   try { created = JSON.parse(text); } catch { /* 按原文带出 */ }
   if (!res.ok) {
     const detail = String(created?.error?.message || created?.message || text || '').slice(0, 300);
-    throw new Error(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`);
+    throw modelHttpError(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status, text);
   }
   const taskId = String(created?.task_id || '').trim();
   if (!taskId) throw new Error(`魔搭图片生成没有返回 task_id：${String(text).slice(0, 200)}`);
@@ -350,17 +364,17 @@ async function pollinationsImage({ base, body, model, size, controller, fetchFn 
   const type = String(res.headers?.get?.('content-type') || '');
   if (!res.ok || !type.startsWith('image/')) {
     // 错误详情有界读（4096 字节足够，还要再截 300 字符）；读不出来不影响报错本身。
-    let detail = '';
-    try { detail = String(await readTextBounded(res, 4096)).slice(0, 300); } catch { /* 忽略 */ }
+    let detail = '', errorBody = '';
+    try { errorBody = await readTextBounded(res, 4096); detail = String(errorBody).slice(0, 300); } catch { /* 忽略 */ }
     // 402 / 429 是这条免 Key 路线的常态而不是异常：官方文档写明匿名档是「15 秒 1 次」按 IP 限流，
     // 额度用完之后直接回一个**空的** 402（响应体就俩字节 {}），不解释的话用户完全看不懂。
     // 2026-10-01 实测：同一时刻本机出口 200、云服务器出口 402 —— 是按 IP 算的。
     if (res.status === 402 || res.status === 429) {
-      throw new Error(`图片生成被限流（HTTP ${res.status}）：这条免 Key 路线是匿名档，按 IP 限制`
+      throw modelHttpError(`图片生成被限流（HTTP ${res.status}）：这条免 Key 路线是匿名档，按 IP 限制`
         + '（官方文档口径 1 次/15 秒），额度用完就会这样。稍后再试，或换一家有免费额度的图模型'
-        + '（控制台「图片生成 → 服务预设」里可选）。');
+        + '（控制台「图片生成 → 服务预设」里可选）。', res.status, errorBody);
     }
-    throw new Error(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`);
+    throw modelHttpError(`图片生成失败 HTTP ${res.status}${detail ? `：${detail}` : ''}`, res.status, errorBody);
   }
   // 有界读取：上游返回超大/畸形响应时中途取消，而不是先整包读入再判长度（那样上限形同虚设）
   let buffer;

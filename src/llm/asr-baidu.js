@@ -1,3 +1,4 @@
+import { modelHttpError } from './model-http-error.js';
 // 百度短语音识别（标准版）：POST vop.baidu.com/server_api，JSON 带 base64 音频。
 // 两种鉴权都支持（百度现在默认发的是第二种，更简单）：
 //   1. 老式：API Key + Secret Key → 换 access_token（有效期 30 天，这里缓存到进程里）
@@ -32,6 +33,7 @@ ${String(secretKey || '')}`;
   const body = await readTextBounded(res, 256 * 1024);
   let data = null;
   try { data = JSON.parse(body); } catch { /* 下面按无 token 处理 */ }
+  if (!res.ok) throw modelHttpError(`百度鉴权失败 HTTP ${res.status}：${String(body).slice(0, 200)}`, res.status, body);
   const token = String(data?.access_token || '').trim();
   if (!token) {
     throw new Error(`百度换取 access_token 失败：${String(data?.error_description || data?.error || body).slice(0, 200)}`);
@@ -85,7 +87,7 @@ export async function baiduTranscribe(pcmBuffer, {
     try { data = JSON.parse(body); } catch { /* 下面统一报错 */ }
     // 顺序要紧：HTTP 失败时 body 可能是网关的 JSON（没有 err_no），先看 status 才能带上真实原因；
     // 2xx 但 body 不是 JSON 也要明说，别当成"没有内容"（2026-09-26 审查）。
-    if (!res.ok) throw new Error(`百度语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`);
+    if (!res.ok) throw modelHttpError(`百度语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`, res.status, body);
     if (!data) throw new Error(`百度语音识别返回的不是 JSON：${String(body).slice(0, 200)}`);
     // 百度：err_no=0 才是成功；结果在 result[0]
     if (data.err_no !== 0) {

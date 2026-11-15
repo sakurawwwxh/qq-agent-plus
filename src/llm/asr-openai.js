@@ -1,3 +1,4 @@
+import { modelHttpError } from './model-http-error.js';
 // 通用「OpenAI 兼容」语音转写：POST {baseUrl}/audio/transcriptions，multipart 上传音频文件。
 // 覆盖绝大多数托管服务（OpenAI / Groq / SiliconFlow / 自建 faster-whisper 网关…），
 // 所以用户换服务只需要改 baseUrl + model，不用等我们适配。
@@ -60,7 +61,7 @@ export async function openAiCompatibleTranscribe(wavBuffer, {
     });
     // 有界读（1MB）：转写结果本应很小，超限视为上游异常并中断（2026-10-09 审查）
     const body = await readTextBounded(res, 1024 * 1024);
-    if (!res.ok) throw new Error(`语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`);
+    if (!res.ok) throw modelHttpError(`语音识别服务返回 ${res.status}：${String(body).slice(0, 200)}`, res.status, body);
     let data = null;
     try { data = JSON.parse(body); } catch { /* 有的服务直接回纯文本 */ }
     return String(data ? (data.text ?? data?.result?.text ?? '') : body).trim();

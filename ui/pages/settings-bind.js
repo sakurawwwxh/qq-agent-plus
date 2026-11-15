@@ -1,9 +1,9 @@
 // 由 ui/app.js 机械拆出（2026-10-01，改进方案 §11「UI 结构治理」第二轮：设置域）。
 // 设置页事件绑定；跨文件引用走 import，可变状态挂 state（见 AGENTS.md）。
 'use strict';
-
 import { currentThinkingRaw, loadSettings, refreshStatus, renderSettings, switchTab } from '../app.js';
 import { api } from '../core/api.js';
+import { bindModelReplacementControls } from './model-replacement.js';
 import { ASR_SERVICES, MODEL_SERVICES_UI, QZONE_RUN_LABELS } from '../core/constants.js';
 import { askForConfirmation, bindPeekToggle, requestExperimentOwnerUin, syncClampedInputs } from '../core/dom-util.js';
 import { bindKeyToggles, fetchRealKey } from './key-toggles.js';
@@ -1195,12 +1195,12 @@ function bindSettingsModelsAndKeys(c) {
   });
   const memModelPick = $('#cfg-mem-model-pick');
   if (memModelPick) memModelPick.addEventListener('click', () => openMemoryModelPicker());
-
   // ── 模型 API 区块事件 ──
   // 密钥输入框的「显示 / 隐藏」已抽到 ui/pages/key-toggles.js（该文件顶到 max-lines 上限）：
   // 表在那边，新增一处密钥只要往 KEY_TOGGLES 里加一行 + 接一条受守卫的回读端点。
   bindKeyToggles();
   // 点击文本框弹出选择模态框（无“选择”按钮）
+  bindModelReplacementControls();
   const modelPickInput = $('#cfg-model-pick');
   if (modelPickInput) modelPickInput.addEventListener('click', () => openModelPicker());
   // 模型服务区的提示统一走这里：写 state + DOM，loadSettings() 重渲染后仍能显示
