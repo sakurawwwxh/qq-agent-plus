@@ -1504,8 +1504,8 @@ html[data-glass='liquid'] .chat-item.selected { padding-left: 17px; }
 .persona-lib-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .persona-lib-head .pl-title { font-size: var(--fs-sm); color: var(--muted); }
 .persona-lib-head .spacer { flex: 1; }
-@media (max-width: 600px) {
-  /* 卡库头的按钮较多，390px 下不换行会把“换人设后清空交接”推出卡片。 */
+@media (max-width: 900px) {
+  /* 卡库头的按钮较多，窄屏/平板不换行会把“换人设后清空交接”推出卡片。 */
   .persona-lib-head { flex-wrap: wrap; align-items: flex-start; }
   .persona-lib-head .spacer { display: none; }
 }
@@ -3539,8 +3539,8 @@ input[type=checkbox], input[type=radio] {
 .checkbox-row { align-items: flex-start; gap: 8px; padding: 6px 0; font-size: var(--fs-md); }
 .checkbox-row > input[type=checkbox], .checkbox-row > input[type=radio] { margin-top: 2px; }
 .checkbox-row label { display: inline-flex; align-items: flex-start; gap: 8px; white-space: nowrap; }
-/* 窄屏允许长说明换行：桌面端保持单行，390px 下“图片输入/隔离模式”等标签否则会撑出卡片。 */
-@media (max-width: 600px) {
+/* 窄屏/平板允许长说明换行：桌面端保持单行，≤900px 下“图片输入/隔离模式”等标签否则会撑出卡片。 */
+@media (max-width: 900px) {
   .checkbox-row label { white-space: normal; overflow-wrap: anywhere; min-width: 0; flex: 1; }
 }
 /* .field label（0,1,1）会把"勾选行"压成字段标题样式（display:block / 12px / 600 / muted）：

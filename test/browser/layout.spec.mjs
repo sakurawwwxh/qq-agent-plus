@@ -22,24 +22,26 @@ test('设置卡片间距一致：聊天页所有卡片 16px，旧分隔线不再
   expect(result.gaps, `聊天设置卡片间距应统一为 16px，实际 ${result.gaps.join('/')}`).toEqual([16]);
 });
 
-test('窄屏 390px：设置分区不被长标签/按钮撑出横向溢出', async ({ page }) => {
+test('窄屏/平板 390/700px：设置分区不被长标签/按钮撑出横向溢出', async ({ page }) => {
   await login(page);
   await page.goto('/');
   await switchTo(page, 'settings');
   await page.waitForSelector('.settings-menu-item[data-section]');
-  await page.setViewportSize({ width: 390, height: 844 });
   const sections = await page.locator('.settings-menu-item[data-section]')
     .evaluateAll((nodes) => nodes.map((node) => node.dataset.section));
   const bad = [];
-  for (const section of sections) {
-    if (section === 'token-saver') continue; // 明细表本身是可横向滚动的 .table-wrap
-    await page.locator(`.settings-menu-item[data-section="${section}"]`).click();
-    await page.waitForTimeout(160);
-    const overflow = await page.evaluate(() => {
-      const form = document.querySelector('#settings-form');
-      return form.scrollWidth > form.clientWidth + 1;
-    });
-    if (overflow) bad.push(section);
+  for (const width of [390, 700]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    for (const section of sections) {
+      if (section === 'token-saver') continue; // 明细表本身是可横向滚动的 .table-wrap
+      await page.locator(`.settings-menu-item[data-section="${section}"]`).click();
+      await page.waitForTimeout(160);
+      const overflow = await page.evaluate(() => {
+        const form = document.querySelector('#settings-form');
+        return form.scrollWidth > form.clientWidth + 1;
+      });
+      if (overflow) bad.push(`${width}:${section}`);
+    }
   }
-  expect(bad, `这些分区在 390px 下出现横向溢出：${bad.join(', ')}`).toEqual([]);
+  expect(bad, `这些分区出现横向溢出：${bad.join(', ')}`).toEqual([]);
 });
