@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { TTS_SERVICES, ttsServiceOfBaseUrl, ttsServiceOf, ttsKeyFor, ttsVoicesFor, ttsVoiceSlot } from '../llm/tts-presets.js';
 import { IMAGEGEN_SERVICES, imageGenServiceOfBaseUrl } from '../llm/image-gen-presets.js';
-import { asrCredentialForSlot, asrCredentialSlot, asrEndpointHost, imageGenKeyResolve } from './config.js';
+import { asrCredentialFor, asrCredentialForSlot, asrCredentialSlot, asrEndpointHost, imageGenKeyResolve } from './config.js';
 
 const asrServices = [
   { id: 'siliconflow', label: '硅基流动 · 转写', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', models: ['FunAudioLLM/SenseVoiceSmall'] },
@@ -80,8 +80,15 @@ export function replacementTargetPatch(cfg, channel, entry) {
     // Alibaba's qwen-ASR uses chat/completions, not audio/transcriptions.
     const provider = service?.provider || (/dashscope\.aliyuncs\.com/.test(baseUrl) && /qwen.*asr/i.test(entry.model) ? 'aliyun' : 'openai');
     const slot = asrCredentialSlot(provider, baseUrl);
+    // 无归属的旧单槽凭据只允许在当前同一地址（原生云服务还要求同一 provider）上沿用，
+    // 与运行期 asrCredentialFor 的兼容口径一致；换主机/换厂商仍只认明确归属的凭据。
+    const sameEndpoint = baseOf(old.baseUrl) === baseUrl
+      && (provider === 'openai' || String(old.provider || '').trim().toLowerCase() === provider);
     const credentials = {};
-    for (const kind of ['apiKey', 'secretId', 'secretKey']) credentials[kind] = asrCredentialForSlot(old, kind, slot).value;
+    for (const kind of ['apiKey', 'secretId', 'secretKey']) {
+      const owned = asrCredentialForSlot(old, kind, slot).value;
+      credentials[kind] = owned || (sameEndpoint ? asrCredentialFor(old, kind, provider, baseUrl) : '');
+    }
     credentials.apiKey ||= key;
     if (provider === 'tencent') { requireKey(credentials.secretId, '腾讯云 SecretId'); requireKey(credentials.secretKey, '腾讯云 SecretKey'); }
     else {
@@ -125,13 +132,16 @@ export function replacementTargetPatch(cfg, channel, entry) {
     const old = cfg.imageGen || {};
     const host = asrEndpointHost(baseUrl);
     const owned = imageGenKeyResolve(old, host);
-    key = (owned.owned ? owned.value : '') || key;
+    // 旧配置的单槽 Key 可能没记 apiKeyHost（运行期在同一地址仍会用它）。只有目标
+    // 就是当前同一地址时才沿用；换主机绝不把无归属的旧 Key 递过去。
+    const sameEndpoint = baseOf(old.baseUrl || cfg.api?.baseUrl) === baseUrl;
+    key = (owned.owned || sameEndpoint ? owned.value : '') || key;
     const preset = imageGenServiceOfBaseUrl(baseUrl);
     if (preset?.shape !== 'pollinations') requireKey(key, '图片生成');
     return { imageGen: { ...old, baseUrl, model: entry.model,
       apiKey: key, apiKeyHost: key ? host : '', keys: { ...old.keys, ...(key ? { [host]: key } : {}) },
       // Provider-specific image arguments must not follow a switch to another API.
-      extraBody: baseOf(old.baseUrl || cfg.api?.baseUrl) === baseUrl ? old.extraBody : {}
+      extraBody: sameEndpoint ? old.extraBody : {}
     } };
   }
   throw Object.assign(new Error('未知的模型替换链。'), { httpStatus: 400 });

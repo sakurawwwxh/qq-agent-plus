@@ -291,7 +291,9 @@ async function transcribeInChunks(pcm, perChunk, { signal } = {}) {
 }
 
 export async function runProvider(cfg, pcm, { signal } = {}) {
-  let active = cfg;
+  // 插件能力走 runProvider(undefined, …)：先取当前配置，否则失败路径会在
+  // active.modelReplacement 上抛 TypeError，把真正的转写错误盖掉。
+  let active = cfg || getConfig();
   const replacement = createModelReplacement();
   const needsChunks = (piece) => {
     const provider = asrProvider(active);

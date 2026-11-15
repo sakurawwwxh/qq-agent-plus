@@ -450,3 +450,33 @@ test('final model quota429 goes to fallback without repeated futile calls or res
   assert.deepEqual(seen, ['D', 'A', 'F']); assert.equal(getConfig().api.model, 'A');
   assert.equal(getConfig().modelReplacement.chat.enabled, false);
 });
+
+test('plugin ASR path with undefined cfg keeps the provider error instead of TypeError', async (t) => {
+  const c = fixture();
+  // 插件能力调用 runProvider(undefined, …)：必须回落到当前配置，失败路径不能读 undefined.modelReplacement。
+  c.asr = { ...c.asr, apiKey: '', keys: {}, apiKeyProvider: '', apiKeyHost: '' };
+  updateConfig(c);
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('mock network down'); });
+  await assert.rejects(runProvider(undefined, Buffer.alloc(64000)), (error) => {
+    assert.notEqual(error.constructor.name, 'TypeError');
+    assert.match(error.message, /未配置语音识别服务的 API Key/);
+    return true;
+  });
+});
+
+test('legacy unbound media keys are reusable only on the same endpoint', () => {
+  const c = fixture();
+  c.imageGen = { ...c.imageGen, baseUrl: 'https://api.siliconflow.cn/v1', model: 'Kwai-Kolors/Kolors', apiKey: 'legacy-image-key', apiKeyHost: '', keys: {} };
+  const image = replacementCatalog(c, 'imageGen').find((g) => g.id === 'service:siliconflow').models[0];
+  assert.equal(replacementTargetPatch(c, 'imageGen', image).imageGen.apiKey, 'legacy-image-key');
+  const movedImage = structuredClone(c);
+  movedImage.imageGen.baseUrl = 'https://img.other.example/v1';
+  assert.throws(() => replacementTargetPatch(movedImage, 'imageGen', image), /密钥/);
+
+  c.asr = { ...c.asr, provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall', apiKey: 'legacy-asr-key', apiKeyProvider: '', apiKeyHost: '', keys: {} };
+  const asr = replacementCatalog(c, 'asr').find((g) => g.id === 'service:siliconflow').models[0];
+  assert.equal(replacementTargetPatch(c, 'asr', asr).asr.apiKey, 'legacy-asr-key');
+  const movedAsr = structuredClone(c);
+  movedAsr.asr.baseUrl = 'https://asr.other.example/v1';
+  assert.throws(() => replacementTargetPatch(movedAsr, 'asr', asr), /语音转文字/);
+});
