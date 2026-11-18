@@ -29,3 +29,15 @@ test('关闭 faceWrites 后提示词不再教 send_face，改用 emoji', () => {
   const on = buildSystemPrompt({ platform: { ...cfg.platform, faceWrites: true }, chatKey: 'group:1' });
   assert.match(on, /想表达情绪可以用 send_face/);
 });
+
+test('表情包开启时关闭 faceWrites，提示词只教 send_sticker / emoji，不教 send_face', () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.sticker = { ...cfg.sticker, enabled: true };
+  cfg.messageTypes = { ...cfg.messageTypes, images: true, stickers: true };
+  cfg.api = { ...cfg.api, vision: true };
+  setRuntimeConfig(cfg);
+  const off = buildSystemPrompt({ platform: { ...cfg.platform, faceWrites: false }, chatKey: 'group:1' });
+  assert.doesNotMatch(off, /想回同一个就用 send_face|可以用 send_face/);
+  assert.match(off, /send_face 不在工具表里/);
+  assert.match(off, /send_sticker/);
+});
