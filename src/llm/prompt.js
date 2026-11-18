@@ -228,7 +228,7 @@ function pokeLine(cardFirst = false) {
     : '【拍一拍】send_poke 可以发 QQ 拍一拍。收到消息里的 [拍一拍] 事件时可以自然回应（"？干嘛""再拍试试""哈哈"），也可以回一个拍一拍。有时也可以主动戳一下正在聊的人/熟人，像真人手贱一下反而更拟真；但别频繁。';
 }
 
-function stickerRules(grounded = false, cardFirst = false) {
+function stickerRules(grounded = false, cardFirst = false, faceOn = true) {
   // 活跃度档位直接改写策略段的频率行（引导统一在系统提示，不在"本次输入"重复）
   const cfg = getConfig();
   // 表情包总开关关掉时，orchestrator 会把 send_sticker / list_stickers / get_sticker_image /
@@ -236,7 +236,7 @@ function stickerRules(grounded = false, cardFirst = false) {
   // 一个必然失败的工具）—— 只保留与表情包无关的「拍一拍」。
   if (cfg.sticker?.enabled === false) {
     return [
-      '- 【系统设置覆盖角色设定】表情包功能已关闭：send_sticker / list_stickers / get_sticker_image / collect_sticker 都不在工具表里，即使角色设定提到也不要调用；想表达情绪可以用 send_face 发 QQ 系统表情。',
+      `- 【系统设置覆盖角色设定】表情包功能已关闭：send_sticker / list_stickers / get_sticker_image / collect_sticker 都不在工具表里，即使角色设定提到也不要调用；${faceOn ? '想表达情绪可以用 send_face 发 QQ 系统表情。' : '想表达情绪时直接在 send_message 正文里用 emoji（如 😅 🤔 👍）；send_face 不在工具表里，不要调用。'}`,
       '',
       pokeLine(cardFirst)
     ].join('\n');
@@ -284,6 +284,8 @@ function runGuidance(cardFirst = false) {
 
 function qqSceneRules(grounded = false, platform = null, chatKey = '', cardFirst = false) {
   const cfg = getConfig();
+  const plat = platform ?? cfg.platform ?? {};
+  const faceOn = platformGateAllowed('faceWrites', plat, chatKey);
   const vision = visionEnabled(cfg);
   // 视频画面还能再被「消息类型」页单独关掉（省一次抽帧 + 一次视觉调用）。
   // 提前算好：下面**每一处**提到"视频画面能看"的地方都要用它，漏一处就是"教了但工具不给"。
@@ -348,15 +350,24 @@ function qqSceneRules(grounded = false, platform = null, chatKey = '', cardFirst
     if (!canViewStickers) {
       stickerBits.push('- 【系统设置覆盖角色设定】「消息类型」里关闭了表情库看图：get_sticker_image 不在工具表里，即使角色设定提到它也无法调用；按备注名发送表情（send_sticker）不受影响。');
     }
+    const faceOffHint = 'send_face 不在工具表里，不要调用；想表达情绪直接在 send_message 正文里用 emoji（如 😅 🤔 👍）。';
     if (stickerOn) {
-      stickerBits.push(`- 消息里的 [QQ表情14 微笑] / [QQ表情489] 是对方发的 QQ 系统表情（编号是 QQ 表情编号，不是表情库的 stickerId）：想回同一个就用 send_face 传名字（如 微笑）；要发图片表情就用 send_sticker 传备注名（见【可用表情包】），别拿这个编号去 ${canViewStickers ? 'get_sticker_image / ' : ''}send_sticker。`);
-      stickerBits.push(cardFirst
-        ? '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪），也可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id）；都是一条只能一个表情、不能带文字。是否使用、频率与场景按角色设定。'
-        : '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪），也可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id）；都是一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。');
+      stickerBits.push(faceOn
+        ? `- 消息里的 [QQ表情14 微笑] / [QQ表情489] 是对方发的 QQ 系统表情（编号是 QQ 表情编号，不是表情库的 stickerId）：想回同一个就用 send_face 传名字（如 微笑）；要发图片表情就用 send_sticker 传备注名（见【可用表情包】），别拿这个编号去 ${canViewStickers ? 'get_sticker_image / ' : ''}send_sticker。`
+        : `- 消息里的 [QQ表情14 微笑] / [QQ表情489] 是对方发的 QQ 系统表情（编号是 QQ 表情编号，不是表情库的 stickerId）：${faceOffHint}要发图片表情就用 send_sticker 传备注名（见【可用表情包】），别拿这个编号去 ${canViewStickers ? 'get_sticker_image / ' : ''}send_sticker。`);
+      stickerBits.push(faceOn
+        ? (cardFirst
+          ? '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪），也可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id）；都是一条只能一个表情、不能带文字。是否使用、频率与场景按角色设定。'
+          : '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪），也可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id）；都是一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。')
+        : (cardFirst
+          ? '- 想表达情绪时可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id），或直接在 send_message 正文里用 emoji；都是一条只能一个表情、不能带文字。是否使用、频率与场景按角色设定。'
+          : '- 想表达情绪时可以用 send_sticker 发图库里的图片表情（stickerId 直接填备注名，不用背长 id），或直接在 send_message 正文里用 emoji；都是一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。'));
     } else {
-      stickerBits.push(cardFirst
-        ? '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪）；一条只能一个表情、不能带文字。是否使用、频率与场景按角色设定。'
-        : '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪）；一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。');
+      stickerBits.push(faceOn
+        ? (cardFirst
+          ? '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪）；一条只能一个表情、不能带文字。是否使用、频率与场景按角色设定。'
+          : '- 想表达情绪时可以用 send_face 发 QQ 系统表情（如 微笑 / 得意 / 流泪 / 玫瑰 / 汪汪）；一条只能一个表情、不能带文字。接梗、被逗笑、吐槽、无语、自嘲时，优先想一下有没有贴切的表情，该用就用，别连着刷。')
+        : `- ${faceOffHint}`);
     }
     if (collectOn && canViewImages) {
       stickerBits.push(`- 图库可以自己攒：别人发的表情包会自动进库（不用你操心）；你也可以主动存——看到有意思、能当表情用的图，先 get_message_images 看一眼，确认好玩就用 collect_sticker 存进去（顺手写一句备注）。${canViewStickers ? '库里没备注的图，用 list_stickers 找、get_sticker_image 看，再用 sticker_note 补一句备注，以后用 send_sticker 发更准。' : '看不到图的条目不会出现在清单里，也先不要给它编备注；按已有备注名挑选即可。'}挑真的会用的存，别什么都收。`);
@@ -383,7 +394,6 @@ function qqSceneRules(grounded = false, platform = null, chatKey = '', cardFirst
   // 逐键判定必须**带上本次会话**：按群覆盖（platform.perGroup）时，同一个群在这里判"教不教"、
   // 在 orchestrator 判"给不给工具"，两边用同一个 chatKey 才不会出现"教了用法但工具没有"。
   // 读/写是分开的键（2026-10-07 拆细）：只开一边时只教那一边。
-  const plat = platform ?? getConfig().platform ?? {};
   const gate = (key) => platformGateAllowed(key, plat, chatKey);
   const quotaLimit = (key) => platformQuotaLimit(getConfig(), key);
   {
@@ -513,10 +523,10 @@ function qqSceneRules(grounded = false, platform = null, chatKey = '', cardFirst
 /** 组装系统提示。 */
 // 收尾自检：模型最常见的失误是把想说的话写成最终文本、忘了调工具。
 // 放在系统提示最末尾（recency 位置），每次都最后读到。
-function closingDiscipline(cardFirst = false) {
+function closingDiscipline(cardFirst = false, faceOn = true) {
   // 举的发送工具例子要跟着开关走：表情包关掉时 send_sticker 已被摘，
   // 列在"只有调用过这些才算回了"里会指一个不存在的工具（2026-10-07 审计）。
-  const sendTools = ['send_message', ...(getConfig().sticker?.enabled !== false ? ['send_sticker'] : []), 'send_face'];
+  const sendTools = ['send_message', ...(getConfig().sticker?.enabled !== false ? ['send_sticker'] : []), ...(faceOn ? ['send_face'] : [])];
   return [
     '【发言与沉默 —— 每次结束前必读】',
     '1. 你没有聊天输入框。你写下的任何正文文本都是草稿纸，QQ 里永远看不到；对方能看到的字，只能从 send_message 里来。',
@@ -682,6 +692,7 @@ export function buildSystemPrompt({
   // 角色卡优先（Issue #40）：平台不再规定语气/节奏，只保留安全与工具/记忆等机制。
   // 三档的对比见 priorityNote()。
   const cardFirst = cfg.behaviorProfile === 'card';
+  const faceOn = platformGateAllowed('faceWrites', platformOverride ?? getConfig().platform ?? {}, chatKey);
   const voice = voiceLine(cfg);
   // 开场白只交代"名字"与平台基调；人格、口吻、身份交给【角色设定】 ——
   // 以前这里是「你是「小鲸鱼」，一个混在 QQ 群里的普通群友…」，选了别的角色卡之后
@@ -735,7 +746,7 @@ export function buildSystemPrompt({
     '',
     memoryRules(identityPilotAvailable, friendProposalAvailable),
     '',
-    stickerRules(grounded, cardFirst),
+    stickerRules(grounded, cardFirst, faceOn),
     '',
     qqSceneRules(grounded, platformOverride, chatKey, cardFirst),
     '',
@@ -785,7 +796,7 @@ export function buildSystemPrompt({
     }
     parts.push('', gameLines.join('\n'));
   }
-  parts.push('', closingDiscipline(cardFirst));
+  parts.push('', closingDiscipline(cardFirst, faceOn));
   return parts.join('\n');
 }
 

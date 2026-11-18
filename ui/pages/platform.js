@@ -20,6 +20,7 @@ import { state } from '../core/state.js';
 const GATE_SECTIONS = [
   ['像群友一样的小动作', '在群里做的动作，读的写的各占一行', [
     ['reactionsWrite', '贴表情回应'],
+    ['faceWrites', '发 QQ 系统表情（小黄脸）'],
     ['reactions', '看表情回应'],
     ['qqVoice', 'QQ 原生语音（群聊限定）'],
     ['profileWrites', '改个性签名 / 在线状态'],

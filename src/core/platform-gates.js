@@ -22,6 +22,7 @@ export const PLATFORM_TOOL_GATES = {
   ocr: ['read_image_text'],
   // ── 写 / 发 ──
   reactionsWrite: ['react_to_message'],
+  faceWrites: ['send_face'],
   qqVoice: ['send_qq_voice'],
   profileWrites: ['set_my_signature', 'set_my_status'],
   remarkWrites: ['set_remark'],
@@ -38,6 +39,7 @@ export const PLATFORM_TOOL_GATES = {
 export const PLATFORM_GATE_LABELS = {
   reactions: '看表情回应',
   reactionsWrite: '贴表情回应',
+  faceWrites: '发 QQ 系统表情（小黄脸）',
   qqVoice: 'QQ 原生语音',
   profileWrites: '改个性签名 / 在线状态',
   remarkWrites: '改好友/群备注',

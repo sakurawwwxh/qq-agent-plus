@@ -710,7 +710,7 @@ export const DEFAULT_CONFIG = {
   // （换头像、改昵称/个性说明、传相册）。拆细后的默认组合与拆分前逐项等价。
   platform: {
     reactions: true,        // 【读】看谁贴了什么表情（get_message_reactions；[贴表情] 记录一直会落存档）
-    reactionsWrite: true,   // 【写】给群里的消息贴表情（react_to_message）
+    reactionsWrite: true, faceWrites: true, // 【写】贴表情（react_to_message）/ 发 QQ 系统表情（send_face）
     qqVoice: true,          // QQ 原生 AI 语音（send_qq_voice）
     // QQ 语音音色（协议端 character_id，如 lucy-voice-laibixiaoxin=小新）。
     // 空 = 不固定：模型每次自己从协议端返回的角色目录里挑一个。

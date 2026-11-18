@@ -87,6 +87,9 @@ test('GET /api/platform/gates：键/标签/工具/默认取向与门控表同源
   assert.ok(gatesMod.PLATFORM_GATE_KEYS.includes('reactions') && gatesMod.PLATFORM_GATE_KEYS.includes('reactionsWrite'));
   assert.ok(!gatesMod.PLATFORM_TOOL_GATES.reactions.includes('react_to_message'));
   assert.ok(gatesMod.PLATFORM_TOOL_GATES.reactionsWrite.includes('react_to_message'));
+  assert.ok(gatesMod.PLATFORM_GATE_KEYS.includes('faceWrites'));
+  assert.deepEqual(gatesMod.PLATFORM_TOOL_GATES.faceWrites, ['send_face']);
+  assert.equal(gatesMod.PLATFORM_GATE_LABELS.faceWrites, '发 QQ 系统表情（小黄脸）');
 });
 
 test('GET /api/platform/quota-usage：默认空、消费后可见、上限改小立刻生效', async (t) => {
