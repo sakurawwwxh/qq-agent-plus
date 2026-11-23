@@ -4,9 +4,24 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { rmDirBestEffort } from './helpers/cleanup.mjs';
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-games-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
+// 单跑本文件时 os.tmpdir() 不会被 scripts/test-suite.mjs 重定向，跑完必须自己收。
+// 用 process.on('exit') 而不是 test.after：用例中途失败也能清到，且与
+// member-mentions / private-text-file 两个文件的写法一致。
+//
+// 但本文件每个用例都建一个 ChatStore（SQLite），句柄没关时 Windows 上 rmSync 必 EPERM，
+// 而 exit 回调里没有重试空间（rmDirBestEffort 的 maxRetries 也救不回来）。所以先把
+// 建出来的 store 记下来，退出时按相反顺序关掉再删目录。
+const openedStores = [];
+process.on('exit', () => {
+  for (const store of openedStores.reverse()) {
+    try { store.close(); } catch { /* 已关或未建完，忽略 */ }
+  }
+  rmDirBestEffort(dataDir);
+});
 
 fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
   runtime: { mode: 'active', paused: false },
@@ -33,6 +48,7 @@ function makeWorld({ rng = () => 0.42, limit = 6, players = 4, privateDm = false
     }
   });
   const store = new ChatStore(0, { dataDir, filename: `games-${Math.random().toString(36).slice(2)}.sqlite` });
+  openedStores.push(store);   // 退出时统一 close，否则 Windows 上删不掉 dataDir
   // 活跃成员（activeMembers 取的是 self=0 的最近发言者）
   for (let i = 1; i <= players; i += 1) {
     store.appendIncoming('group:1', {
