@@ -15,7 +15,7 @@ import { convertGifToStillStrip } from '../tools/image-downsample.js';
 import { sanitizeUserText, settleWithDeadline } from '../core/util.js';
 import { filterBlockedHistory } from '../core/blocklist.js';
 import { displayNameOf } from '../core/display-name.js';
-import { visibleImpressions } from '../core/memory-visibility.js';
+import { visibleImpressions } from '../core/memory-visibility.js'; import { vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { webSearch } from '../llm/web-search.js';
 import { fetchWebPage } from '../llm/web-page.js';
 import { buildMomentSystemPrompt, momentPersonaHash, MOMENT_PROMPT_VERSION } from '../llm/moment-prompt.js';
@@ -866,7 +866,7 @@ export class DailyMomentsManager {
       if (session) {
         record.sessionId = session.id;
         session.chatName = '每日动态';
-        session.model = getConfig().api?.model || '';
+        session.model = getConfig().api?.model || ''; session.feature = 'daily-moments';
         session.conversationMode = 'legacy';
       }
 
@@ -1457,11 +1457,11 @@ export class DailyMomentsManager {
         tools,
         toolChoice,
         temperature: 1,
-        purpose: 'write',   // 每日动态（说说）= 写作类任务
+        purpose: 'write', feature: 'daily-moments',   // 每日动态（说说）= 写作类任务
         signal,
         cacheKey: `qq-agent:daily-moments:${personaHash.slice(0, 24)}`
       });
-      model = response.model || model;
+      model = response.model || model; if (session) session.vendor = response.originBaseUrl ? vendorOfBaseUrl(getConfig(), response.originBaseUrl) : session.vendor;
       addUsage(usage, response.usage);
       usage.calls += 1;
       if (session) {

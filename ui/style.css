@@ -6799,7 +6799,7 @@ html[data-side-rail='1'] .tab .pending-badge { top: 3px; right: 4px; min-width: 
 .lm-empty { padding: 22px 12px; color: var(--muted); font-size: var(--fs-sm); line-height: 1.65; }
 
 .lm-detail-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.lm-detail-actions { display: flex; align-items: center; gap: 8px; }
+.lm-detail-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .lm-detail-card { max-width: 1000px; margin: 0 auto; padding: 20px; border: 1px solid var(--border); border-radius: var(--r-lg); background: color-mix(in srgb, var(--bg-2) 82%, transparent); box-shadow: var(--shadow-card); }
 .lm-detail-head { padding-bottom: 16px; border-bottom: 1px solid var(--border); }
 .lm-detail-chips { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }

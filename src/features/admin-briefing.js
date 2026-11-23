@@ -316,6 +316,7 @@ export class AdminBriefingManager {
         ],
         temperature: 0.7,
         purpose: 'write',
+        feature: 'admin-briefing',
         signal: controller?.signal
       });
       try {

@@ -13,7 +13,8 @@ const MEMORY_TEXT_COLUMNS = [
   'id', 'scope_key', 'type', 'status', 'summary', 'content', 'importance', 'confidence',
   'tags_json', 'topics_json', 'key_facts_json', 'participants_json', 'sentiment',
   'source_json', 'entities_json', 'relations_json', 'vector_status', 'vector_error',
-  'embedding_model', 'vector_dimensions', 'created_at', 'updated_at', 'expires_at', 'archived_at'
+  'embedding_model', 'vector_dimensions', 'created_at', 'updated_at', 'expires_at', 'archived_at',
+  'pinned', 'feedback', 'feedback_at'
 ].join(', ');
 const MAX_TURNS = 5000;
 const MAX_TURN_PAYLOAD_CHARS = 16000;
@@ -92,7 +93,10 @@ function rowToMemory(row) {
     createdAt: Number(row.created_at) || 0,
     updatedAt: Number(row.updated_at) || 0,
     expiresAt: Number(row.expires_at) || 0,
-    archivedAt: Number(row.archived_at) || 0
+    archivedAt: Number(row.archived_at) || 0,
+    pinned: Number(row.pinned) === 1,
+    feedback: ['useful', 'not-useful'].includes(row.feedback) ? row.feedback : '',
+    feedbackAt: Number(row.feedback_at) || 0
   };
 }
 
@@ -164,7 +168,10 @@ export class LivingMemoryStore {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL DEFAULT 0,
-        archived_at INTEGER NOT NULL DEFAULT 0
+        archived_at INTEGER NOT NULL DEFAULT 0,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        feedback TEXT NOT NULL DEFAULT '',
+        feedback_at INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_memories_scope_status_updated
         ON memories(scope_key, status, updated_at DESC);
@@ -208,6 +215,9 @@ export class LivingMemoryStore {
     if (!columns.has('topics_json')) this.db.exec("ALTER TABLE memories ADD COLUMN topics_json TEXT NOT NULL DEFAULT '[]'");
     if (!columns.has('key_facts_json')) this.db.exec("ALTER TABLE memories ADD COLUMN key_facts_json TEXT NOT NULL DEFAULT '[]'");
     if (!columns.has('participants_json')) this.db.exec("ALTER TABLE memories ADD COLUMN participants_json TEXT NOT NULL DEFAULT '[]'");
+    if (!columns.has('pinned')) this.db.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+    if (!columns.has('feedback')) this.db.exec("ALTER TABLE memories ADD COLUMN feedback TEXT NOT NULL DEFAULT ''");
+    if (!columns.has('feedback_at')) this.db.exec('ALTER TABLE memories ADD COLUMN feedback_at INTEGER NOT NULL DEFAULT 0');
     if (!columns.has('sentiment')) this.db.exec("ALTER TABLE memories ADD COLUMN sentiment TEXT NOT NULL DEFAULT 'neutral'");
   }
 
@@ -235,11 +245,17 @@ export class LivingMemoryStore {
       entities: jsonArray(raw?.entities, 32, 80),
       relations: Array.isArray(raw?.relations) ? raw.relations.slice(0, 64) : [],
       expiresAt: Math.max(0, Number(raw?.expiresAt) || 0),
-      embeddingModel: asText(raw?.embeddingModel, 200)
+      embeddingModel: asText(raw?.embeddingModel, 200),
+      pinned: raw?.pinned === true || raw?.pinned === 1,
+      feedback: ['useful', 'not-useful'].includes(raw?.feedback) ? raw.feedback : '',
+      feedbackAt: Math.max(0, Number(raw?.feedbackAt) || 0)
     };
     if (!scopeList([memory.scopeKey]).length) throw new Error('scopeKey 必须是 group:<QQ号>、private:<QQ号> 或 owner-global');
     if (!memory.summary || !memory.content) throw new Error('记忆摘要与正文不能为空');
     const previous = this.getMemory(memory.id);
+    // 提炼/编辑不传这两个字段时必须保留原值，否则每条记忆更新都会把置顶和反馈清掉。
+    if (previous && raw?.pinned === undefined) memory.pinned = previous.pinned;
+    if (previous && raw?.feedback === undefined) { memory.feedback = previous.feedback; memory.feedbackAt = previous.feedbackAt; }
     const previousVector = previous?.vectorStatus === 'ready' ? this.getVectorRow(memory.id) : null;
     const createdAt = previous?.createdAt || time;
     const archivedAt = memory.status === 'archived' ? (previous?.archivedAt || time) : 0;
@@ -263,8 +279,8 @@ export class LivingMemoryStore {
         tags_json, topics_json, key_facts_json, participants_json, sentiment,
         source_json, entities_json, relations_json, search_text,
         vector_status, vector_error, embedding_model, vector_blob, vector_dimensions,
-        created_at, updated_at, expires_at, archived_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, expires_at, archived_at, pinned, feedback, feedback_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         scope_key=excluded.scope_key, type=excluded.type, status=excluded.status,
         summary=excluded.summary, content=excluded.content, importance=excluded.importance,
@@ -275,14 +291,15 @@ export class LivingMemoryStore {
         vector_status=excluded.vector_status, vector_error=excluded.vector_error,
         embedding_model=excluded.embedding_model, vector_blob=excluded.vector_blob,
         vector_dimensions=excluded.vector_dimensions, updated_at=excluded.updated_at,
-        expires_at=excluded.expires_at, archived_at=excluded.archived_at
+        expires_at=excluded.expires_at, archived_at=excluded.archived_at,
+        pinned=excluded.pinned, feedback=excluded.feedback, feedback_at=excluded.feedback_at
     `).run(
       data.id, data.scopeKey, data.type, data.status, data.summary, data.content,
       data.importance, data.confidence, stableJson(data.tags), stableJson(data.topics), stableJson(data.keyFacts), stableJson(data.participants), data.sentiment,
       stableJson(data.source),
       stableJson(data.entities), stableJson(data.relations), data.searchText,
       data.vectorStatus, data.vectorError, data.embeddingModel, data.vectorBlob, data.vectorDimensions, data.createdAt,
-      data.updatedAt, data.expiresAt, data.archivedAt
+      data.updatedAt, data.expiresAt, data.archivedAt, data.pinned ? 1 : 0, data.feedback, data.feedbackAt
     );
     const saved = this.getMemory(data.id);
     const version = Number(this.db.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM memory_versions WHERE memory_id = ?').get(saved.id)?.version || 0) + 1;
@@ -358,7 +375,7 @@ export class LivingMemoryStore {
     const total = Number(this.db.prepare(`SELECT COUNT(*) AS count FROM memories WHERE ${where}`).get(...values)?.count) || 0;
     const safeLimit = clampInt(limit, 1, 200, 50);
     const safeOffset = clampInt(offset, 0, 10_000_000, 0);
-    const rows = this.db.prepare(`SELECT * FROM memories WHERE ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
+    const rows = this.db.prepare(`SELECT * FROM memories WHERE ${where} ORDER BY pinned DESC, updated_at DESC LIMIT ? OFFSET ?`)
       .all(...values, safeLimit, safeOffset);
     return { total, entries: rows.map(rowToMemory) };
   }
@@ -447,7 +464,7 @@ export class LivingMemoryStore {
     return rows.map(rowToMemory);
   }
 
-  setVectorState(id, { status, error = '', model = '', vector = null, preserveUpdatedAt = false } = {}) {
+  setVectorState(id, { status, error = '', model = '', vector = null, preserveUpdatedAt = false, expectedUpdatedAt = 0 } = {}) {
     const nextStatus = ['pending', 'ready', 'stale', 'error', 'none'].includes(status) ? status : 'error';
     const packed = nextStatus === 'ready' ? packVector(vector) : null;
     const dimensions = packed ? Math.floor(packed.length / 4) : 0;
@@ -457,9 +474,13 @@ export class LivingMemoryStore {
     const values = [storedStatus, vectorError, asText(model, 200), packed, dimensions];
     if (!preserveUpdatedAt) values.push(now());
     values.push(asText(id, 100));
+    // Embedding 是异步的：写回前若卡片正文已被另一次 upsert 改过（updated_at 变化），
+    // 这枚旧向量必须丢弃，不能盖掉新正文对应的向量。
+    const expect = Number(expectedUpdatedAt) || 0;
+    if (expect) values.push(expect);
     this.db.prepare(`UPDATE memories
       SET vector_status = ?, vector_error = ?, embedding_model = ?, vector_blob = ?, vector_dimensions = ?${updatedClause}
-      WHERE id = ?`)
+      WHERE id = ?${expect ? ' AND updated_at = ?' : ''}`)
       .run(...values);
     return this.getMemory(id);
   }
@@ -515,6 +536,25 @@ export class LivingMemoryStore {
     return this.getMemory(memory.id);
   }
 
+  /** 置顶显示并提高召回权重；取消置顶不影响其他字段。 */
+  pinMemory(id, pinned) {
+    const memory = this.getMemory(id);
+    if (!memory) return null;
+    this.db.prepare('UPDATE memories SET pinned = ?, updated_at = ? WHERE id = ?')
+      .run(pinned === true ? 1 : 0, now(), memory.id);
+    return this.getMemory(memory.id);
+  }
+
+  /** 人工反馈“有用/没用”：只影响排序权重，不删除内容。 */
+  feedbackMemory(id, feedback) {
+    const value = feedback === 'useful' || feedback === 'not-useful' ? feedback : '';
+    const memory = this.getMemory(id);
+    if (!memory) return null;
+    this.db.prepare('UPDATE memories SET feedback = ?, feedback_at = ?, updated_at = ? WHERE id = ?')
+      .run(value, now(), now(), memory.id);
+    return this.getMemory(memory.id);
+  }
+
   unarchiveMemory(id) {
     const memory = this.getMemory(id);
     if (!memory) return null;
@@ -539,6 +579,31 @@ export class LivingMemoryStore {
     this.db.prepare('INSERT INTO turns (id, scope_key, session_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
       .run(row.id, row.scopeKey, row.sessionId, cappedJson(row.payload), row.createdAt);
     return { ...row };
+  }
+
+  /** 撤回同步：把已落库的来源回合里对应平台 mid 的正文改成占位。 */
+  redactTurnMessage(scopeKey, mid) {
+    const scope = asText(scopeKey, 80);
+    const target = asText(mid, 100);
+    if (!scope || !target) return 0;
+    const rows = this.db.prepare('SELECT id, payload_json FROM turns WHERE scope_key = ?').all(scope);
+    const update = this.db.prepare('UPDATE turns SET payload_json = ? WHERE id = ?');
+    let changed = 0;
+    for (const row of rows) {
+      const payload = parseJson(row.payload_json, null);
+      if (!payload || !Array.isArray(payload.lines)) continue;
+      let hit = false;
+      for (const line of payload.lines) {
+        if (String(line?.mid ?? '') !== target || line.text === '[消息已撤回]') continue;
+        line.text = '[消息已撤回]';
+        hit = true;
+      }
+      if (hit) {
+        update.run(cappedJson(payload), row.id);
+        changed += 1;
+      }
+    }
+    return changed;
   }
 
   pruneExpired() {

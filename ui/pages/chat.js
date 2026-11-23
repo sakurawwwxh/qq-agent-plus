@@ -963,12 +963,12 @@ async function selectChat(key) {
  *    用户辛辛苦苦滚出来的内容会瞬间被刷回前 500 条，滚动位置也回到顶部
  *    —— 表现为"明明滚下去了，过一会儿自己弹回上面"。
  */
-async function loadChatMessages(key, { keepView = false } = {}) {
+async function loadChatMessages(key, { keepView = false, refreshAll = false } = {}) {
   // 注册给滚动加载器（模块求值期不碰 state：真 ESM 环境里有 TDZ / 环引用风险）
   state.chatLoadOlder = loadOlderChatMessages;
   try {
     const base = `/api/chats/${key.replace(':', '_')}/messages`;
-    if (keepView && (state.chatMessages || []).length) {
+    if (keepView && !refreshAll && (state.chatMessages || []).length) {
       // 轮询只取"比当前最新一条更新的"，不再整页重拉（否则已加载的更早分页会被冲掉）
       const lastId = Number(state.chatMessages[state.chatMessages.length - 1]?.id) || 0;
       const data = await api(`${base}?limit=${CHAT_MSG_PAGE}&after=${lastId}`);
@@ -987,12 +987,22 @@ async function loadChatMessages(key, { keepView = false } = {}) {
       return;
     }
 
-    const data = await api(`${base}?limit=${CHAT_MSG_PAGE}`);
+    // 撤回改的是旧行：按当前已加载的条数重拉一次，只换表体、保留滚动位置，
+    // 不能退回第一页再用 renderChatMessages 重建整块（会丢已加载的更早分页）。
+    const limit = refreshAll
+      ? Math.min(2000, Math.max(CHAT_MSG_PAGE, Number(state.chatMsgLimit) || CHAT_MSG_PAGE))
+      : CHAT_MSG_PAGE;
+    const data = await api(`${base}?limit=${limit}`);
     // 期间用户可能切走了会话，那就别覆盖当前视图
     if (state.currentChatKey !== key) return;
     state.chatMessages = data.messages || [];
     state.chatHasMore = data.hasMore === true;
     state.chatNextBefore = Number(data.nextBefore) || 0;
+    if (refreshAll) {
+      updateChatMessagesBody(true);
+      void loadChatDecisionHistory(key);
+      return;
+    }
     state.chatMsgLimit = CHAT_MSG_PAGE;
     renderChatMessages();
     void loadChatDecisionHistory(key);
@@ -1053,11 +1063,27 @@ function renderChatDecision(decision) {
     <span>${esc(decision.reason || '未触发')} · 档位 ${esc(decision.tier ?? '-')} · 概率 ${esc(decision.percent ?? 0)}% · 待处理 ${esc(decision.pendingCount ?? 0)} 条${hits.length ? ` · 命中 ${esc(hits.join('/'))}` : ''}${budget}${burst}</span></div>`;
 }
 
+function renderChatPacing(pacing) {
+  if (!pacing?.applies) return '';
+  const kindLabels = { paced: '自主节奏', followUp: '补话', selfWake: '模型自安排' };
+  const kind = kindLabels[pacing.nextWakeKind] || pacing.nextWakeKind || '主动唤醒';
+  const next = pacing.nextWakeAt
+    ? `${fmtTime(pacing.nextWakeAt)}（${kind}${pacing.nextWakeNote ? '，带留言' : ''}）`
+    : '未安排';
+  const skip = pacing.lastSkipReason
+    ? ` · 最近跳过：${esc(pacing.lastSkipReason)}${pacing.lastSkipAt ? `（${esc(fmtTime(pacing.lastSkipAt))}）` : ''}`
+    : '';
+  return `<div class="hint" id="chat-pacing-status">自主节奏：下次唤醒 ${esc(next)}${skip}</div>`;
+}
+
 function updateChatDecisionHeader() {
   const host = $('#chat-decision-host');
   if (!host || !state.currentChatKey) return;
   const meta = state.chats.find((c) => c.key === state.currentChatKey) || {};
   host.innerHTML = renderChatDecision(meta.lastDecision);
+  const pacing = $('#chat-pacing-status');
+  if (pacing) pacing.outerHTML = renderChatPacing(meta.pacing);
+  else if (meta.pacing?.applies) host.insertAdjacentHTML('afterend', renderChatPacing(meta.pacing));
 }
 
 function renderChatMessages() {
@@ -1080,8 +1106,14 @@ function renderChatMessages() {
       <h2>${esc(name)} ${meta.unread ? `<span class="unread-pill">${meta.unread} 未读</span>` : ''}</h2>
       <div class="sub"><span data-field="chat-msg-count"></span><span>${esc(threadStatus)}</span></div>
       <div id="chat-decision-host">${renderChatDecision(meta.lastDecision)}</div>
+      ${renderChatPacing(meta.pacing)}
       <details id="chat-decision-history" class="hint" style="margin-top:6px">
         <summary style="cursor:pointer">最近决策记录</summary>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">
+          <input type="text" id="chat-decision-filter-mid" placeholder="按消息 id 过滤" style="max-width:180px" />
+          <input type="text" id="chat-decision-filter-reason" placeholder="按原因过滤（如：概率）" style="max-width:200px" />
+          <button type="button" class="btn btn-small" id="chat-decision-filter-apply">筛选</button>
+        </div>
         <div data-chat-decisions><div class="hint">加载中…</div></div>
       </details>
     </div>

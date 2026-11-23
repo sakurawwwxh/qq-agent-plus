@@ -38,8 +38,15 @@ export function createModelReplacement(options = {}) {
       }
       const candidate = { ...current, ...target };
       const last = !chain.entries.slice(i + 1).some(Boolean);
+      const switchedAt = now();
+      // 最近 20 次切换（新→旧）：控制台能看到"哪条链、从哪个模型、因为什么错误切到哪"。
+      // 只存模型名和状态码，不落端点/密钥。
+      const history = [{
+        at: switchedAt, model: entry.model, fromModel: String(chain.lastModel || ''),
+        status: Number(reason?.status) || 0, index: i
+      }, ...(chain.history || [])].slice(0, 20);
       const updated = { ...chain, nextIndex: i + 1, enabled: !last,
-        revision: chain.revision + 1, lastSwitchAt: now(), lastModel: entry.model };
+        revision: chain.revision + 1, lastSwitchAt: switchedAt, lastModel: entry.model, history };
       const patch = { modelReplacement: { [channel]: updated } };
       for (const [section, value] of Object.entries(target)) patch[section] = { __replace__: value };
       const saved = write(patch);

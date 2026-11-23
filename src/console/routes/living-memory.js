@@ -131,6 +131,45 @@ export function registerLivingMemoryRoutes(router, deps = {}) {
       return json(res, 200, result);
     } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
   });
+  router.add('POST', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/pin$/, async (req, res, params) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (typeof body?.pinned !== 'boolean') return json(res, 400, { ok: false, error: '请提交 pinned 布尔值' });
+    try {
+      const result = await livingMemory.pin(params[1], body.pinned);
+      auditWrite('living-memory.pin', `living-memory:${params[1]}`, { req, pinned: body.pinned });
+      emit('living-memory-update', { phase: 'pin', memoryId: params[1], pinned: body.pinned });
+      return json(res, 200, result);
+    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
+  });
+  router.add('POST', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/feedback$/, async (req, res, params) => {
+    const body = await readBody(req).catch(() => ({}));
+    const feedback = body?.feedback === 'useful' || body?.feedback === 'not-useful' ? body.feedback : '';
+    if (body?.feedback !== undefined && !['', 'useful', 'not-useful'].includes(body.feedback)) {
+      return json(res, 400, { ok: false, error: 'feedback 只能是 useful / not-useful / 空' });
+    }
+    try {
+      const result = await livingMemory.feedback(params[1], feedback);
+      auditWrite('living-memory.feedback', `living-memory:${params[1]}`, { req, feedback });
+      emit('living-memory-update', { phase: 'feedback', memoryId: params[1], feedback });
+      return json(res, 200, result);
+    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
+  });
+  router.add('GET', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/duplicates$/, async (req, res, params) => {
+    try { return json(res, 200, { ok: true, ...livingMemory.duplicates(params[1]) }); }
+    catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
+  });
+  router.add('POST', /^\/api\/living-memory\/memories\/([0-9A-Za-z-]+)\/merge$/, async (req, res, params) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (body?.confirm !== true) return json(res, 409, { ok: false, error: '合并长期记忆需要 body.confirm === true' });
+    const sourceIds = Array.isArray(body.sourceIds) ? body.sourceIds.slice(0, 20).map(String) : [];
+    if (!sourceIds.length) return json(res, 400, { ok: false, error: '请选择要合并的记忆' });
+    try {
+      const result = await livingMemory.merge(params[1], sourceIds);
+      auditWrite('living-memory.merge', `living-memory:${params[1]}`, { req, sourceIds });
+      emit('living-memory-update', { phase: 'merge', memoryId: params[1], sourceIds });
+      return json(res, 200, result);
+    } catch (error) { return json(res, 400, { ok: false, error: String(error?.message ?? error) }); }
+  });
   router.add('GET', '/api/living-memory/graph', async (req, res, params, url) => {
     const scopes = livingMemoryScopes(url.searchParams.getAll('scopeKey'));
     if (!scopes.length) return json(res, 400, { ok: false, error: '至少提供一个 scopeKey' });

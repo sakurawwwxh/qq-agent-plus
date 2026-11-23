@@ -394,7 +394,7 @@ async function hydratePlatformGates() {
         // 输入框回填服务端的**生效上限**：被夹过的值（手填 999 → 存 200）与
         // "配置里没这项、按默认走"两种情况都在这里显示成真实生效的数字。
         const input = document.getElementById(`cfg-platform-quota-${el.dataset.quotaUsed}`);
-        if (input) input.value = String(info.limit);
+        if (input && !state.settingsDirty && document.activeElement !== input) input.value = String(info.limit);
       }
     }).catch(() => {
       for (const el of quotaSlots) el.textContent = '用量没读到';

@@ -185,7 +185,7 @@ export async function testModelChat({ baseUrl, apiKey, model }) {  assertTimeAll
  *   - 档位接受度：400 报错里若列出合法枚举（如 Command Code 的 "expected one of low|medium|high|xhigh|max"），解析出来缓存。
  * 结果落盘到 provider.thinkingProbe，控制台据此显示「已实测」标记。
  */
-export async function probeThinking({ providerId = '', baseUrl = '', apiKey = '', model = '', thinking = undefined, extraBody = undefined } = {}) {
+export async function probeThinking({ providerId = '', baseUrl = '', apiKey = '', model = '', thinking = undefined, extraBody = undefined, useSavedParams = true } = {}) {
   assertTimeAllowed('');
   const cfg = getConfig();
   let p = currentProviders().find((x) => x.id === providerId) || null;
@@ -214,11 +214,14 @@ export async function probeThinking({ providerId = '', baseUrl = '', apiKey = ''
   //  - 选择是 off / 未设(on)：测"这个渠道能不能关掉思考" → canDisable 有结论（含近似档说明）；
   //  - 选择是具体档位：只报"该档位实发与思考 token"，不下"可关闭"的结论。
   const testingOff = intent === 'on' || intent === 'off';
-  const resolved = resolveThinkingPatch(serviceId, testingOff ? 'off' : intent, cfg?.api?.thinkingParams);
+  // 已保存的 thinkingParams / extraBody 只属于当前主渠道。探测别的地址时不能把它们
+  // 当成"真正会发出去的参数"（里面可能有 authorization 等密钥）。
+  const savedThinkingParams = useSavedParams ? cfg?.api?.thinkingParams : undefined;
+  const resolved = resolveThinkingPatch(serviceId, testingOff ? 'off' : intent, savedThinkingParams);
   const sendPatch = resolved?.patch || null;
   const offPatch = testingOff ? sendPatch : null;
   const approx = resolved?.approx === true;
-  const extra = (extraBody !== undefined ? extraBody : cfg?.api?.extraBody);
+  const extra = extraBody !== undefined ? extraBody : (useSavedParams ? cfg?.api?.extraBody : undefined);
   const body = {
     model: modelId,
     messages: [{ role: 'user', content: '只回复数字：1+1=?' }],
@@ -404,10 +407,18 @@ export function upsertProvider({ baseUrl, apiKey, models = [], preset = '' }) {
   // 此前却只建目录不切换 —— 用户添加完看到「尚未选择模型」+ 空的模型目录框）。
   // api.baseUrl 一并同步：控制台地址框回显与思考设置的归属键都读它，不同步会出现
   // "界面显示旧地址、思考设置写到旧 host"（审查 2026-09-28）。
+  const previousHost = hostOf(getConfig()?.api?.baseUrl || '');
+  const nextHost = hostOf(base);
   updateConfig({
     providers,
     ...(apiKey ? { providerKeys: keys } : {}),
-    api: { provider: id, model: entries[0]?.id || '', baseUrl: base }
+    api: {
+      provider: id, model: entries[0]?.id || '', baseUrl: base,
+      // 换主机时旧渠道的额外请求头/思考映射可能带着上一家的凭据，必须清掉。
+      ...(nextHost !== previousHost
+        ? { extraBody: { __replace__: {} }, thinkingParams: { __replace__: {} } }
+        : {})
+    }
   });
   return { provider: withResolvedKey(provider), created: true };
 }

@@ -908,7 +908,7 @@ export class SessionRegistry {
       cachedTokens: Number(s.usage?.cachedTokens) || 0,
       runs: 1,
       webSearchCount: Number(s.webSearchCount) || 0
-    }, { model: s.model, vendor: s.vendor, feature: 'chat' });
+    }, { model: s.model, vendor: s.vendor, feature: s.feature || 'chat' });
   }
 
   /**

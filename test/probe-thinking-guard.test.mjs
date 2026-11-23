@@ -30,10 +30,13 @@ const makeTarget = () => http.createServer((req, res) => {
 });
 const knownTarget = makeTarget();
 const otherTarget = makeTarget();
+const unknownTarget = makeTarget();
 await new Promise((r) => knownTarget.listen(0, '127.0.0.1', r));
 await new Promise((r) => otherTarget.listen(0, '127.0.0.1', r));
+await new Promise((r) => unknownTarget.listen(0, '127.0.0.1', r));
 const knownBase = `http://127.0.0.1:${knownTarget.address().port}/v1`;
 const otherBase = `http://127.0.0.1:${otherTarget.address().port}/v1`;
+const unknownBase = `http://127.0.0.1:${unknownTarget.address().port}/v1`;
 
 fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
   // 已知地址 = api.baseUrl 指向 knownTarget；otherTarget 端口不同 = 未知地址。
@@ -42,7 +45,13 @@ fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({
     const s = http.createServer();
     s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
   }), host: '127.0.0.1' },
-  api: { baseUrl: knownBase, apiKey: 'stored-key-123', model: 'm1' }
+  api: {
+    baseUrl: knownBase, apiKey: 'stored-key-123', model: 'm1',
+    extraBody: { 'x-saved-secret': 'saved-extra-secret' },
+    thinkingParams: { off: { x_saved_thinking: 'saved-thinking-secret' } }
+  },
+  providers: [{ id: 'other', baseURL: otherBase, models: ['m1'] }],
+  providerKeys: { other: 'other-key-456' }
 }));
 
 const { createApp } = await import('../src/console/app.js');
@@ -59,21 +68,29 @@ const probeHits = () => seen.filter((e) => e.body.includes('1+1='));
 
 test('未知地址不回退已存 Key；已知地址才带上', async () => {
   // 未知地址：绝对不能把 stored-key 发出去
-  const r1 = await postProbe(otherBase);
+  const r1 = await postProbe(unknownBase);
   assert.equal(r1.status, 200);
   const j1 = await r1.json();
   assert.equal(j1.ok, true);
   assert.equal(probeHits().length, 1);
   assert.equal(probeHits().at(-1).auth, '', '已存 Key 不得发往未配置的地址');
+  assert.equal(probeHits().at(-1).body.includes('saved-extra-secret'), false, '主渠道 extraBody 不得发往未知地址');
+  assert.equal(probeHits().at(-1).body.includes('saved-thinking-secret'), false, '主渠道 thinkingParams 不得发往未知地址');
   assert.equal(probeHits().at(-1).url, '/v1/chat/completions');
 
-  // 已知地址（= api.baseUrl）：才回退到已存 Key
-  const r2 = await postProbe(knownBase);
+  // 另一个已登记 provider：只能用它自己的 Key
+  const r2 = await postProbe(otherBase);
   assert.equal(r2.status, 200);
-  const j2 = await r2.json();
-  assert.equal(j2.ok, true);
-  assert.ok(probeHits().length >= 2);
+  assert.equal((await r2.json()).ok, true);
+  assert.match(probeHits().at(-1).auth, /^Bearer other-key-456$/);
+  assert.equal(probeHits().at(-1).url, '/v1/chat/completions');
+
+  // 当前主地址：回退到当前主 Key
+  const r3 = await postProbe(knownBase);
+  assert.equal(r3.status, 200);
+  assert.equal((await r3.json()).ok, true);
   assert.match(probeHits().at(-1).auth, /^Bearer stored-key-123$/);
+  assert.equal(probeHits().at(-1).body.includes('saved-extra-secret'), true, '探测当前主渠道仍应带上已保存的 extraBody');
   assert.equal(probeHits().at(-1).url, '/v1/chat/completions');
 });
 
@@ -81,5 +98,6 @@ test.after(async () => {
   try { await app.stop(); } catch { /* 已停 */ }
   knownTarget.close();
   otherTarget.close();
+  unknownTarget.close();
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* Windows 句柄未放就留着 */ }
 });

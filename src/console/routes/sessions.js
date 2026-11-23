@@ -52,6 +52,7 @@ export function registerSessionRoutes(router, deps = {}) {
         key,
         ...meta,
         lastDecision: orchestrator.decisionFor(key),
+        pacing: orchestrator.pacingStatus?.(key) || null,
         incidentControl: incidentPilot?.getChatControl(key) || null,
         incidentDecision: incidentPilot?.chatDecision(key, meta) || null,
         ...(cfgNow.timeControl?.enabled
@@ -78,7 +79,12 @@ export function registerSessionRoutes(router, deps = {}) {
     const chatKey = String(url.searchParams.get('chatKey') || '').trim();
     if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
     const limit = Math.max(1, Math.min(50, Number(url.searchParams.get('limit')) || 20));
-    return json(res, 200, { ok: true, chatKey, decisions: orchestrator.decisionsFor(chatKey, limit) });
+    const mid = String(url.searchParams.get('mid') || '').trim().slice(0, 80);
+    const reason = String(url.searchParams.get('reason') || '').trim().slice(0, 120);
+    let decisions = orchestrator.decisionsFor(chatKey, mid || reason ? 50 : limit);
+    if (mid) decisions = decisions.filter((item) => (item.messageIds || []).map(String).includes(mid));
+    if (reason) decisions = decisions.filter((item) => String(item.reason || '').includes(reason));
+    return json(res, 200, { ok: true, chatKey, decisions: decisions.slice(0, limit) });
   });
   router.add('POST', '/api/pause', async (req, res) => {
     const body = await readBody(req);

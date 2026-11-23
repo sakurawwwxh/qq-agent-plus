@@ -23,3 +23,9 @@ test('备份状态里的 restoreCli 带实际数据目录与服务名', async (t
   assert.ok(cmd.includes("--service 'custom.service'"), cmd);
   assert.ok(cmd.trim().endsWith('--confirm'), cmd);
 });
+
+test('控制台备份校验走真实 drill（config/SQLite），不是 restore --dry-run 的假绿', () => {
+  const route = fs.readFileSync(path.resolve('src/console/routes/backup.js'), 'utf8');
+  assert.match(route, /'backup', '--drill', '--from'/, '校验端点必须调用 backup --drill');
+  assert.doesNotMatch(route, /'restore', '--from', full, '--dry-run'/, 'restore --dry-run 只列条目，不能当可恢复性校验');
+});

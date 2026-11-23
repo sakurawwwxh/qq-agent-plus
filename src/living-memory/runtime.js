@@ -177,6 +177,7 @@ export class LivingMemoryRuntime {
     this.pruneTimer = null;
     this.stopped = false;
     this.inFlight = new Set();
+    this.memoryLock = Promise.resolve();
   }
 
   config() { return normalizeLivingMemoryConfig(this.getConfig()?.livingMemory); }
@@ -278,10 +279,34 @@ export class LivingMemoryRuntime {
     if (!text || redactionReason(text)) return;
     void this.#queueCapture(chatKey, '', [{
       role: 'user', text, senderName: cleanText(message.senderName, 80),
-      senderId: cleanText(message.senderId, 40), ts: Number(message.ts) || Date.now()
+      senderId: cleanText(message.senderId, 40), ts: Number(message.ts) || Date.now(),
+      mid: cleanText(message.mid, 100)
     }]).catch((error) => {
       this.log(`[living-memory] 采集跳过：${error?.message || error}`);
     });
+  }
+
+  /** 撤回同步：处理待提炼批次和已落库来源回合里的原文（已生成的卡片无法可靠回溯）。 */
+  redactRecalled(chatKey, mid) {
+    const key = String(chatKey || '');
+    const target = String(mid ?? '');
+    if (!key || !target) return 0;
+    let changed = 0;
+    for (const turn of this.pending.get(key) || []) {
+      for (const line of turn.lines || []) {
+        if (String(line?.mid ?? '') !== target || line.text === '[消息已撤回]') continue;
+        line.text = '[消息已撤回]';
+        changed += 1;
+      }
+    }
+    try {
+      const service = this.#service({ create: false });
+      if (service?.store?.redactTurnMessage) changed += service.store.redactTurnMessage(key, target);
+    } catch (error) {
+      this.log(`[living-memory] 撤回同步失败：${error?.message || error}`);
+    }
+    if (changed) this.emit('living-memory-update', { chatKey: key, phase: 'recall', count: changed });
+    return changed;
   }
 
   async #captureTurn({ chatKey, sessionId = '', triggerEntries = [], sent = [] } = {}) {
@@ -290,7 +315,7 @@ export class LivingMemoryRuntime {
     if (!this.applies(chatKey) || cfg.autoCapture === false) return;
     const allCapture = cfg.captureAllMessages === true;
     const lines = [
-      ...(allCapture ? [] : (triggerEntries || []).filter((entry) => !entry?.self).map((entry) => ({ role: 'user', text: cleanText(entry?.text, 1200), senderName: cleanText(entry?.senderName, 80), senderId: cleanText(entry?.senderId, 40), ts: Number(entry?.ts) || Date.now() }))),
+      ...(allCapture ? [] : (triggerEntries || []).filter((entry) => !entry?.self).map((entry) => ({ role: 'user', text: cleanText(entry?.text, 1200), senderName: cleanText(entry?.senderName, 80), senderId: cleanText(entry?.senderId, 40), ts: Number(entry?.ts) || Date.now(), mid: cleanText(entry?.mid, 100) }))),
       ...(sent || []).map((entry) => ({ role: 'assistant', text: cleanText(entry?.text || entry?.content || '', 1200), senderName: '机器人', senderId: 'self', ts: Date.now() }))
     ].filter((entry) => entry.text && !redactionReason(entry.text));
     // With passive capture enabled, user lines were already queued at ingress;
@@ -370,7 +395,8 @@ export class LivingMemoryRuntime {
         messages: [{ role: 'system', content: cardsPrompt(batch) }],
         temperature: 0.1,
         maxTokens: 1600,
-        purpose: 'judge'
+        purpose: 'judge',
+        feature: 'living-memory'
       });
       try { this.recordUsage?.(response, response?.model || ''); } catch { /* 记账失败不影响记忆 */ }
       const cards = normalizeCards(parseJsonArray(response?.message?.content), chatKey, source);
@@ -440,10 +466,42 @@ export class LivingMemoryRuntime {
     return service.upsertMemory({ ...memory, allowSensitive: false }).then((saved) => ({ memory: saved }));
   }
 
-  remove(id) {
-    const memory = this.#service()?.removeMemory(id);
-    if (!memory) throw new Error('记忆不存在');
-    return { memory };
+  /** 删除/遗忘前先等在途提炼落库：否则模型返回后会把刚删掉的卡片以新 id 写回。 */
+  async #drainCaptures() {
+    while (this.inFlight.size) await Promise.all([...this.inFlight]);
+  }
+
+  /** 破坏性记忆操作串行化：merge 的 await 期间不能被 remove/forget 插进来。 */
+  #serializeMemory(task) {
+    const run = this.memoryLock.then(task, task);
+    this.memoryLock = run.catch(() => {});
+    let tracked;
+    tracked = run.finally(() => this.inFlight.delete(tracked));
+    this.inFlight.add(tracked);
+    return tracked;
+  }
+
+  async remove(id) {
+    await this.#drainCaptures();
+    return this.#serializeMemory(async () => {
+      const service = this.#service();
+      const before = service?.store?.getMemory(id) || null;
+      const memory = service?.removeMemory(id);
+      if (!memory) throw new Error('记忆不存在');
+      // 还没提炼的批次里如果含这张卡的来源回合，也要一起摘掉；否则定时器之后会把它写回来。
+      const scope = String(before?.scopeKey || '');
+      const turnIds = new Set((before?.source?.turnIds || []).map(String).filter(Boolean));
+      if (scope && turnIds.size && this.pending.has(scope)) {
+        const kept = (this.pending.get(scope) || []).filter((turn) => !turnIds.has(String(turn.turnId || '')));
+        if (kept.length) this.pending.set(scope, kept);
+        else {
+          this.pending.delete(scope);
+          clearTimeout(this.timers.get(scope));
+          this.timers.delete(scope);
+        }
+      }
+      return { memory };
+    });
   }
 
   archive(id) {
@@ -456,6 +514,46 @@ export class LivingMemoryRuntime {
     const memory = this.#service()?.unarchiveMemory(id);
     if (!memory) throw new Error('记忆不存在');
     return { memory };
+  }
+
+  pin(id, pinned) {
+    const memory = this.#service()?.pinMemory(id, pinned);
+    if (!memory) throw new Error('记忆不存在');
+    return { memory };
+  }
+
+  feedback(id, feedback) {
+    const memory = this.#service()?.feedbackMemory(id, feedback);
+    if (!memory) throw new Error('记忆不存在');
+    return { memory };
+  }
+
+  async merge(targetId, sourceIds) {
+    await this.#drainCaptures();
+    return this.#serializeMemory(async () => {
+      const service = this.#service();
+      if (!service) throw new Error('长期记忆已停止');
+      const target = service.store.getMemory(targetId);
+      if (!target) throw new Error('记忆不存在');
+      if (!this.applies(target.scopeKey)) throw new Error('当前会话不在长期记忆允许范围内');
+      return { memory: await service.mergeMemories(targetId, sourceIds) };
+    });
+  }
+
+  /** 同一 scope/类型下与本条较相似的候选，供控制台人工确认合并。 */
+  duplicates(id) {
+    const service = this.#service({ create: false });
+    if (!service) return { entries: [] };
+    const memory = service.store.getMemory(id);
+    if (!memory) throw new Error('记忆不存在');
+    const page = service.store.listMemories({ scopeKeys: [memory.scopeKey], status: 'active', type: memory.type, limit: 80 });
+    const entries = page.entries
+      .filter((item) => item.id !== memory.id)
+      .map((item) => ({ ...item, similarity: Math.round(overlapRatio(memory, item) * 1000) / 1000 }))
+      .filter((item) => item.similarity >= 0.3)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 10);
+    return { entries };
   }
 
   graph(options) {
@@ -497,20 +595,28 @@ export class LivingMemoryRuntime {
     const target = String(participant || '').trim();
     if (!this.applies(key)) throw new Error('当前会话不在长期记忆允许范围内');
     if (!target) throw new Error('要忘掉的人不能为空');
-    const service = this.#service();
-    if (!service) throw new Error('长期记忆已停止');
-    const ids = [];
-    let offset = 0;
-    for (;;) {
-      const page = service.store.listMemories({ scopeKeys: [key], limit: 200, offset });
-      for (const entry of page.entries) {
-        if ((entry.participants || []).map(String).includes(target)) ids.push(entry.id);
+    await this.#drainCaptures();
+    return this.#serializeMemory(async () => {
+      const service = this.#service();
+      if (!service) throw new Error('长期记忆已停止');
+      // 这个 scope 还没提炼的批次也一并丢掉：用户已经要求忘掉，不能等定时器再写回来。
+      clearTimeout(this.timers.get(key));
+      this.timers.delete(key);
+      this.pending.delete(key);
+      this.retries.delete(key);
+      const ids = [];
+      let offset = 0;
+      for (;;) {
+        const page = service.store.listMemories({ scopeKeys: [key], limit: 200, offset });
+        for (const entry of page.entries) {
+          if ((entry.participants || []).map(String).includes(target)) ids.push(entry.id);
+        }
+        offset += page.entries.length;
+        if (!page.entries.length || offset >= Number(page.total || 0) || offset >= 5000) break;
       }
-      offset += page.entries.length;
-      if (!page.entries.length || offset >= Number(page.total || 0) || offset >= 5000) break;
-    }
-    for (const id of ids) service.removeMemory(id);
-    return { removed: ids.length, ids };
+      for (const id of ids) service.removeMemory(id);
+      return { removed: ids.length, ids };
+    });
   }
 
   #closeService() {

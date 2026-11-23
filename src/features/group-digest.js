@@ -311,7 +311,8 @@ export class GroupDigestManager {
           { role: 'user', content: prompt }
         ],
         temperature: 0.7,
-        purpose: 'write'
+        purpose: 'write',
+        feature: 'group-digest'
         // 不设 maxTokens：思考模型（如 Command Code 上的 deepseek）的思考 token 也吃这个预算，
         // 压太小会出现"思考完预算没了 → content 为空"（2026-09-28 服务器实测）。输出长度用 maxChars 截。
         });

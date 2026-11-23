@@ -379,6 +379,7 @@ export class PluginRegistry {
 
   /** 确保某个 host 真的在跑（懒启动的入口：工具调用前调一次）。 */
   async #ensureRunning(id) {
+    if (this.stopped) return null;
     const host = this.hosts.get(id);
     if (!host) return null;
     const item = this.discovered.find((entry) => entry.id === id);

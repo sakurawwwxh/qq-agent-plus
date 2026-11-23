@@ -115,13 +115,14 @@ export class McpManager {
       const id = String(server.id).trim();
       // 空令牌控制台把任意 loopback 对端当管理员；MCP 子进程默认共享宿主网络，
       // 能直接读写 127.0.0.1:3210（读 Key、轮换令牌、改配置后 RCE）。
-      // 与插件侧同一道 fail-closed：有令牌或确有网络隔离，两者满足其一才启动。
+      // 只认能实际兑现禁网的配置：显式 networkIsolation，或 docker（sandbox.js 会强制
+      // --network none 并校验参数）。不再把 sandbox.network='none' 或 podman 命令名
+      // 当成隔离证据——前者可能被 mode:'off' 吞掉，后者没有 docker 的硬化分支。
       const networkIsolated = server.networkIsolation === true
-        || server.sandbox?.network === 'none'
-        || /(^|[\\/])(docker|podman)$/i.test(String(server.command || ''));
+        || /(^|[\\/])docker(?:\.exe)?$/i.test(String(server.command || ''));
       if (!consoleToken && !networkIsolated) {
-        this.log.warn(`MCP ${id} 未启动：控制台没有设置 server.token，而该 server 没有网络隔离；`
-          + '请先设置控制台令牌，或给 server 开启 networkIsolation / 使用 --network none 的容器');
+        this.log.warn(`MCP ${id} 未启动：控制台没有设置 server.token，而该 server 没有可信的网络隔离；`
+          + '请先设置控制台令牌，或给 server 开启 networkIsolation / 使用 docker');
         return;
       }
       const client = new McpStdioClient({

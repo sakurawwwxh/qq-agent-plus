@@ -715,7 +715,9 @@ export function assertPublicUrlLiteral(raw, { label = '地址' } = {}) {
   if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`只允许 http(s) 的${label}`);
   if (url.username || url.password) throw new Error(`${label}不能包含凭据`);
   if (getConfig().security?.allowPrivateImageHosts === true) return url.toString();
-  const host = url.hostname.replace(/^\[|\]$/g, '');
+  // 末尾点（绝对域名写法）必须先归一化：localhost. / metadata.google.internal.
+  // 在 URL.hostname 里会保留点，绕过下面的字符串后缀判断。
+  const host = url.hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
   // isPrivateIp 对非 IP 的字面量（普通域名）返回 false，只有真的是 IP 时才判内网
   if (isPrivateIp(host)) throw new Error(`${label}指向内网或本机，已拒绝`);
   const lower = host.toLowerCase();

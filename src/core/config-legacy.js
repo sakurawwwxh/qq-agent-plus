@@ -1,6 +1,6 @@
 // 配置管理：data/config.json，UI 可写。所有字段都有默认值。
 import fs from 'node:fs';
-import { normalizeModelReplacement } from './model-replacement-config.js';
+import { normalizeModelReplacement } from './model-replacement-config.js'; import { normalizeFeatureModels } from './feature-models.js';
 import os from 'node:os';
 import path from 'node:path';
 import { sanitizeBlacklistKeywordRulesWithReport } from './keyword-rules.js';
@@ -47,7 +47,7 @@ export function getConfigConflict() {
   return lastConfigConflict ? { ...lastConfigConflict } : null;
 }
 export const DEFAULT_CONFIG = {
-  modelReplacement: normalizeModelReplacement({}),
+  modelReplacement: normalizeModelReplacement({}), featureModels: normalizeFeatureModels({}),
   // OpenAI 兼容 API（必填才能跑）
   api: {
     // 每日花费上限（改进方案 #8，默认关闭＝升级不改变任何行为）。按**估算价**累计当日用量，
@@ -1411,7 +1411,7 @@ function migrateConfig(parsed) {
   // 被 loadConfig 的 catch 吞掉后静默退回默认值、还会被持久化 —— 用户配置整份没了。
   if (!isPlainObject(parsed)) parsed = {};
   const out = structuredClone(parsed);
-  out.modelReplacement = normalizeModelReplacement(out.modelReplacement);
+  out.modelReplacement = normalizeModelReplacement(out.modelReplacement); out.featureModels = normalizeFeatureModels(out.featureModels);
   // 名单/数组段统一归一化：手改或 API 传成字符串/对象时，入站路径的 .map、
   // 模型请求的 .find、设置页的 .join 会直接抛，机器人静默不回复。
   // 这里按"空名单/空数组"恢复，而不是把类型错误带进运行期。

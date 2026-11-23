@@ -11,7 +11,7 @@ import { createMetrics } from './metrics.js';
 import { registerStorageRoutes } from './storage.js';
 import { createSseSender } from './sse.js';
 import { createNoticeDedup, emojiNoticeKey, pokeNoticeKey } from './notice-dedup.js';
-import { handleRecallNotice } from './recall-sync.js';
+import { applyPendingRecall, handleRecallNotice } from './recall-sync.js';
 
 import { asrApiKey, asrAvailable, asrConfigured, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, conversationConfigForChat, findWhisperBinSync, getConfig, getConfigConflict, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, incidentPilotEnabled, slangPilotEnabled, storeConfigForChat, updateConfig, onTimeControlChange, DATA_DIR, ROOT } from '../core/config.js';
 import { redactText } from '../core/redact.js';
@@ -65,7 +65,7 @@ import { registerPriceRoutes } from './routes/prices.js';
 import { registerOnebotRoutes } from './routes/onebot.js';
 import { registerPersonaRoutes } from './routes/persona.js';
 import { registerSearchRoutes } from './routes/search.js';
-import { chatCompletion, cachedTokensOfUsage, llmRuntimeStats, addUsage, emptyUsage } from '../llm/llm.js';
+import { chatCompletion, cachedTokensOfUsage, llmRuntimeStats, addUsage, emptyUsage, resolveApiKey } from '../llm/llm.js';
 import { matchesBlacklistKeyword } from '../core/keyword-rules.js';
 import { imageGenKeyStale } from '../llm/image-gen.js';
 import { TTS_SERVICES, ttsKeyServices, ttsServiceOf } from '../llm/tts-presets.js';
@@ -127,15 +127,9 @@ try {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UI_DIR = path.resolve(__dirname, '..', '..', 'ui');
 
-// 前端构建戳：按 ui/ 关键文件的体积+修改时间算，**每次请求现算**（不缓存在模块常量里）。
-// 用途：/api/status 带上它，前端轮询发现戳变了就提示"控制台已更新，点此刷新"
-// —— 控制台是单页应用，部署不会自动替换已打开的页面，此前只能靠人记得按 F5。
-//
-// ⚠️ 为什么必须现算（2026-10-16）：控制台的 ui/ 是**每个请求现从磁盘读**的（见 handleHttp 的
-// 静态分支），所以"只改前端"根本不需要重启进程 —— 而重启会掐断 OneBot 连接（实测每次约 3 秒，
-// 今天一天 8 次部署就是 8 次断线）。戳若在开机时算死，"不重启发前端"这条路就不成立：已打开的
-// 页面永远收不到刷新提示，用户会拿着旧 JS 对着新 CSS 跑。代价是 6 次 statSync / 次请求，只在
-// /api/status 这条路上，可以忽略。
+// 前端构建戳：按 ui/ 关键文件的体积+修改时间算，**每次请求现算**：ui/ 每个请求现读，只改前端
+// 不必重启（重启会掐断 OneBot）；戳若开机算死，已打开页面永远收不到"控制台已更新"提示。
+// 代价是 6 次 statSync / 次请求，只发生在 /api/status。
 
 // ── UI 静态资源的版本令牌（改进方案 §11「给 core/* 加内容哈希长缓存」）──
 // 令牌 = 文件内容的 sha256 前 12 位，按 (size, mtime) 记忆，避免每次请求重算哈希。
@@ -1609,6 +1603,8 @@ function buildApp({
       deferred
     });
     if (stored.duplicate) return;
+    // 撤回通知可能先于消息到达：一旦落库立刻补标并停止后续唤醒/富化。
+    if (applyPendingRecall(store, chatKey, message.mid, { emit, log, onRecalled: (key, mid) => livingMemory?.redactRecalled?.(key, mid) })) return;
     emit('chat-update', chatKey);
 
     if (!deferred) {
@@ -2022,7 +2018,7 @@ function buildApp({
       }
       return;
     }
-    if (event.post_type === 'notice' && (event.notice_type === 'group_recall' || event.notice_type === 'friend_recall')) return handleRecallNotice(event, { store, emit, log, dedup: noticeDedup });
+    if (event.post_type === 'notice' && (event.notice_type === 'group_recall' || event.notice_type === 'friend_recall')) return handleRecallNotice(event, { store, emit, log, dedup: noticeDedup, onRecalled: (key, mid) => livingMemory?.redactRecalled?.(key, mid) });
     if (event.post_type === 'notice' && event.notice_type === 'notify' && event.sub_type === 'poke') {
       return ingestPoke(event, arrivedInactive);
     }
@@ -2306,6 +2302,9 @@ function buildApp({
       const url = new URL(req.url, 'http://127.0.0.1');
       if (sameSecret(req.headers['x-console-token'], token)
         || (QUERY_TOKEN_PATHS.has(url.pathname) && sameSecret(url.searchParams.get('token'), token))) return true;
+      // 配置了令牌后，本机回环不能再作为免令牌的旁路：否则同机其他用户/误配反代
+      // 仍可读明文密钥或触发 ASR 卸载。本机浏览器带 cookie/token 时已被 authorize 放行。
+      return false;
     }
     // 带自定义头 → 不可能是简单跨站请求（需 CORS 预检通过才能发出）；
     // 但还要求请求真来自本机（remoteAddress 回环 + Host 口径保留）：否则"控制台暴露到公网
@@ -2326,22 +2325,20 @@ function buildApp({
   }
 
   /**
-   * 已保存的 Key 只允许发往配置里已知的地址。
-   * 目的只是不让"随手填个地址点测试"把已保存的 Key 送出去，**它不构成安全边界**：
-   * 控制台令牌本身就是完全管理凭据，持有令牌的人可以直接从 /api/api-key 等端点读到明文
-   * Key（见 keyEndpointAllowed 的第一条分支：令牌通过即放行）；也可以先 POST /api/providers
-   * 把自己的地址注册进来，再走这个回退。前端正常流程都显式传 Key，只有"测试当前配置的
-   * provider"会用到回退，而那个地址本来就等于配置里的值。
+   * 空/掩码 Key 时，只回退到**目标地址自己的**那把 Key：不能把当前主模型的 Key
+   * 发到另一个已登记 provider 的地址（否则测试/拉模型会在跨服务商时泄露明文）。
+   * 地址留空 = 当前主渠道；找不到对应 provider 就不回退。
    */
-  function storedKeyAllowedFor(cfgNow, baseUrl) {
+  function savedKeyForBaseUrl(cfgNow, baseUrl) {
     const norm = (v) => String(v || '').trim().replace(/\/+$/, '').toLowerCase();
-    const target = norm(baseUrl);
-    if (!target) return true;   // 没给地址 = 用配置里的那个
-    const known = [
-      norm(cfgNow.api?.baseUrl),
-      ...(cfgNow.providers || []).map((p) => norm(p?.baseURL))
-    ].filter(Boolean);
-    return known.includes(target);
+    const current = norm(cfgNow.api?.baseUrl);
+    const target = norm(baseUrl) || current;
+    if (!target) return '';
+    if (target === current) return resolveApiKey(cfgNow);
+    const provider = (cfgNow.providers || []).find((p) => norm(p?.baseURL) === target);
+    if (!provider) return '';
+    const key = String(cfgNow.providerKeys?.[provider.id] || provider.apiKey || '').trim();
+    return key && key !== '******' ? key : '';
   }
 
   /**
@@ -2961,7 +2958,7 @@ function buildApp({
 
   registerProviderRoutes(router, {
     json, readBody, getConfig, auditWrite,
-    keyEndpointAllowed, storedKeyAllowedFor, sanitizeProvider,
+    keyEndpointAllowed, savedKeyForBaseUrl, sanitizeProvider,
     asrInstallSnapshot, removeLocalAsrFiles, startAsrInstall,
     getAsrRunning: () => asrInstall.running, log
   });

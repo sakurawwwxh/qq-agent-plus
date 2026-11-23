@@ -507,6 +507,13 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'api') {
+    // Base URL 属于提供商目录，不是普通设置：主保存按钮不能静默忽略地址修改，
+    // 更不能把随后输入的 Key 绑到旧 provider 上（否则地址没变、Key 却换成了新家的）。
+    const baseUrlUi = String(val('#cfg-baseurl', c.api?.baseUrl) || '').trim();
+    const normBaseUrl = (v) => String(v || '').trim().replace(/\/+$/, '');
+    if (baseUrlUi && normBaseUrl(baseUrlUi) !== normBaseUrl(c.api?.baseUrl)) {
+      throw new Error('Base URL 已修改：请点上面的「确认添加 / 保存」保存提供商，再保存其他设置。');
+    }
     // ⚠️ 模型名与开关状态必须读**界面实时值**（c.api 是上次保存的旧值）：
     // 用户可能改了模型/开关但还没保存过，用旧值会把价格存到错误的模型名下。
     const curModel = String(($('#cfg-model')?.value ?? c.api?.model) || '').trim();

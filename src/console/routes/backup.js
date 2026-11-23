@@ -172,7 +172,9 @@ export function registerBackupRoutes(router, deps = {}) {
     if (!/\.tar\.gz(?:\.enc)?$/.test(name)) return json(res, 400, { ok: false, error: '备份文件名不合法' });
     const full = path.join(backupDirPath(), name);
     if (!fs.existsSync(full)) return json(res, 404, { ok: false, error: '备份文件不存在' });
-    const result = await runOpsCommand(['restore', '--from', full, '--dry-run', '--data', DATA_DIR], 5 * 60 * 1000);
+    // 「校验」必须真的验可恢复性：restore --dry-run 只列 tar 条目，缺 config.json
+    // 或 SQLite 损坏都会假绿。走已有的 backup --drill（解密→解包→locateDataRoot→integrity_check）。
+    const result = await runOpsCommand(['backup', '--drill', '--from', full, '--data', DATA_DIR], 5 * 60 * 1000);
     const output = `${result.stdout}${result.stderr}`.slice(-4000);
     return json(res, result.ok ? 200 : 500, {
       ok: result.ok,

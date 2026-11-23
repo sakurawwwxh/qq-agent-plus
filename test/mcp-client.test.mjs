@@ -52,6 +52,27 @@ it('空令牌控制台 + 未隔离网络：MCP server 必须拒绝启动', async
   }
 });
 
+it('空令牌 + sandbox.network=none 不能冒充网络隔离', async () => {
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...(cfg.server || {}), token: '' };
+  cfg.mcp = {
+    enabled: true,
+    servers: [{
+      id: 'fake-none', command: process.execPath, args: [fixture], timeoutMs: 5000,
+      sandbox: { mode: 'off', network: 'none' }
+    }]
+  };
+  setRuntimeConfig(cfg);
+  const manager = new McpManager();
+  try {
+    await manager.start();
+    assert.equal(manager.status().filter((row) => row.ready).length, 0,
+      'mode=off 可能吞掉 network=none，空令牌下不能把它当隔离证据');
+  } finally {
+    manager.stop();
+  }
+});
+
 it('启动 stdio server，列出工具并调用', async () => {
   configWith();
   const manager = new McpManager();

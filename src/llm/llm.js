@@ -2,6 +2,7 @@
 // 支持工具调用、usage 统计和可选模型。
 import { getConfig } from '../core/config.js';
 import { withModelReplacement } from '../core/model-replacement.js';
+import { featureModelOverrides } from '../core/feature-models.js';
 import { modelHttpError, isModelReplacementError } from './model-http-error.js';
 import { stripLoneSurrogates } from '../core/util.js';
 import { normalizeThinkingIntent, resolveThinkingPatch, modelServiceById, modelServiceOfBaseUrl, effectiveThinkingRaw, hostOf } from '../core/provider-presets.js';
@@ -198,7 +199,9 @@ function thinkingFor(purpose, overrides = null, snapshot = null) {
   let serviceId = '';
   try {
     const cfg = snapshot || getConfig();
-    customParams = cfg?.api?.thinkingParams;
+    // 专用模型/后台任务显式带了 thinkingParams 就用它：跨 host 时主渠道的映射不能跟过去。
+    customParams = overrides?.thinkingParams !== undefined
+      ? overrides.thinkingParams : cfg?.api?.thinkingParams;
     if (overrides?.baseUrl) {
       // 专用模型/兜底这类 overrides 调用按 overrides 自己的地址取每供应商设置与渠道形状，
       // 不串用主渠道的（审查 2026-09-28：主渠道 Command Code、专用 DeepSeek 时，
@@ -320,12 +323,17 @@ function pickFallback(args) {
     log.warn(`[llm] 兜底 Key 绑定的是 ${keyHost}，当前地址是 ${fbHost}；本次不切兜底，请重填 Key`);
     return null;
   }
+  const fallbackBase = fb.baseUrl || api.baseUrl;
+  const crossHost = hostOf(fallbackBase) !== hostOf(api.baseUrl);
   return {
     ...api,
-    baseUrl: fb.baseUrl || api.baseUrl,
+    baseUrl: fallbackBase,
     apiKey: fb.apiKey || api.apiKey,
     model: fb.model,
-    timeoutMs: Number(fb.timeoutMs) || api.timeoutMs
+    timeoutMs: Number(fb.timeoutMs) || api.timeoutMs,
+    // extraBody / thinkingParams 是给原渠道填的高级参数，可能含 authorization/x-api-key；
+    // 跨渠道不转发。
+    ...(crossHost ? { extraBody: {}, thinkingParams: {} } : {})
   };
 }
 
@@ -338,9 +346,15 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   llmRuntimeStats.requests += 1;
   let response = null;
   let primaryError = null;
+  // 后台任务独立模型：解析成 overrides 后走专用端点，不碰主模型的替换链与兜底
+  //（否则一条群日报失败会把全局聊天模型换掉）。
+  if (!args.overrides && !args.configSnapshot && args.feature) {
+    const featureOverrides = featureModelOverrides(getConfig(), args.feature);
+    if (featureOverrides) args = { ...args, overrides: featureOverrides };
+  }
   // 替换链可能把请求切到另一个 host；vendor 必须按**本次实际端点**记，
   // 不能沿用会话开始时的主渠道（否则花费/预算按错价计算）。
-  const initialBase = String(getConfig()?.api?.baseUrl || '');
+  const initialBase = String(args.overrides?.baseUrl || getConfig()?.api?.baseUrl || '');
   try {
     response = args.overrides
       ? await runCompletionWithRetries(args, retries)
@@ -414,14 +428,20 @@ export async function chatCompletion({
   cacheKey = '',
   maxTokens = null,
   purpose = '',
+  feature = '',
   configSnapshot = null
 }) {
   assertTimeAllowed();
   llmRuntimeStats.attempts += 1;
-  const api = overrides || (configSnapshot ? { ...configSnapshot.api, apiKey: resolveApiKey(configSnapshot) } : effectiveApi());
+  // 直接调用 chatCompletion 的后台任务（群日报/早报/记忆提炼）也支持独立模型。
+  // 先解析成 overrides，确保主渠道的 extraBody 不会跟过去。
+  const featureOverrides = !overrides && !configSnapshot && feature
+    ? featureModelOverrides(getConfig(), feature) : null;
+  const effectiveOverrides = overrides || featureOverrides;
+  const api = effectiveOverrides || (configSnapshot ? { ...configSnapshot.api, apiKey: resolveApiKey(configSnapshot) } : effectiveApi());
   // 聊天这类"随口回一句"的任务关掉思考：省一半输出 token、少 1~3 秒；
   // 判断/写作类（表情包要不要收、说说、空间互动、身份评估）不传 purpose，继续思考。
-  const thinking = thinkingFor(purpose, overrides, configSnapshot);
+  const thinking = thinkingFor(purpose, effectiveOverrides, configSnapshot);
   const thinkingOff = thinking.effectiveOff;
   const body = {
     model: api.model,
@@ -476,8 +496,8 @@ export async function chatCompletion({
   // overrides（专用模型/兜底）请求同样合并——文档承诺的是"每次请求"（审查 2026-09-28）。
   // 注意兜底路（pickFallback）spread 了 effectiveApi 自带 extraBody；记忆专用模型路的
   // overrides 没有这个字段，必须回落到配置里的 api.extraBody（复审 2026-09-28 抓过）。
-  const extraRaw = overrides
-    ? (overrides.extraBody !== undefined ? overrides.extraBody : getConfig()?.api?.extraBody)
+  const extraRaw = effectiveOverrides
+    ? (effectiveOverrides.extraBody !== undefined ? effectiveOverrides.extraBody : getConfig()?.api?.extraBody)
     : api.extraBody;
   const extraBody = extraRaw && typeof extraRaw === 'object' && !Array.isArray(extraRaw)
     ? extraRaw : null;

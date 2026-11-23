@@ -668,7 +668,9 @@ test('㉒ A4：resolveHeld 要清 never-acked 的 sent 行，但排除仍在途�
   const body = src.slice(start, start + 2600).replace(/\/\/[^\n]*/g, '').replace(/\s+/g, ' ');
   assert.match(body, /DELETE FROM outbox WHERE chat_key\s*=\s*\?/,
     '残骸按 chat_key 清：主动唤醒没有 runs 行（runId 是合成值），只按终态 run 取交集永远清不掉它');
-  assert.match(body, /state\s+IN\s*\(\s*'sending'\s*,\s*'unknown'\s*,\s*'sent'/,
+  assert.doesNotMatch(body, /state\s+IN\s*\([^)]*'sending'/,
+    '在途 sending 不能按 chat_key 删除：主动唤醒/日报/群游戏的 run_id 不在 runs 表里，删了会丢未知证据');
+  assert.match(body, /state\s+IN\s*\(\s*'unknown'\s*,\s*'sent'/,
     "租约从未 ack 的 'sent' / 主动唤醒的 'unknown' 只剩这一条清理路径，不清就是人工点完还留一地残骸");
   assert.match(body, /run_id\s+NOT\s+IN\s*\(\s*SELECT id FROM runs WHERE chat_key\s*=\s*\? AND state\s+NOT\s+IN\s*\(\s*'held'\s*,\s*'failed'\s*,\s*'acked'/,
     '在途租约（runs 里非终态的行）的证据必须排除：删了它 hasEffects=false → 整批消息回队重跑（P1）');

@@ -567,7 +567,7 @@ export class Orchestrator {
     this.proactiveEpoch = 0;            // 重启循环时 +1：旧 tick 不能再排新 timer
     this.proactiveSuppressions = new Set();
     // 模型自己安排的「稍后主动发言」：chatKey -> { at, note, timer }
-    this.scheduledWakes = new Map();
+    this.scheduledWakes = new Map(); this.pacingSkips = new Map();
     this.scheduledWakeTicker = null;
     this.aborted = false;
   }
@@ -756,9 +756,7 @@ export class Orchestrator {
             || !this.#chatRuntimeDecision(key).allowed
             || this.store.unreadCount(key) <= 0) continue;
           if (this.#budgetWouldDrop(key)) continue;
-          // 自主节奏：兜底回收也不能绕过 pacing 直接排 8–12 秒的即时唤醒，
-          // 否则普通消息会在十几秒内被处理，概率档下还会被 markRead 静默丢弃
-          // （2026-10-31 盲审 P1）。只保证"有一次 paced 安排"，已存在则不顶掉。
+          // 自主节奏：兜底回收也只能补一次 paced 安排，不能绕过 pacing 排即时唤醒。
           if (this.#pacingApplies(key)) {
             const pending = this.store.peekUnread(key, this.#unreadScanLimit()) || [];
             const mentioned = pending.some((message) => mentionsOrPokesBot(message, this.onebot.selfId));
@@ -858,6 +856,22 @@ export class Orchestrator {
     return this.lastDecisions?.list?.(String(chatKey), limit) || [];
   }
 
+  /** 自主节奏可观测：下一次安排与最近一次为什么没醒。 */
+  pacingStatus(chatKey) {
+    const key = String(chatKey);
+    const item = this.scheduledWakes.get(key);
+    const skip = this.pacingSkips.get(key) || null;
+    return {
+      enabled: getConfig().pacing?.enabled === true, applies: this.#pacingApplies(key),
+      nextWakeAt: item?.at || 0, nextWakeKind: item?.kind || '', nextWakeNote: Boolean(item?.note),
+      lastSkipAt: skip?.at || 0, lastSkipReason: skip?.reason || ''
+    };
+  }
+
+  #notePacingSkip(chatKey, reason) {
+    this.pacingSkips.set(chatKey, { at: Date.now(), reason: String(reason || '').slice(0, 120) });
+  }
+
   /** 自主节奏是否作用于该会话（按 pacing.scope 判定）。 */
   #pacingApplies(chatKey) {
     const p = getConfig().pacing || {};
@@ -885,16 +899,12 @@ export class Orchestrator {
     const maxMs = Math.max(minMs, (Number(p.maxSilenceMinutes) || 45) * 60000);
     const defMs = Math.max(minMs, Math.min(maxMs, (Number(p.defaultWakeMinutes) || 20) * 60000));
     const existing = this.scheduledWakes.get(chatKey);
-    // 已有安排是模型自安排的唤醒（selfWake）或任何带留言的安排时不要顶掉：
-    // scheduleInitiativeWake 是单槽覆盖，会把留言一起清掉 —— fireDueScheduledWakes 专门
-    // 为 selfWake 绕开重排以保留言，这里却会先把槽覆写掉（2026-10-06 复审 P3：pacing 开启时
-    // 群里来一条普通消息，模型 2 小时后带留言的唤醒就被换成 20 分钟后的无留言 paced）。
+    // 单槽覆盖会清掉留言：已有 selfWake 或任何带留言的安排时不要用 paced 顶掉它。
     if (existing && (existing.kind === 'selfWake' || String(existing.note || '').trim())) return;
     if (existing && existing.at - Date.now() <= maxMs) return;
     this.scheduleInitiativeWake(chatKey, defMs, '', { paced: true });
   }
 
-  /** 防抖聚批：等待 wakeDelayMs，期间每来一条消息重置计时。 */
   /**
    * 对"当前这批未读"做档位预判：这批消息值不值得机器人响应？
    *
@@ -1375,25 +1385,27 @@ export class Orchestrator {
    * 与 2026-10-06（add 之后）、2026-10-07（claimUnread 之后）修的两处是同一类窗口，
    * 这次把 add 之前的这一段也圈进来（2026-10-08 审查）。
    */
-  #wakePreflight(chatKey, waitingSessionId) {
-    if (!canRun(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return false; }
+  #wakePreflight(chatKey, waitingSessionId, paced = false) {
+    const skip = (reason) => { if (paced) this.#notePacingSkip(chatKey, reason); return false; };
+    if (!canRun(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return skip('不在允许范围、静默时段或观察模式'); }
     if (!this.#chatRuntimeDecision(chatKey).allowed) {
       if (waitingSessionId) this.#discardWaiting(waitingSessionId);
-      return false;
+      return skip('当前会话运行模式不允许唤醒');
     }
-    if (this.aborted) { if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted'); return false; }
-    if (this.paused) { if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted'); return false; }
-    if (this.runningChats.has(chatKey)) return false;
+    if (this.aborted) { if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted'); return skip('机器人已停止'); }
+    if (this.paused) { if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted'); return skip('机器人已暂停'); }
+    if (this.runningChats.has(chatKey)) return skip('该会话上一轮还在运行');
 
     // 模型未设置：不产生报错会话，消息保留为未读；设置模型后（下一条消息或手动唤醒）自动补处理
     if (!String(getConfig().api.model || '').trim()) {
       if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted', '模型未设置');
-      return false;
+      return skip('模型未设置');
     }
 
-    // 全局并发限制：满了就稍后重试
+    // 全局并发限制：普通唤醒稍后重试；paced 由派发方重新排自主节奏，
+    // 不能退化成普通唤醒（概率档会把消息标读后丢掉，还会绕过 pacing 的预算豁免口径）。
     if (this.runningChats.size >= Math.max(1, Number(getConfig().maxConcurrentRuns) || 2)) {
-      if (waitingSessionId) this.#discardWaiting(waitingSessionId);
+      if (waitingSessionId) this.#discardWaiting(waitingSessionId); if (paced) return skip('并发已满');
       this.scheduleWake(chatKey, 3000, { skipWaitingSession: true });
       return false;
     }
@@ -1421,11 +1433,11 @@ export class Orchestrator {
 
   async #wake(chatKey, { proactive = false, manual = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
     try {
-      if (!this.#wakePreflight(chatKey, waitingSessionId)) return;
+      if (!this.#wakePreflight(chatKey, waitingSessionId, paced)) return false;
     } catch (error) {
       log.error(`[orchestrator] 唤醒前置判定失败（${chatKey}）：`, error);
       if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted', '前置判定失败');
-      return;
+      return false;
     }
 
     // 未命中时只确认本次判定的快照；运行批次在模型处理成功后确认。
@@ -1443,19 +1455,9 @@ export class Orchestrator {
     let triggerEntries = [];
     try {
     conversation = conversationConfigForChat(chatKey);
-    // ── 每日预算拦截（改进方案 #8/J.3）──
-    // block：本次运行不进行（active 模式下同一天同一会话只回一句固定文案）；degrade：只回应 @ ——
-    // 群聊里非 @ 触发直接跳过、消息保留未读（等被 @ 或明天）。两者都只影响**新**运行，
-    // 不打断进行中的会话；私聊、手动唤醒与主动唤醒不受 degrade 限制。
-    // ⚠️ 这一段必须在 `if (!proactive)` **之外**：原来整段被塞在里面，于是"停止"策略下
-    // 冷场开话题、模型自安排唤醒这些 proactive 唤醒照常整轮跑模型、照常花钱 ——
-    // 管理员设 block 的意思就是"今天别再花钱"（2026-10-03 全量审查）。
+    // ── 每日预算拦截：block 停止、degrade 只回 @；必须放在 proactive 分支外，主动唤醒也要花钱。
+    // paced 用 manual:true 派发但不算人工（只有控制台点一下才豁免），否则 block 形同虚设。
     const budget = budgetStatus(getConfig(), this.sessions?.todayUsage?.(todayKey()) || {});
-    // ⚠️ **自主节奏唤醒（paced）不是人工**：#ensurePacedWake 用 manual:true 派发它，是为了绕开
-    // 唤醒侧的闸门（wakeBlockedNow / proactive 判定），但它**照样要花钱**。预算闸门若也按
-    // `!manual` 判，开了 pacing 的实例在 onExceed=block 之后照样每轮整跑模型，管理员设的
-    // 「今天别再花钱」形同虚设（2026-10-04 全面复审 P2 实测：block 与 degrade 下均有 12 次
-    // 模型调用）。真正人工触发的（控制台点一下）才豁免。
     const budgetExempt = manual && !paced;
     if (budget.enabled && budget.exceeded) {
       if (budget.notify) this.#maybeNotifyBudgetExceeded(budget);
@@ -1463,8 +1465,9 @@ export class Orchestrator {
         const activeMode = String(getConfig().runtime?.mode || 'active') !== 'observe';
         // 只在"有新消息"这一路回话：主动/自主节奏唤醒没有人在等，插一句只会变成刷屏。
         if (activeMode && !proactive && !paced) await this.#maybeSayBudgetExhausted(chatKey);
+        if (paced) this.#notePacingSkip(chatKey, '今日预算已用完（block）');
         if (waitingSessionId) this.#finishWaiting(waitingSessionId, 'aborted', '本轮额度已用完');
-        return;
+        return false;
       }
     }
     if (!proactive) {
@@ -1478,16 +1481,16 @@ export class Orchestrator {
       // degrade 只拦"新消息触发"的这一路（主动唤醒不在这个分支里，上面的 block 已经先判过了）
       if (budget.enabled && budget.exceeded && budget.onExceed === 'degrade' && !budgetExempt
         && String(chatKey).startsWith('group:')) {
-        // 闸门要扫**整段未读**：degrade 下不 ack 任何消息，积压破扫描窗后最旧的一批里
-        // 可能永远没有 @，新 @ 排在队尾 —— 只看 peekUnread 的窗口会让该群当天彻底失联。
+        // 闸门扫整段未读：积压破扫描窗后队尾的新 @ 也必须能被看到，否则该群当天失联。
         const mentionMatcher = { test: (entry) => mentionsOrPokesBot(entry, this.onebot.selfId) };
         const inWindow = pendingEntries.some((entry) => mentionsOrPokesBot(entry, this.onebot.selfId));
         const hit = typeof this.store.findPending === 'function'
           ? this.store.findPending(chatKey, mentionMatcher)
           : (inWindow ? { id: 0 } : null);
         if (!hit && !inWindow) {
+          if (paced) this.#notePacingSkip(chatKey, '预算超限，只回应 @，当前没有 @');
           if (waitingSessionId) this.#discardWaiting(waitingSessionId);
-          return;   // 保留未读：被 @ 时（或跨日重置后）自然会再进这里
+          return paced ? false : undefined;   // 保留未读：被 @ 时（或跨日重置后）自然会再进这里
         }
         // @ 不在这一批里：从 @ 那条开始领。否则闸门判"有 @"、实际领到的却是更早的
         // 一批普通消息 —— degrade 的"只回 @"变成连续空跑模型，还把普通消息当回复对象。
@@ -1686,9 +1689,7 @@ export class Orchestrator {
         manual, contextLimit: tierResult.count, tierInfo: tierResult, conversation, signal: controller.signal });
       controller.signal.throwIfAborted();
       if (conversation.mode === 'lifecycle') {
-        // 回复已经发出去了：收尾写库失败（SQLITE_BUSY/磁盘满）不能把整批打成 held ——
-        // 那会让该会话的后续唤醒全被 held 闸门挡住，而实际上用户已经收到回复。
-        // 与 threaded 分支同一口径：只记录，不影响本轮的 ack。
+        // 回复已发出：收尾写库失败只记录，不能把整批打成 held（用户其实已经收到回复）。
         try {
           const handoff = this.#commitSessionHandoff(session, { chatKey, triggerEntries });
           this.#commitConversationThread(session, {
@@ -3028,7 +3029,8 @@ export class Orchestrator {
       this.wake(chatKey, item.paced
         ? { manual: true, paced: true, wakeNote: item.note }
         : { proactive: true, wakeNote: item.note })
-        .catch((error) => log.error('[orchestrator] 自主唤醒出错:', error));
+        .then((result) => { if (item.paced && result === false) this.#ensurePacedWake(chatKey); })
+        .catch((error) => { log.error('[orchestrator] 自主唤醒出错:', error); if (item.paced) this.#ensurePacedWake(chatKey); });
     }
   }
 
@@ -4042,9 +4044,9 @@ export class Orchestrator {
   async #memoryChat(messages, signal = null) {
     const cfg = getConfig();
     const mem = cfg.memory || {};
-    if (mem.useChatModel !== false) {
+    if (mem.useChatModel !== false || cfg.featureModels?.['memory-consolidation']?.enabled === true) {
       // 记忆整理 = 判断/总结类任务（与聊天、写作可各自设思考档位）。
-      const response = await chatCompletion({ messages, temperature: 0.2, purpose: 'judge', signal });
+      const response = await chatCompletion({ messages, temperature: 0.2, purpose: 'judge', signal, feature: 'memory-consolidation' });
       this.#recordExternalUsage(response);
       return response;
     }

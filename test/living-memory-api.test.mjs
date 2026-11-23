@@ -96,6 +96,34 @@ test('living-memory routes use the Agent data directory without an external serv
   assert.equal(listed.body?.total, 1);
   assert.equal(listed.body?.entries?.[0]?.summary, '内置长期记忆');
 
+  const pinned = await request(port, `/api/living-memory/memories/${created.body.memory.id}/pin`, {
+    method: 'POST', body: { pinned: true }
+  });
+  assert.equal(pinned.status, 200, pinned.text);
+  assert.equal(pinned.body?.memory?.pinned, true);
+  const feedback = await request(port, `/api/living-memory/memories/${created.body.memory.id}/feedback`, {
+    method: 'POST', body: { feedback: 'useful' }
+  });
+  assert.equal(feedback.status, 200, feedback.text);
+  assert.equal(feedback.body?.memory?.feedback, 'useful');
+
+  const second = await request(port, '/api/living-memory/memories', {
+    method: 'POST',
+    body: { scopeKey: 'group:100', type: 'project', summary: '另一条项目记录', content: '卡片和向量由主进程写入 SQLite。', importance: 4 }
+  });
+  assert.equal(second.status, 201, second.text);
+  const duplicates = await request(port, `/api/living-memory/memories/${created.body.memory.id}/duplicates`);
+  assert.equal(duplicates.status, 200, duplicates.text);
+  assert.equal(duplicates.body?.entries?.some((item) => item.id === second.body.memory.id), true);
+  const merged = await request(port, `/api/living-memory/memories/${created.body.memory.id}/merge`, {
+    method: 'POST', body: { sourceIds: [second.body.memory.id], confirm: true }
+  });
+  assert.equal(merged.status, 200, merged.text);
+  assert.equal(merged.body?.memory?.pinned, true);
+  assert.equal(merged.body?.memory?.feedback, 'useful');
+  const afterMerge = await request(port, `/api/living-memory/memories/${second.body.memory.id}`);
+  assert.equal(afterMerge.status, 404, afterMerge.text);
+
   const archived = await request(port, `/api/living-memory/memories/${created.body.memory.id}/archive`, {
     method: 'POST', body: { confirm: true }
   });

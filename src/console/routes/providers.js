@@ -11,7 +11,6 @@ import {
   testOneProvider, testModelChat, probeThinking, upsertProvider,
   addModelsToProvider, removeModelFromProvider
 } from '../../core/providers.js';
-import { resolveApiKey } from '../../llm/llm.js';
 
 export function registerProviderRoutes(router, deps = {}) {
   const json = deps.json;
@@ -19,7 +18,7 @@ export function registerProviderRoutes(router, deps = {}) {
   const getConfig = deps.getConfig;
   const auditWrite = deps.auditWrite;
   const keyEndpointAllowed = deps.keyEndpointAllowed;
-  const storedKeyAllowedFor = deps.storedKeyAllowedFor;
+  const savedKeyForBaseUrl = deps.savedKeyForBaseUrl;
   const sanitizeProvider = deps.sanitizeProvider;
   const asrInstallSnapshot = deps.asrInstallSnapshot;
   const removeLocalAsrFiles = deps.removeLocalAsrFiles;
@@ -27,7 +26,7 @@ export function registerProviderRoutes(router, deps = {}) {
   const getAsrRunning = deps.getAsrRunning;
   const log = deps.log;
   if (!router || !json || !readBody || !getConfig || !auditWrite || !keyEndpointAllowed
-    || !storedKeyAllowedFor || !sanitizeProvider || !asrInstallSnapshot || !removeLocalAsrFiles
+    || !savedKeyForBaseUrl || !sanitizeProvider || !asrInstallSnapshot || !removeLocalAsrFiles
     || !startAsrInstall || !getAsrRunning || !log) {
     throw new Error('registerProviderRoutes 需要 router/json/readBody/getConfig/auditWrite/密钥守卫/ASR 闭包/log');
   }
@@ -165,10 +164,10 @@ export function registerProviderRoutes(router, deps = {}) {
       const body = await readBody(req);
       const baseUrl = String(body.baseUrl || cfgNow.api.baseUrl || '');
       const submitted = String(body.apiKey ?? '').trim();
-      // 掩码 / 空 → 用服务端已保存的 Key，但仅限配置里已知的地址（见 storedKeyAllowedFor）。
+      // 掩码 / 空 → 只用目标地址自己的已保存 Key（见 savedKeyForBaseUrl）。
       const apiKey = (submitted && submitted !== '******')
         ? submitted
-        : (storedKeyAllowedFor(cfgNow, baseUrl) ? String(cfgNow.api.apiKey || '') : '');
+        : savedKeyForBaseUrl(cfgNow, baseUrl);
       const models = await fetchModelsFrom(baseUrl, apiKey);
       return json(res, 200, { ok: true, models });
     } catch (error) {
@@ -195,10 +194,10 @@ export function registerProviderRoutes(router, deps = {}) {
       const submitted = String(body.apiKey ?? '').trim();
       const baseUrl = String(body.baseUrl ?? '');
       // 掩码 / 空 → 说明客户端没有新 Key，用服务端已保存的；但只发往配置里已知的地址
-      // （见 storedKeyAllowedFor：否则等于把明文 Key 送到调用方指定的任意主机）。
+      // （见 savedKeyForBaseUrl：目标地址必须有自己的 Key，否则不回退）。
       const apiKey = (submitted && submitted !== '******')
         ? submitted
-        : (storedKeyAllowedFor(cfgNow, baseUrl) ? resolveApiKey(cfgNow) : '');
+        : savedKeyForBaseUrl(cfgNow, baseUrl);
       const result = await testModelChat({
         baseUrl,
         apiKey,
@@ -210,6 +209,10 @@ export function registerProviderRoutes(router, deps = {}) {
     }
   });
   router.add('POST', '/api/providers/probe-thinking', async (req, res) => {
+    // 该端点会读取并回显已保存的高级请求参数；和无令牌时的本机回环一样要过密钥守卫。
+    if (!keyEndpointAllowed(req)) {
+      return json(res, 403, { error: '请求来源不被信任，已拒绝读取已保存的高级请求参数。' });
+    }
     try {
       const body = await readBody(req);
       // 支持用"未保存的当前选择"实测：thinking 传字符串或按用途对象；
@@ -221,18 +224,24 @@ export function registerProviderRoutes(router, deps = {}) {
         ? body.extraBody : undefined;
       const baseUrlIn = String(body.baseUrl ?? '');
       const submitted = String(body.apiKey ?? '').trim();
+      const cfgNow = getConfig();
       // 与「测试连通性」「获取列表」同一条守卫：掩码/空 Key 时只把服务端已存的明文 Key
       // 发给配置里已知的地址——不能因为调用方随手填个地址就把 Key 送出去（终审发现漏了这条）。
       const apiKeyResolved = (submitted && submitted !== '******')
         ? submitted
-        : (storedKeyAllowedFor(getConfig(), baseUrlIn || getConfig().api.baseUrl) ? resolveApiKey(getConfig()) : '');
+        : savedKeyForBaseUrl(cfgNow, baseUrlIn || cfgNow.api.baseUrl);
+      const normalized = (value) => String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+      // 只有探测当前主渠道时，才允许把主渠道保存的 extraBody / thinkingParams 当作默认值；
+      // 探测其他地址一律按调用方传入的参数（没传就为空），避免把一家密钥发给另一家。
+      const useSavedParams = !baseUrlIn || normalized(baseUrlIn) === normalized(cfgNow.api?.baseUrl);
       const result = await probeThinking({
         providerId: String(body.providerId ?? ''),
         model: String(body.model ?? ''),
         thinking: thinkingInput,
         extraBody: extraInput,
         baseUrl: baseUrlIn,
-        apiKey: apiKeyResolved
+        apiKey: apiKeyResolved,
+        useSavedParams
       });
       return json(res, 200, { ok: true, result });
     } catch (error) {

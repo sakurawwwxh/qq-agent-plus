@@ -830,10 +830,10 @@ export class ChatStore {
       //（delivery-integration「无输入租约的主动发送」用例钉的就是这个）。
       // 口径：按 chat_key 清残骸（含 never-acked 的 'sent'/'failed' —— 正常收尾由 ackLease
       // 删它们，租约从未 ack 的那些只剩这一条清理路径，不清就永久累积成残骸，复审 P3），
-      // 但**排除仍在途的租约**（runs 里非终态的行）；run_id 为空的（从未绑过租约）
-      // 没有可保护的在途证据，一并清。
+      // 但**排除 'sending'**：主动唤醒/日报/群游戏的 run_id 不在 runs 表里，靠 runs 取交集
+      // 保护不到它们；在途发送一旦被删，超时后的结果未知就失去证据。残留交给 ageStaleSending。
       const outbox = this.db.prepare(`DELETE FROM outbox WHERE chat_key=?
-        AND state IN ('sending','unknown','sent','failed','reconciled_sent','reconciled_failed')
+        AND state IN ('unknown','sent','failed','reconciled_sent','reconciled_failed')
         AND (run_id IS NULL OR run_id NOT IN (
           SELECT id FROM runs WHERE chat_key=? AND state NOT IN ('held','failed','acked')))`)
         .run(String(chatKey || ''), String(chatKey || '')).changes;

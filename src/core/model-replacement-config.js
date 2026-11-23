@@ -1,6 +1,7 @@
 // Persisted, credential-free queues shared by chat / ASR / TTS / image generation.
 export const REPLACEMENT_CHANNELS = ['chat', 'asr', 'tts', 'imageGen'];
 export const MAX_REPLACEMENT_ENTRIES = 64;
+export const MAX_REPLACEMENT_HISTORY = 20;
 export const DEFAULT_REPLACEMENT_TRIGGERS = Object.freeze({ http402: true, http403: true, quota429: true, http401: false });
 export function normalizeReplacementTriggers(raw) {
   return Object.fromEntries(Object.entries(DEFAULT_REPLACEMENT_TRIGGERS).map(([key, fallback]) =>
@@ -24,7 +25,23 @@ export function normalizeReplacementEntry(value) {
   const providerId = text(v.providerId);
   const model = text(v.model);
   if (!providerId || !model || ['__proto__', 'constructor', 'prototype'].includes(providerId)) return null;
-  return { source, providerId, model };
+  // TTS 音色可选：留空时仍按目标服务已保存/默认音色解析；填了就在切换时一并应用。
+  const voice = text(v.voice);
+  return { source, providerId, model, ...(voice ? { voice } : {}) };
+}
+
+function normalizeHistory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, MAX_REPLACEMENT_HISTORY).map((item) => {
+    const v = object(item);
+    return {
+      at: integer(v.at),
+      model: text(v.model),
+      fromModel: text(v.fromModel),
+      status: integer(v.status),
+      index: integer(v.index)
+    };
+  }).filter((item) => item.at && item.model);
 }
 
 export function normalizeModelReplacement(raw) {
@@ -39,7 +56,8 @@ export function normalizeModelReplacement(raw) {
       enabled: c.enabled === true && entries.some(Boolean) && nextIndex < entries.length,
       entries, triggers: normalizeReplacementTriggers(c.triggers), nextIndex, revision: integer(c.revision),
       lastSwitchAt: integer(c.lastSwitchAt),
-      lastModel: text(c.lastModel)
+      lastModel: text(c.lastModel),
+      history: normalizeHistory(c.history)
     }];
   }));
 }
@@ -80,4 +98,21 @@ export function configureModelReplacement(current, submitted) {
     };
   }
   return result;
+}
+
+/** 控制台“重置进度”：只回卷游标和最近切换摘要，保留模型列表、触发条件与切换历史。 */
+export function resetModelReplacementProgress(current, channel, revision) {
+  const chain = normalizeModelReplacement(current)[channel];
+  if (!chain) throw Object.assign(new Error('未知的模型替换链。'), { httpStatus: 400 });
+  if (chain.revision !== revision) {
+    throw Object.assign(new Error('模型替换链已在后台变化，请重新加载后再重置。'), { httpStatus: 409, code: 'REPLACEMENT_CONFLICT' });
+  }
+  return {
+    ...chain,
+    nextIndex: 0,
+    enabled: chain.entries.some(Boolean),
+    lastSwitchAt: 0,
+    lastModel: '',
+    revision: chain.revision + 1
+  };
 }

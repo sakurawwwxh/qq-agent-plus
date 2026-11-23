@@ -112,7 +112,10 @@ if (['start', 'stop', 'restart', 'status'].includes(command)) {
     fs.mkdirSync(dstDir, { recursive: true, mode: 0o700 });
     for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
       const { name } = entry;
-      if (skip.has(name) || name.startsWith('.') || name.endsWith('.lock')) continue;
+      // 插件凭据的加密密钥就在 plugin-secrets/.key：它是恢复插件凭据的必要文件，
+      // 不能跟其它运行态点文件一起跳过；否则恢复到空目录后旧密文全部解不开。
+      const keepDot = name === '.key' && path.basename(srcDir) === 'plugin-secrets';
+      if (skip.has(name) || name.endsWith('.lock') || (name.startsWith('.') && !keepDot)) continue;
       const src = path.join(srcDir, name);
       const dst = path.join(dstDir, name);
       // 所有 SQLite 库都走在线 backup API：identity/relationship/incident 以及嵌套的

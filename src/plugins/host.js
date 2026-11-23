@@ -148,6 +148,8 @@ export class PluginHost {
     // 幂等：已经在跑就直接算成功。重入保护用独立的 starting 标记 —— 崩溃重启那条路上
     // state 也会是 'starting'，用它做判断会把重启挡在门外（自锁，重启永远起不来）。
     if (this.#alive() && this.state === 'running') return true;
+    // 停机宽限期内不允许重新 spawn：否则旧进程的 exit 会清掉新 child，形成孤儿/双进程。
+    if (this.stopping || this.state === 'stopping') return false;
     if (this.starting) return false;
     this.starting = true;
     try {
@@ -239,8 +241,9 @@ export class PluginHost {
       if (code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED') return;
       this.#raw(`stdin 错误：${error?.message ?? error}`);
     });
-    this.child.on('error', (error) => this.#fail(`进程错误：${error?.message ?? error}`));
-    this.child.on('exit', (code, signal) => this.#onExit(code, signal));
+    const child = this.child;
+    child.on('error', (error) => this.#fail(`进程错误：${error?.message ?? error}`));
+    child.on('exit', (code, signal) => this.#onExit(child, code, signal));
 
     // init 握手：带上 apiVersion 与能力清单，插件据此决定自己要不要继续
     try {
@@ -416,6 +419,14 @@ export class PluginHost {
    */
   async stop() {
     if (this.state === 'idle' || this.state === 'stopped') { this.state = 'stopped'; return; }
+    // 重入时返回同一个停机过程：调用方（卸载/重载）依赖 stop 返回即子进程已退出，
+    // 不能因为 idle 清理正在宽限期就先 resolve，否则会在旧进程活着时 rename/起新进程。
+    if (this.stopping || this.state === 'stopping') return this.stopPromise || Promise.resolve();
+    this.stopPromise = this.#stopOnce();
+    try { return await this.stopPromise; } finally { this.stopPromise = null; }
+  }
+
+  async #stopOnce() {
     this.stopping = true;
     this.wakeSleep?.();          // 正在退避等待重启的话，立刻放行（别再等满退避）
     this.state = 'stopping';
@@ -433,6 +444,7 @@ export class PluginHost {
       await this.#waitExit(target, 1500);
       this.state = 'stopped';
     }
+    this.stopping = false;
     this.caps.flush();
   }
 
@@ -509,7 +521,15 @@ export class PluginHost {
     if (reason) this.lastError = String(reason.message ?? reason);
   }
 
-  async #onExit(code, signal) {
+  async #onExit(child, code, signal) {
+    // 旧一代的子进程可能在 stop() 之后、甚至新一代 start() 之后才发出 exit；
+    // 它不能清掉 this.child、心跳或 pending（否则新进程会变孤儿/被误重启）。
+    if (child !== this.child) {
+      try { child.stdout?.destroy(); } catch { /* ignore */ }
+      try { child.stderr?.destroy(); } catch { /* ignore */ }
+      try { child.stdin?.destroy(); } catch { /* ignore */ }
+      return;
+    }
     this.#stopHeartbeat();
     // 进程在写操作中途退出 = 结果未知：必须带 E_PLUGIN_DOWN，让 registry 走 unknown 而不是
     // 当"确定失败"退款——插件可能已经把评论/弹幕发出去了（2026-11-03 全量审查 P1）。
@@ -522,7 +542,9 @@ export class PluginHost {
     this.capInFlight = 0;
     this.mediaInFlight = 0;
     this.capWindow = [];
-    if (this.stopping || this.state === 'stopped' || this.state === 'stopping') { this.state = 'stopped'; return; }
+    // stop() 还没收完（宽限/等待退出）时保持 stopping，由 stop() 自己置 stopped；
+    // 提前置 stopped 会让调用方以为停机完成、立刻 start，撞上 stopping 守卫。
+    if (this.stopping || this.state === 'stopping' || this.state === 'stopped') return;
     this.stats.crashes += 1;
     this.child = null;
     // 稳稳跑过一段时间的插件，一次崩溃不该计入"连续崩溃"：否则一个月里零星崩三次就被停用了
@@ -540,7 +562,7 @@ export class PluginHost {
     this.log(`[plugin:${this.id}] 进程退出（code=${code}, signal=${signal}），${Math.round(wait / 1000)} 秒后重启（第 ${this.restarts} 次）`);
     // 可被打断的退避：停机时不该为一个后台重试干等（最多 15 秒），stop() 会叫醒它
     await this.#interruptibleSleep(wait);
-    if (this.stopping) { this.state = 'stopped'; return; }
+    if (this.stopping) return;
     const ok = await this.start();
     if (!ok) this.state = 'failed';
   }
@@ -605,6 +627,8 @@ export class PluginHost {
   }
 
   async #onCapability(message) {
+    // 停机/已停止的旧进程不得再使用宿主能力；starting 期间是合法 init/初始化调用，不能拒。
+    if (this.stopping || !['starting', 'running'].includes(this.state)) return;
     const { id, method, params } = message;
     const reply = (payload) => {
       if (id === undefined || id === null || !this.child?.stdin?.writable) return;

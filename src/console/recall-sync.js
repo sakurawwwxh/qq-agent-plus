@@ -5,6 +5,47 @@ import { noticeStamp } from './notice-dedup.js';
 import { getConfig } from '../core/config.js';
 
 const RECALLED_TEXT = '[消息已撤回]';
+// recall notice 早于消息入库（协议端乱序）：先记账，等消息落库后立刻补一次撤回。
+const PENDING_RECALL_TTL = 10 * 60 * 1000;
+const MAX_PENDING_RECALLS = 1000;
+const pendingRecalls = new Map();
+const pendingKey = (chatKey, mid) => `${chatKey}\u0000${String(mid)}`;
+
+function rememberPendingRecall(chatKey, mid, at = Date.now()) {
+  for (const [key, time] of pendingRecalls) {
+    if (at - time <= PENDING_RECALL_TTL) break;
+    pendingRecalls.delete(key);
+  }
+  if (pendingRecalls.size >= MAX_PENDING_RECALLS) {
+    const oldest = pendingRecalls.keys().next().value;
+    if (oldest !== undefined) pendingRecalls.delete(oldest);
+  }
+  pendingRecalls.set(pendingKey(chatKey, mid), at);
+}
+
+/** 消息入库后调用：如果撤回通知先到，就地把这条新消息改成撤回占位。 */
+export function applyPendingRecall(store, chatKey, mid, { emit = () => {}, log = () => {}, onRecalled = null } = {}) {
+  const emitFn = typeof emit === 'function' ? emit : () => {};
+  const logFn = typeof log === 'function' ? log : () => {};
+  const onRecalledFn = typeof onRecalled === 'function' ? onRecalled : null;
+  const key = pendingKey(chatKey, mid);
+  const at = pendingRecalls.get(key);
+  if (!at) return false;
+  pendingRecalls.delete(key);
+  if (Date.now() - at > PENDING_RECALL_TTL) return false;
+  const changed = markRecalled(store, chatKey, mid);
+  if (!changed) return false;
+  try { emitFn('chat-update', chatKey); } catch { /* 刷新失败不影响撤回 */ }
+  try { emitFn('message-recalled', { chatKey, id: changed.id, mid: changed.mid }); } catch { /* 同上 */ }
+  if (onRecalledFn) { try { void Promise.resolve(onRecalledFn(chatKey, changed.mid)).catch(() => {}); } catch { /* 同步抛错也不影响撤回 */ } }
+  logFn(`[recall] ${chatKey} 消息 ${mid} 的撤回通知先到，入库后已补标（原状态 ${changed.previousState}）`);
+  return true;
+}
+
+/** 测试辅助：清空进程内待补撤回队列。 */
+export function resetPendingRecalls() {
+  pendingRecalls.clear();
+}
 
 function chatKeyOf(event) {
   if (event?.notice_type === 'group_recall' && event.group_id != null) {
@@ -48,20 +89,23 @@ export function markRecalled(store, chatKey, mid) {
  * 处理一条 recall notice。返回 true 表示事件已处理（即使没找到消息），
  * 调用方应停止后续 notice 分发。
  */
-export function handleRecallNotice(event, { store, emit = () => {}, log = () => {}, dedup = null } = {}) {
+export function handleRecallNotice(event, { store, emit = () => {}, log = () => {}, dedup = null, onRecalled = null } = {}) {
   if (getConfig().conversation?.recallSyncEnabled === false) return false;
   const emitEvent = emit;
+  const onRecalledFn = typeof onRecalled === 'function' ? onRecalled : null;
   const chatKey = chatKeyOf(event);
   const mid = event?.message_id;
   if (!chatKey || mid == null || String(mid) === '') return false;
   if (dedup?.alreadySeen?.(recallNoticeKey(chatKey, event))) return true;
   const changed = markRecalled(store, chatKey, mid);
   if (!changed) {
-    log(`[recall] ${chatKey} 找不到消息 ${mid}（可能尚未入库），忽略`);
+    rememberPendingRecall(chatKey, mid);
+    log(`[recall] ${chatKey} 消息 ${mid} 尚未入库，已登记；入库后立即标记撤回`);
     return true;
   }
   try { emitEvent('chat-update', chatKey); } catch { /* 刷新失败不影响撤回 */ }
   try { emitEvent('message-recalled', { chatKey, id: changed.id, mid: changed.mid }); } catch { /* 同上 */ }
+  if (onRecalledFn) { try { void Promise.resolve(onRecalledFn(chatKey, changed.mid)).catch(() => {}); } catch { /* 同步抛错也不影响撤回 */ } }
   log(`[recall] ${chatKey} 消息 ${mid} 已标记撤回（原状态 ${changed.previousState}）`);
   return true;
 }

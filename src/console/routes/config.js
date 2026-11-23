@@ -1,6 +1,7 @@
 import { ttsVoiceSlot } from '../../llm/tts-presets.js';
-import { configureModelReplacement, REPLACEMENT_CHANNELS } from '../../core/model-replacement-config.js';
-import { replacementTargetPatch } from '../../core/model-replacement-targets.js';
+import { configureModelReplacement, resetModelReplacementProgress, REPLACEMENT_CHANNELS } from '../../core/model-replacement-config.js';
+import { replacementReadiness, replacementTargetPatch } from '../../core/model-replacement-targets.js';
+import { FEATURE_MODEL_KEYS, featureModelStatus, normalizeFeatureModels } from '../../core/feature-models.js';
 // 配置读取 / 保存 / 重载路由（从 console/app.js 拆出，2026-10-31 结构整治 M3）。
 // 这是全站最大的写接口（约 600 行）：密钥归属钉、__replace__ 语义、hasXxx 回填、
 // 保存失败回滚都在原处逐字保留 —— 拆分只搬位置，不改逻辑。
@@ -122,6 +123,115 @@ export function registerConfigRoutes(router, deps = {}) {
     emit('status', { configUpdated: true });
     return json(res, 200, { ok: true, channel: body.channel, chain: next.modelReplacement[body.channel] });
   }));
+  // 链配置体检：逐项解析目标端点与凭据归属，不联网、不花钱。保存前或运行异常后都可用。
+  router.add('GET', '/api/model-replacement/readiness', async (req, res, params, url) => {
+    const only = String(url.searchParams.get('channel') || '').trim();
+    if (only && !REPLACEMENT_CHANNELS.includes(only)) return json(res, 400, { ok: false, error: '未知的模型替换链。' });
+    const cfgNow = getConfig();
+    return json(res, 200, {
+      ok: true,
+      channels: Object.fromEntries((only ? [only] : REPLACEMENT_CHANNELS)
+        .map((channel) => [channel, replacementReadiness(cfgNow, channel)]))
+    });
+  });
+  router.add('POST', '/api/model-replacement/check', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !REPLACEMENT_CHANNELS.includes(body.channel)
+      || (body.entries !== undefined && (!Array.isArray(body.entries) || body.entries.length > 64))) {
+      return json(res, 400, { ok: false, error: '请提交要检查的 channel，可附带未保存的 entries。' });
+    }
+    const cfgNow = getConfig();
+    return json(res, 200, {
+      ok: true,
+      result: replacementReadiness(cfgNow, body.channel, Array.isArray(body.entries) ? body.entries : null)
+    });
+  });
+  router.add('POST', '/api/model-replacement/reset', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !REPLACEMENT_CHANNELS.includes(body.channel)
+      || !Number.isSafeInteger(body.revision) || body.revision < 0) {
+      return json(res, 400, { ok: false, error: '请提交要重置的 channel 与 revision。' });
+    }
+    const current = getConfig();
+    let chain;
+    try {
+      chain = resetModelReplacementProgress(current.modelReplacement, body.channel, body.revision);
+    } catch (error) {
+      return json(res, error.httpStatus || 400, { error: error.message, code: error.code || '' });
+    }
+    const before = structuredClone(current);
+    let next;
+    try {
+      next = updateConfig({ modelReplacement: { [body.channel]: chain } });
+    } catch (error) {
+      auditWrite('config.update', 'config', { req, before, ok: false, error: String(error?.message ?? error) });
+      if (error?.code === 'CONFIG_CONFLICT') return json(res, 409, {
+        ok: false, code: error.code, error: error.message,
+        configConflict: error.configConflict || getConfigConflict()
+      });
+      throw error;
+    }
+    auditWrite('config.update', 'config', { req, before, after: next, changed: ['modelReplacement'] });
+    emit('status', { configUpdated: true });
+    return json(res, 200, { ok: true, channel: body.channel, chain: next.modelReplacement[body.channel] });
+  });
+  // 后台任务模型路由：每项独立保存，不经过整包设置保存，避免旧页面覆盖其他任务。
+  const featureModelsView = (cfgNow) => Object.fromEntries(FEATURE_MODEL_KEYS
+    .map((key) => [key, featureModelStatus(cfgNow, key)]));
+  router.add('GET', '/api/feature-models', async (req, res) => {
+    const cfgNow = getConfig();
+    return json(res, 200, {
+      ok: true,
+      features: featureModelsView(cfgNow),
+      config: normalizeFeatureModels(cfgNow.featureModels)
+    });
+  });
+  router.add('POST', '/api/feature-models', serializeConfigWrite(async (req, res) => {
+    const body = await readBody(req);
+    const allowed = ['feature', 'enabled', 'providerId', 'model'];
+    if (!body || typeof body !== 'object' || Array.isArray(body)
+      || !FEATURE_MODEL_KEYS.includes(body.feature)
+      || typeof body.enabled !== 'boolean'
+      || Object.keys(body).some((key) => !allowed.includes(key))) {
+      return json(res, 400, { ok: false, error: '请提交 feature、enabled、providerId、model。' });
+    }
+    const current = getConfig();
+    const entry = {
+      enabled: body.enabled,
+      providerId: typeof body.providerId === 'string' ? body.providerId.trim().slice(0, 200) : '',
+      model: typeof body.model === 'string' ? body.model.trim().slice(0, 200) : ''
+    };
+    if (body.enabled) {
+      const status = featureModelStatus({
+        ...current,
+        featureModels: { ...normalizeFeatureModels(current.featureModels), [body.feature]: entry }
+      }, body.feature);
+      if (!status.ready) return json(res, 400, { ok: false, error: status.reason || '这个后台任务模型还不可用。' });
+      const provider = (current.providers || []).find((item) => item?.id === entry.providerId);
+      const models = (provider?.models || []).map((item) => typeof item === 'string' ? item : item?.id).filter(Boolean);
+      if (models.length && !models.includes(entry.model)) {
+        return json(res, 400, { ok: false, error: '这个模型不在所选提供商的模型列表里，请重新选择。' });
+      }
+    }
+    const before = structuredClone(current);
+    let next;
+    try {
+      next = updateConfig({ featureModels: { [body.feature]: entry } });
+    } catch (error) {
+      auditWrite('config.update', 'config', { req, before, ok: false, error: String(error?.message ?? error) });
+      if (error?.code === 'CONFIG_CONFLICT') return json(res, 409, {
+        ok: false, code: error.code, error: error.message,
+        configConflict: error.configConflict || getConfigConflict()
+      });
+      throw error;
+    }
+    auditWrite('config.update', 'config', { req, before, after: next, changed: ['featureModels'] });
+    emit('status', { configUpdated: true });
+    return json(res, 200, { ok: true, feature: body.feature, status: featureModelStatus(next, body.feature) });
+  }));
+
   router.add('POST', '/api/config', serializeConfigWrite(async (req, res) => {
     const patch = await readBody(req);
     // readBody 可能很慢（设置页整包可达数 MB），期间别的保存/接口写入可能已经落盘。
@@ -130,7 +240,7 @@ export function registerConfigRoutes(router, deps = {}) {
     const cfgNow = getConfig();
     // Replacement queues have their own single-channel write endpoint. Even a
     // stale/older settings page must not overwrite their runtime progress.
-    if (patch && typeof patch === 'object') delete patch.modelReplacement;
+    if (patch && typeof patch === 'object') { delete patch.modelReplacement; delete patch.featureModels; }
     // 审计（#5）：getConfig() 返回引用，patch 应用后会被就地改写 —— 必须先拍快照，
     // 否则 before 会被写成 after（等于没记；方案附录 J.2）。与合并用同一份快照，
     // 避免把并发请求的改动算到本次请求头上。
@@ -223,6 +333,21 @@ export function registerConfigRoutes(router, deps = {}) {
         const healed = unmaskSubmitted(submitted, cfgNow.api?.[field]);
         if (isReplace) raw.__replace__ = healed;
         else apiGuard[field] = healed;
+      }
+    }
+    // 手动换主渠道（模型目录里点选另一家）时，旧渠道的 extraBody / thinkingParams 里可能
+    // 带着上一家的 Authorization。和自动替换/兜底同口径：换主机且用户没显式重填就清空。
+    if (patch?.api && typeof patch.api === 'object') {
+      const apiGuard = sectionBody(patch.api);
+      const hostOfUrl = (value) => {
+        try { return new URL(String(value || '')).host.toLowerCase(); } catch { return ''; }
+      };
+      const nextBase = apiGuard.baseUrl !== undefined ? apiGuard.baseUrl : cfgNow.api?.baseUrl;
+      if (hostOfUrl(nextBase) !== hostOfUrl(cfgNow.api?.baseUrl)) {
+        // 即使同一表单里还提交了 extraBody，也以清空为准：其中可能含 hasXxx 回填出的
+        // 旧渠道密钥。换好提供商后重新填一次，比把上一家的 Authorization 发出去安全。
+        apiGuard.extraBody = { __replace__: {} };
+        apiGuard.thinkingParams = { __replace__: {} };
       }
     }
     // imageGen.extraBody 是同一个"文本域回填脱敏视图"的坑：Moss 的自定义参数也可能

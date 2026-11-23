@@ -4,6 +4,7 @@ import { api } from '../core/api.js';
 import { $, esc } from '../core/dom.js';
 import { askForConfirmation } from '../core/dom-util.js';
 import { state } from '../core/state.js';
+import { bindFeatureModelControls, renderFeatureModelsSection } from './feature-models.js';
 
 const channels = [['chat', '主模型'], ['asr', '语音转文字'], ['tts', '语音回复（TTS）'], ['imageGen', '图片生成（按张计费）']];
 const triggerOptions = [['http402', 'HTTP 402', true], ['http403', 'HTTP 403', true], ['quota429', '明确额度耗尽的 HTTP 429', true], ['http401', 'HTTP 401', false]];
@@ -18,6 +19,7 @@ const entryLabel = (entry) => {
 function renderModelReplacementSection(config) {
   state.modelReplacementDirty = {};
   state.modelReplacementTriggerDirty = {};
+  state.modelReplacementReadiness = {};
   state.modelReplacementDraft = Object.fromEntries(channels.map(([key]) => {
     const c = config.modelReplacement?.[key] || {};
     return [key, { ...c, enabled: c.enabled === true, revision: c.revision || 0,
@@ -38,35 +40,62 @@ function renderModelReplacementSection(config) {
         <div class="hint" data-replacement-progress="${key}">${progressHtml(c, key)}</div>
         <div data-replacement-rows="${key}">${rowsHtml(key)}</div>
         <button type="button" class="btn btn-small" data-replacement-add="${key}">＋ 添加模型</button>
+        <div class="hint" data-replacement-readiness="${key}" style="margin-top:8px">${readinessHtml(key)}</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button type="button" class="btn btn-primary" data-replacement-save="${key}">保存${label}替换链</button>
+          <button type="button" class="btn btn-small" data-replacement-check="${key}">检查整条链</button>
+          <button type="button" class="btn btn-small" data-replacement-reset="${key}">重置进度</button>
           <button type="button" class="btn btn-small" data-replacement-reload="${key}">重新读取此链</button>
         </div>
+        <details class="hint" style="margin-top:8px"><summary style="cursor:pointer">最近切换记录</summary>
+          <div data-replacement-history="${key}">${historyHtml(c)}</div></details>
         </fieldset>
         <div class="hint" data-replacement-status="${key}" role="status" aria-live="polite"></div>
       </details>`;
     }).join('')}</div>
-    <div id="model-replacement-hint" class="hint" role="status"></div>`;
+    <div id="model-replacement-hint" class="hint" role="status"></div>
+    ${renderFeatureModelsSection(config)}`;
 }
 
 function rowsHtml(channel) {
   const entries = state.modelReplacementDraft[channel].entries;
   const count = Math.max(3, entries.length);
-  return Array.from({ length: count }, (_, i) => `<div class="field" style="margin:10px 0">
-    <label for="replacement-${channel}-${i}">替换模型 ${i + 1}</label>
+  const readiness = state.modelReplacementReadiness?.[channel];
+  return Array.from({ length: count }, (_, i) => {
+    const check = readiness?.entries?.find((item) => item.index === i && !item.empty);
+    const badge = check ? `<span class="lm-flag" title="${esc(check.reason || '')}">${check.ready ? '✓ 可用' : '⚠ 不可用'}</span>` : '';
+    return `<div class="field" style="margin:10px 0">
+    <label for="replacement-${channel}-${i}">替换模型 ${i + 1} ${badge}</label>
     <div style="display:flex;gap:6px;min-width:0">
       <input type="text" readonly id="replacement-${channel}-${i}" data-replacement-pick="${i}" value="${esc(entryLabel(entries[i]))}" placeholder="点击选择模型（可留空）" style="flex:1;min-width:0;cursor:pointer" />
       <button type="button" class="btn btn-small" data-replacement-clear="${i}" aria-label="清空第 ${i + 1} 个模型">清空</button>
       ${i >= 3 ? `<button type="button" class="btn btn-small" data-replacement-remove="${i}" aria-label="删除第 ${i + 1} 个选择框">−</button>` : ''}
-    </div></div>`).join('');
+    </div>
+    ${channel === 'tts' && entries[i] ? `<input type="text" data-replacement-voice="${i}" value="${esc(entries[i].voice || '')}" placeholder="目标音色（留空 = 使用目标服务已保存/默认音色）" style="margin-top:6px" />` : ''}
+    </div>`;
+  }).join('');
+}
+function readinessHtml(channel) {
+  const result = state.modelReplacementReadiness?.[channel];
+  if (!result) return '尚未检查。点「检查整条链」可提前发现已删除的模型、缺失的凭据或失效的音色。';
+  const used = (result.entries || []).filter((item) => !item.empty);
+  if (!used.length) return '这条链还没有有效模型。';
+  const lines = used.map((item) => `第 ${item.index + 1} 项 ${item.ready ? '✓' : '⚠'} ${item.ready ? (item.voice ? `音色 ${esc(item.voice)}` : '可用') : esc(item.reason)}`);
+  return `检查结果：${result.readyCount}/${result.total} 项可用${result.invalidCount ? `，${result.invalidCount} 项需要处理` : ''}。${lines.join('；')}`;
+}
+function historyHtml(c) {
+  const history = Array.isArray(c.history) ? c.history.slice(0, 10) : [];
+  if (!history.length) return '还没有自动切换记录。';
+  return history.map((item) => `<div>${esc(new Date(item.at).toLocaleString())} · ${item.fromModel ? `${esc(item.fromModel)} → ` : ''}${esc(item.model)}${item.status ? `（HTTP ${esc(item.status)}）` : ''}</div>`).join('');
 }
 function progressHtml(c, channel) {
-  return `${c.nextIndex ? `已推进到第 ${c.nextIndex} 个位置；` : ''}${c.lastModel ? `最近切换：${esc(c.lastModel)}${c.lastSwitchAt ? `（${esc(new Date(c.lastSwitchAt).toLocaleString())}）` : ''}。` : ''}重新启用或修改列表、顺序并单独保存后，从第一个有效选择开始。未修改直接保存不会重置进度。${channel === 'chat' ? '' : '请选择支持本用途的模型；专用服务需先保存对应凭据。TTS 使用目标服务已保存或默认的音色。'}`;
+  return `${c.nextIndex ? `已推进到第 ${c.nextIndex} 个位置；` : ''}${c.lastModel ? `最近切换：${esc(c.lastModel)}${c.lastSwitchAt ? `（${esc(new Date(c.lastSwitchAt).toLocaleString())}）` : ''}。` : ''}重新启用或修改列表、顺序并单独保存后，从第一个有效选择开始。未修改直接保存不会重置进度。${channel === 'chat' ? '' : '请选择支持本用途的模型；专用服务需先保存对应凭据。TTS 可在每个目标下单独填写音色。'}`;
 }
 function hasUnsavedModelReplacement() {
   return Object.values(state.modelReplacementDirty || {}).some(Boolean)
     || Object.values(state.modelReplacementSaving || {}).some(Boolean)
     || Object.values(state.modelReplacementTriggerDirty || {}).some(Boolean)
+    || Object.values(state.featureModelDirty || {}).some(Boolean)
     || state.modelReplacementTriggerSaving;
 }
 function chainNote(channel, message) {
@@ -78,8 +107,13 @@ function dirty(channel) {
   chainNote(channel, '此链有未保存改动，请使用本链的保存按钮。');
 }
 function rerenderRows(channel) {
+  // 行内容变了，旧的就绪结果不能再挂在新的第 N 项上。
+  state.modelReplacementReadiness ||= {};
+  state.modelReplacementReadiness[channel] = null;
   const el = document.querySelector(`[data-replacement-rows="${channel}"]`);
   if (el) el.innerHTML = rowsHtml(channel);
+  const readiness = document.querySelector(`[data-replacement-readiness="${channel}"]`);
+  if (readiness) readiness.innerHTML = readinessHtml(channel);
   dirty(channel);
 }
 function acceptChain(channel, chain, draft, ownSave = false) {
@@ -104,6 +138,12 @@ function acceptChain(channel, chain, draft, ownSave = false) {
   if (rows) rows.innerHTML = rowsHtml(channel);
   const progress = document.querySelector(`[data-replacement-progress="${channel}"]`);
   if (progress) progress.innerHTML = progressHtml(chain, channel);
+  const history = document.querySelector(`[data-replacement-history="${channel}"]`);
+  if (history) history.innerHTML = historyHtml(chain);
+  state.modelReplacementReadiness ||= {};
+  state.modelReplacementReadiness[channel] = null;
+  const readiness = document.querySelector(`[data-replacement-readiness="${channel}"]`);
+  if (readiness) readiness.innerHTML = readinessHtml(channel);
   return true;
 }
 async function writeOrReloadChain(channel, reload = false) {
@@ -122,7 +162,10 @@ async function writeOrReloadChain(channel, reload = false) {
       method: 'POST', body: JSON.stringify({ channel, enabled: draft.enabled, entries: draft.entries, revision: draft.revision })
     });
     const chain = reload ? data.modelReplacement[channel] : data.chain;
-    if (acceptChain(channel, chain, draft, !reload)) chainNote(channel, reload ? '已重新读取此链。' : '此链已保存 ✓，其他链和普通设置不受影响。');
+    if (acceptChain(channel, chain, draft, !reload)) {
+      chainNote(channel, reload ? '已重新读取此链。' : '此链已保存 ✓，其他链和普通设置不受影响。');
+      void checkChain(channel, true);
+    }
   } catch (error) {
     if (state.modelReplacementDraft[channel] === draft) chainNote(channel,
       error.code === 'REPLACEMENT_CONFLICT'
@@ -132,6 +175,49 @@ async function writeOrReloadChain(channel, reload = false) {
     state.modelReplacementSaving[channel] = false;
     refreshTriggerControls();
     if (fields) fields.disabled = false;
+  }
+}
+
+async function checkChain(channel, quiet = false) {
+  const draft = state.modelReplacementDraft[channel];
+  if (!draft) return;
+  try {
+    const data = await api('/api/model-replacement/check', {
+      method: 'POST', body: JSON.stringify({ channel, entries: draft.entries })
+    });
+    const result = data.result;
+    state.modelReplacementReadiness ||= {};
+    // 检查结果只按“当前草稿内容”展示；中途改过列表就丢弃，避免把旧结果盖到新行上。
+    if (state.modelReplacementDraft[channel] !== draft) return;
+    state.modelReplacementReadiness[channel] = result;
+    const host = document.querySelector(`[data-replacement-readiness="${channel}"]`);
+    if (host) host.innerHTML = readinessHtml(channel);
+    const rows = document.querySelector(`[data-replacement-rows="${channel}"]`);
+    if (rows) rows.innerHTML = rowsHtml(channel);
+    if (!quiet) chainNote(channel, result.ready
+      ? `整条链检查通过：${result.readyCount}/${result.total} 项可用。`
+      : `整条链检查完成：${result.invalidCount} 项不可用，保存前请先处理。`);
+  } catch (error) {
+    if (!quiet) chainNote(channel, `检查失败：${error.message}`);
+  }
+}
+
+async function resetChain(channel) {
+  const draft = state.modelReplacementDraft[channel];
+  if (!draft) return;
+  if (!await askForConfirmation(`重置这条替换链的进度？${state.modelReplacementDirty[channel] ? '本链未保存的模型改动会被丢弃；' : ''}重置后会重新启用这条链，模型列表、触发条件和切换历史保留，下一次从第一个有效模型开始。`)) return;
+  try {
+    const data = await api('/api/model-replacement/reset', {
+      method: 'POST', body: JSON.stringify({ channel, revision: draft.revision })
+    });
+    if (acceptChain(channel, data.chain, draft, true)) {
+      chainNote(channel, '进度已重置并重新启用 ✓，其他链和普通设置不受影响。');
+      void checkChain(channel, true);
+    }
+  } catch (error) {
+    chainNote(channel, error.code === 'REPLACEMENT_CONFLICT'
+      ? '此链已在后台变化，本次未重置。请先“重新读取此链”核对。'
+      : `重置失败：${error.message}`);
   }
 }
 
@@ -266,6 +352,7 @@ async function pickModel(channel, index) {
 function bindModelReplacementControls() {
   const root = $('#model-replacement-editor');
   if (!root) return;
+  bindFeatureModelControls();
   bindTriggerControls();
   for (const [channel] of channels) {
     $(`#replacement-${channel}-enabled`).addEventListener('change', (e) => {
@@ -273,12 +360,31 @@ function bindModelReplacementControls() {
       dirty(channel);
     });
   }
+  root.addEventListener('input', (event) => {
+    const input = event.target.closest('[data-replacement-voice]');
+    if (!input) return;
+    const channel = input.closest('[data-replacement-channel]').dataset.replacementChannel;
+    const entries = state.modelReplacementDraft[channel].entries;
+    const index = Number(input.dataset.replacementVoice);
+    if (!entries[index]) return;
+    const voice = String(input.value || '').trim();
+    if (voice) entries[index].voice = voice;
+    else delete entries[index].voice;
+    // 音色变化只改草稿，不参与“自动替换触发条件”的保存。
+    state.modelReplacementReadiness ||= {};
+    state.modelReplacementReadiness[channel] = null;
+    const readiness = document.querySelector(`[data-replacement-readiness="${channel}"]`);
+    if (readiness) readiness.innerHTML = readinessHtml(channel);
+    dirty(channel);
+  });
   root.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-replacement-pick], [data-replacement-clear], [data-replacement-add], [data-replacement-remove], [data-replacement-save], [data-replacement-reload]');
+    const button = event.target.closest('[data-replacement-pick], [data-replacement-clear], [data-replacement-add], [data-replacement-remove], [data-replacement-save], [data-replacement-reload], [data-replacement-check], [data-replacement-reset]');
     if (!button) return;
     const channel = button.closest('[data-replacement-channel]').dataset.replacementChannel;
     if (state.modelReplacementSaving[channel] || state.modelReplacementTriggerSaving) return;
     if (button.hasAttribute('data-replacement-save')) { void writeOrReloadChain(channel); return; }
+    if (button.hasAttribute('data-replacement-check')) { void checkChain(channel); return; }
+    if (button.hasAttribute('data-replacement-reset')) { void resetChain(channel); return; }
     if (button.hasAttribute('data-replacement-reload')) { void writeOrReloadChain(channel, true); return; }
     const entries = state.modelReplacementDraft[channel].entries;
     if (button.hasAttribute('data-replacement-pick')) void pickModel(channel, Number(button.dataset.replacementPick));
@@ -295,9 +401,13 @@ async function syncModelReplacementStatus(status) {
   if (!state.config?.modelReplacement || !status.modelReplacement) return;
   const changed = channels.some(([key]) => (state.config.modelReplacement[key]?.revision || 0) !== status.modelReplacement[key]?.revision);
   if (!changed) return;
+  const switched = channels
+    .map(([key]) => status.modelReplacement[key])
+    .filter((chain) => chain?.lastModel)
+    .sort((a, b) => (Number(b.revision) || 0) - (Number(a.revision) || 0))[0];
   if (state.settingsDirty || hasUnsavedModelReplacement()) {
     const hint = $('#model-replacement-hint');
-    if (hint) hint.textContent = '替换链已在后台变化，未覆盖当前草稿。各链可用“重新读取此链”核对；普通设置的保存不会重置替换链。';
+    if (hint) hint.textContent = `替换链已在后台变化${switched ? `（最近切换 ${switched.lastModel}）` : ''}，未覆盖当前草稿。各链可用“重新读取此链”核对；普通设置的保存不会重置替换链。`;
     return;
   }
   if (state.tab === 'settings' && state.settingsSection === 'api' && !document.querySelector('.model-modal-overlay')) await loadSettings();

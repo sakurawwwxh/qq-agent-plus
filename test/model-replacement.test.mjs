@@ -499,3 +499,20 @@ test('legacy unbound media keys are reusable only on the same endpoint', () => {
   movedAsr.asr.baseUrl = 'https://asr.other.example/v1';
   assert.throws(() => replacementTargetPatch(movedAsr, 'asr', asr), /语音转文字/);
 });
+
+test('chat replacement drops extraBody when switching to another host', async (t) => {
+  const c = fixture('chat', ['A']);
+  c.api.extraBody = { authorization: 'Bearer old-provider-secret', custom: 'x' };
+  updateConfig(c);
+  const bodies = [];
+  t.mock.method(globalThis, 'fetch', async (_url, req) => {
+    const body = JSON.parse(req.body);
+    bodies.push(body);
+    return body.model === 'A'
+      ? new Response(JSON.stringify({ model: 'A', choices: [{ message: { role: 'assistant', content: 'ok' } }] }))
+      : new Response('no', { status: 403 });
+  });
+  await chatCompletionWithRetry({ messages: [{ role: 'user', content: 'test' }] }, 0);
+  assert.equal(bodies.at(-1).authorization, undefined, '跨 host 替换不能把旧渠道的认证参数带过去');
+  assert.equal(bodies.at(-1).custom, undefined);
+});

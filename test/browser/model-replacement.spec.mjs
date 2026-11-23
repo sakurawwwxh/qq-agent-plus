@@ -92,7 +92,7 @@ test('independent saves: general save excludes chains, each queue saves only its
     for (const colors of saveButtonColors) expect(colors).toEqual(saveButtonColors[0]);
     const pick = async (channel, modelIndex) => {
       const details = page.locator(`[data-replacement-channel="${channel}"]`);
-      if (!await details.evaluate((el) => el.open)) await details.locator('summary').click();
+      if (!await details.evaluate((el) => el.open)) await details.locator(':scope > summary').click();
       await page.locator(`#replacement-${channel}-0`).click();
       await page.locator(`.model-modal-overlay:not(.closing) #replacement-picker-right [data-replacement-model="${modelIndex}"]`).click();
     };
@@ -216,7 +216,7 @@ test('one trigger editor: channel dropdown, isolated saves, preserved drafts and
     expect((await read()).modelReplacement).toEqual(beforeGeneral.modelReplacement);
     await expect(page.locator('#replacement-trigger-http401')).toBeChecked();
     // Dirty ASR model rows are not saved or discarded by saving its rules.
-    await page.locator('[data-replacement-channel="asr"] summary').click();
+    await page.locator('[data-replacement-channel="asr"] > summary').click();
     await page.locator('#replacement-asr-0').click();
     await page.locator('.model-modal-overlay:not(.closing) #replacement-picker-right [data-replacement-model="2"]').click();
     const beforeRules = await read();

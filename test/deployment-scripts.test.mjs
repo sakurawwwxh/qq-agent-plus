@@ -497,6 +497,7 @@ test('manage backup：所有 SQLite 库都走在线 backup API，不直接拷 WA
   assert.match(manage, /await backup\(db, dst\)/);
   assert.ok(manage.includes('/\\.sqlite-(wal|shm)$/'), 'WAL/SHM 不单独拷贝');
   assert.match(manage, /const copyTree = async/, '嵌套目录要递归，不能把 living-memory 等库裸拷贝');
+  assert.match(manage, /name === '\.key' && path\.basename\(srcDir\) === 'plugin-secrets'/, '插件凭据密钥 .key 必须随数据目录备份，否则恢复后旧密文全部解不开');
   assert.match(manage, /function getCfg\(\)/, 'config.json 必须惰性读取，损坏时 stop/start 仍可用');
   assert.doesNotMatch(manage, /^const cfg = readJson/m, '不能在模块加载时强读 config.json');
 });

@@ -32,7 +32,7 @@ dns.promises.lookup = async (hostname, options) => (
 );
 
 const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
-const { safeFetchBinary, readBounded, safeFetchRequest, validateFetchUrl } = await import('../src/llm/safe-fetch.js');
+const { safeFetchBinary, readBounded, safeFetchRequest, validateFetchUrl, assertPublicUrlLiteral } = await import('../src/llm/safe-fetch.js');
 
 const TLS_DIR = path.join(import.meta.dirname, 'fixtures', 'tls');
 const TLS_CERT = fs.readFileSync(path.join(TLS_DIR, 'localhost-cert.pem'));
@@ -40,6 +40,17 @@ const TLS_KEY = fs.readFileSync(path.join(TLS_DIR, 'localhost-key.pem'));
 // 测试用自签证书只在本进程内被信任；不要用 NODE_TLS_REJECT_UNAUTHORIZED=0，
 // 那会把“证书校验失败必须拒绝”的用例一起关掉。
 tls.setDefaultCACertificates([...tls.getCACertificates('default'), TLS_CERT.toString()]);
+
+test('assertPublicUrlLiteral：末尾点不能绕过 localhost/.local/.internal 检查', () => {
+  for (const url of [
+    'http://localhost.:3210/x',
+    'http://foo.local./x',
+    'http://metadata.google.internal./computeMetadata/v1/'
+  ]) {
+    assert.throws(() => assertPublicUrlLiteral(url), /内网或本机/, url);
+  }
+  assert.doesNotThrow(() => assertPublicUrlLiteral('https://example.com/x'));
+});
 
 test('fake-ip DNS：放行 198.18/15 的解析结果，但直连地址和真内网仍然拦截', async () => {
   const base = structuredClone(DEFAULT_CONFIG);

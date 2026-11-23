@@ -140,6 +140,7 @@ function renderSettingsSidebar() {
       state.settingsDirty = false;
       state.modelReplacementDirty = {};
       state.modelReplacementTriggerDirty = {};
+      state.featureModelDirty = {};
       renderSettingsSidebar();
       renderSettings();
     });
@@ -305,7 +306,7 @@ function bindDirtyTracking() {
   if (!box || box.dataset.dirtyBound === '1') return;
   box.dataset.dirtyBound = '1';
   const mark = (event) => {
-    if (event.target.closest('#model-replacement-editor')) return;
+    if (event.target.closest('#model-replacement-editor') || event.target.closest('#feature-models-editor')) return;
     state.settingsDirty = true;
     const note = $('#cfg-dirty-note');
     if (note) note.textContent = '有未保存改动';

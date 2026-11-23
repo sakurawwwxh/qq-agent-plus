@@ -231,3 +231,89 @@ test('embedding configuration stays in process environment and long-memory defau
   assert.equal(embedding.baseUrl, 'https://embed.example.com/v1');
   assert.equal(embedding.apiKey, 'secret');
 });
+
+test('置顶与人工反馈会持久化、编辑时不丢失，并影响列表排序', async () => {
+  const service = fakeService();
+  const first = await service.upsertMemory({
+    scopeKey: 'group:300', type: 'fact', summary: '普通记忆', content: '普通正文', importance: 3
+  });
+  const second = await service.upsertMemory({
+    scopeKey: 'group:300', type: 'fact', summary: '重要记忆', content: '重要正文', importance: 3
+  });
+  service.pinMemory(second.id, true);
+  service.feedbackMemory(second.id, 'useful');
+  // 重新编辑正文：没有显式传 pinned/feedback 时必须保留。
+  const latest = service.store.getMemory(second.id);
+  const edited = await service.upsertMemory({ ...latest, content: '重要正文（更新）' });
+  assert.equal(edited.pinned, true);
+  assert.equal(edited.feedback, 'useful');
+  const page = service.store.listMemories({ scopeKeys: ['group:300'], limit: 10 });
+  assert.equal(page.entries[0].id, second.id, '置顶记忆排在前面');
+  assert.equal(page.entries.find((item) => item.id === first.id).pinned, false);
+  service.close();
+});
+
+test('合并重复记忆：目标吸收正文与实体，源卡片和来源回合一起删除', async () => {
+  const service = fakeService();
+  const target = await service.upsertMemory({
+    scopeKey: 'group:400', type: 'project', summary: '项目 A', content: '第一段',
+    tags: ['a'], entities: ['E1'], importance: 4, source: { sessionIds: ['s1'], turnIds: ['t1'], turnCount: 1 }
+  });
+  const source = await service.upsertMemory({
+    scopeKey: 'group:400', type: 'project', summary: '项目 A（重复）', content: '第二段',
+    tags: ['b'], entities: ['E2'], importance: 7, source: { sessionIds: ['s2'], turnIds: ['t2'], turnCount: 2 }
+  });
+  const merged = await service.mergeMemories(target.id, [source.id, target.id]);
+  assert.equal(merged.id, target.id);
+  assert.match(merged.content, /第一段/);
+  assert.match(merged.content, /第二段/);
+  assert.equal(merged.importance, 7);
+  assert.deepEqual([...merged.tags].sort(), ['a', 'b']);
+  assert.deepEqual([...merged.entities].sort(), ['E1', 'E2']);
+  assert.deepEqual([...merged.source.turnIds].sort(), ['t1', 't2']);
+  assert.equal(service.store.getMemory(source.id), null);
+  service.close();
+});
+
+test('撤回同步把来源回合里的原正文改成占位，不影响其他消息', async () => {
+  const service = fakeService();
+  const turn = service.recordTurn({
+    scopeKey: 'group:600',
+    payload: { lines: [
+      { role: 'user', text: '要撤回的原文', mid: '42' },
+      { role: 'user', text: '保留的原文', mid: '43' }
+    ] }
+  });
+  assert.equal(service.store.redactTurnMessage('group:600', '42'), 1);
+  const payload = JSON.parse(service.store.db.prepare('SELECT payload_json FROM turns WHERE id = ?').get(turn.id).payload_json);
+  assert.equal(payload.lines[0].text, '[消息已撤回]');
+  assert.equal(payload.lines[1].text, '保留的原文');
+  service.close();
+});
+
+test('跨会话合并被拒绝，源卡片不会被搬走', async () => {
+  const service = fakeService();
+  const target = await service.upsertMemory({
+    scopeKey: 'group:700', type: 'fact', summary: 'A 群记忆', content: 'A 群内容', importance: 4
+  });
+  const source = await service.upsertMemory({
+    scopeKey: 'group:701', type: 'fact', summary: 'B 群记忆', content: 'B 群内容', importance: 4
+  });
+  await assert.rejects(service.mergeMemories(target.id, [source.id]), /同一会话/);
+  assert.ok(service.store.getMemory(source.id));
+  service.close();
+});
+
+test('合并会超长时整单拒绝，源卡片保留而不是先截断再删源', async () => {
+  const service = fakeService();
+  const target = await service.upsertMemory({
+    scopeKey: 'group:500', type: 'project', summary: '大卡片甲', content: '甲'.repeat(3000), importance: 4
+  });
+  const source = await service.upsertMemory({
+    scopeKey: 'group:500', type: 'project', summary: '大卡片乙', content: '乙'.repeat(3000), importance: 4
+  });
+  await assert.rejects(service.mergeMemories(target.id, [source.id]), /6000 字/);
+  assert.ok(service.store.getMemory(target.id), '目标卡保留');
+  assert.ok(service.store.getMemory(source.id), '源卡必须保留');
+  service.close();
+});

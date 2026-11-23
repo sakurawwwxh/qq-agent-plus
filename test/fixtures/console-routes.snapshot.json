@@ -792,6 +792,30 @@
     "keyEndpoint": false
   },
   {
+    "method": "POST",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/pin$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/feedback$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/duplicates$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/^\\/api\\/living-memory\\/memories\\/([0-9A-Za-z-]+)\\/merge$/",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
     "method": "GET",
     "path": "/api/living-memory/graph",
     "auth": true,
@@ -1076,6 +1100,36 @@
   {
     "method": "POST",
     "path": "/api/model-replacement",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/model-replacement/readiness",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/model-replacement/check",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/model-replacement/reset",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "GET",
+    "path": "/api/feature-models",
+    "auth": true,
+    "keyEndpoint": false
+  },
+  {
+    "method": "POST",
+    "path": "/api/feature-models",
     "auth": true,
     "keyEndpoint": false
   },

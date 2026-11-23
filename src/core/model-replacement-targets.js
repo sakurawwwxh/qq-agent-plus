@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { TTS_SERVICES, ttsServiceOfBaseUrl, ttsServiceOf, ttsKeyFor, ttsVoicesFor, ttsVoiceSlot } from '../llm/tts-presets.js';
 import { IMAGEGEN_SERVICES, imageGenServiceOfBaseUrl } from '../llm/image-gen-presets.js';
 import { asrCredentialFor, asrCredentialForSlot, asrCredentialSlot, asrEndpointHost, imageGenKeyResolve } from './config.js';
+import { normalizeModelReplacement } from './model-replacement-config.js';
 
 const asrServices = [
   { id: 'siliconflow', label: '硅基流动 · 转写', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', models: ['FunAudioLLM/SenseVoiceSmall'] },
@@ -18,6 +19,14 @@ const baseOf = (v) => clean(v).replace(/\/+$/, '');
 const modelId = (m) => typeof m === 'string' ? m : m?.id;
 const own = (obj, k) => obj && Object.hasOwn(obj, k) ? obj[k] : undefined;
 const usableKey = (key) => clean(key) !== '******' ? clean(key) : '';
+const normalizeReplacementEntrySafe = (entry) => {
+  const source = ['catalog', 'service'].includes(entry?.source) ? entry.source : 'catalog';
+  const providerId = clean(entry?.providerId);
+  const model = clean(entry?.model);
+  if (!providerId || !model) return null;
+  const voice = clean(entry?.voice);
+  return { source, providerId, model, ...(voice ? { voice } : {}) };
+};
 function catalogProvider(cfg, id) { return (cfg.providers || []).find((p) => p.id === id); }
 function catalogKey(cfg, p) { return usableKey(own(cfg.providerKeys, p.id)) || usableKey(p.apiKey); }
 
@@ -65,7 +74,10 @@ export function replacementTargetPatch(cfg, channel, entry) {
     if (!baseUrl) throw Object.assign(new Error('替换模型缺少服务地址。'), { httpStatus: 400 });
     if (channel === 'chat') {
       requireKey(key, '聊天模型');
-      return { api: { ...cfg.api, provider: p.id, baseUrl, model: entry.model, apiKey: '' } };
+      const sameHost = asrEndpointHost(cfg.api?.baseUrl || '') === asrEndpointHost(baseUrl);
+      // extraBody / thinkingParams 是用户给原服务商填的高级请求参数，可能含
+      // authorization/x-api-key；换主机时不能原样发给另一家（与 imageGen 同口径）。
+      return { api: { ...cfg.api, provider: p.id, baseUrl, model: entry.model, apiKey: '', ...(sameHost ? {} : { extraBody: {}, thinkingParams: {} }) } };
     }
   } else {
     const services = channel === 'asr' ? asrServices : channel === 'tts' ? TTS_SERVICES : channel === 'imageGen' ? IMAGEGEN_SERVICES : [];
@@ -116,9 +128,10 @@ export function replacementTargetPatch(cfg, channel, entry) {
     const candidates = ttsVoicesFor(id, entry.model);
     const voiceSlot = ttsVoiceSlot(baseUrl, entry.model === 'default' ? '' : entry.model);
     const savedVoice = own(old.voiceSlots, voiceSlot) || (id !== 'custom' ? own(old.voices, id) : '') || (sameEndpoint ? old.voice : '');
-    let voice = savedVoice;
-    if (!voice || (candidates.length && !candidates.includes(voice) && !candidates.includes(voice.split(':').pop()))) voice = candidates[0] || '';
-    if (!voice) throw Object.assign(new Error('目标 TTS 服务没有可用音色，请先在语音回复设置中保存该服务的音色。'), { httpStatus: 400 });
+    const explicitVoice = clean(entry.voice);
+    let voice = explicitVoice || savedVoice;
+    if (!explicitVoice && (!voice || (candidates.length && !candidates.includes(voice) && !candidates.includes(voice.split(':').pop())))) voice = candidates[0] || '';
+    if (!voice) throw Object.assign(new Error('目标 TTS 服务没有可用音色，请在替换链里填写音色，或先在语音回复设置中保存该服务的音色。'), { httpStatus: 400 });
     if (id === 'siliconflow' && !voice.startsWith(entry.model + ':')) voice = `${entry.model}:${voice.split(':').pop()}`;
     const next = { ...old, provider: service?.provider || 'openai', baseUrl,
       model: entry.model === 'default' ? '' : entry.model, voice,
@@ -145,6 +158,50 @@ export function replacementTargetPatch(cfg, channel, entry) {
     } };
   }
   throw Object.assign(new Error('未知的模型替换链。'), { httpStatus: 400 });
+}
+
+/**
+ * 逐项解析替换链目标，提前暴露“保存时有效、运行时已失效”的配置问题。
+ * 只做本地解析（目录项、凭据归属、音色回退），不发网络请求、不产生费用。
+ */
+export function replacementReadiness(cfg, channel, entriesOverride = null) {
+  const chain = normalizeModelReplacement(cfg.modelReplacement)[channel];
+  const sourceEntries = Array.isArray(entriesOverride)
+    ? entriesOverride.slice(0, 64).map((entry) => entry ? normalizeReplacementEntrySafe(entry) : null)
+    : chain.entries;
+  const entries = sourceEntries.map((entry, index) => {
+    if (!entry) return { index, empty: true, ready: false, label: '', reason: '空槽，运行时跳过' };
+    const label = `${entry.model} · ${entry.providerId}`;
+    try {
+      const patch = replacementTargetPatch(cfg, channel, entry);
+      const target = channel === 'chat' ? patch.api
+        : channel === 'asr' ? patch.asr
+          : channel === 'tts' ? patch.tts : patch.imageGen;
+      return {
+        index, empty: false, ready: true, label,
+        model: entry.model,
+        ...(channel === 'tts' ? { voice: target?.voice || '' } : {}),
+        baseUrl: target?.baseUrl || ''
+      };
+    } catch (error) {
+      return { index, empty: false, ready: false, label, model: entry.model, reason: String(error?.message ?? error) };
+    }
+  });
+  const used = entries.filter((item) => !item.empty);
+  return {
+    channel,
+    enabled: chain.enabled,
+    nextIndex: chain.nextIndex,
+    revision: chain.revision,
+    lastModel: chain.lastModel,
+    lastSwitchAt: chain.lastSwitchAt,
+    history: chain.history,
+    entries,
+    total: used.length,
+    readyCount: used.filter((item) => item.ready).length,
+    invalidCount: used.filter((item) => !item.ready).length,
+    ready: used.every((item) => item.ready)
+  };
 }
 
 export function replacementIdentity(cfg, channel) {

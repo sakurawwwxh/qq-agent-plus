@@ -10,6 +10,7 @@ import {
   emptyUsage
 } from '../llm/llm.js';
 import { assertTimeAllowed, watchTimeWindow, withTimeScope } from '../core/time-gate.js';
+import { vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { resolveSelfName } from '../core/util.js';
 import { timeControlState } from '../core/time-control.js';
 import {
@@ -938,9 +939,11 @@ export class QzoneInteractionManager {
         toolChoice: 'auto',
         temperature: 1,
         purpose: 'write',   // 空间互动文案 = 写作类任务
+        feature: 'qzone-interactions',
         signal,
         cacheKey: `qq-agent:qzone-interactions:${qzoneInteractionPersonaHash(root.persona).slice(0, 24)}`
       });
+      if (session) session.vendor = response.originBaseUrl ? vendorOfBaseUrl(getConfig(), response.originBaseUrl) : session.vendor;
       addUsage(usage, response.usage);
       usage.calls += 1;
       const message = response.message || {};
@@ -1346,6 +1349,7 @@ export class QzoneInteractionManager {
         run.sessionId = session.id;
         session.chatName = '动态互动';
         session.model = getConfig().api?.model || '';
+        session.feature = 'qzone-interactions';
         session.conversationMode = 'legacy';
       }
       const decided = await this.#decide(batch, cfg, session, this.controller.signal);

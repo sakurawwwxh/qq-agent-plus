@@ -63,7 +63,9 @@ function vectorLabel(memory) {
 function chatScopes() {
   const cfg = config();
   const chats = lm().chats || [];
-  const list = chats.filter((chat) => /^group:\d+$/.test(chat.key));
+  const groups = (Array.isArray(cfg.groups) ? cfg.groups : []).map(String).filter(Boolean);
+  const list = chats.filter((chat) => /^group:\d+$/.test(chat.key)
+    && (!groups.length || groups.includes(chat.key.slice('group:'.length))));
   if (cfg.allowPrivate === true) list.push(...chats.filter((chat) => /^private:\d+$/.test(chat.key)));
   if (cfg.allowGlobal === true) list.push({ key: 'owner-global', chatName: '管理员全局知识' });
   return list;
@@ -100,6 +102,10 @@ function modeHint(cfg) {
 
 function pageErrorHtml() {
   return lm().pageError ? `<div class="skills-error">${esc(lm().pageError)}</div>` : '';
+}
+
+function pageNoticeHtml() {
+  return lm().pageNotice ? `<div class="hint" role="status">${esc(lm().pageNotice)}</div>` : '';
 }
 
 // ── 概览 ────────────────────────────────────────────────────────────────
@@ -286,6 +292,21 @@ function memoryListHtml() {
     <div id="lm-memory-pager">${memoryPagerHtml(page, totalPages, all.length)}</div>`;
 }
 
+function duplicatesHtml(memory) {
+  const list = lm().duplicates;
+  if (list === 'loading') return '<p class="lm-muted">正在查找相似记忆…</p>';
+  if (list?.error) return `<p class="lm-muted">查重失败：${esc(list.error)}</p>`;
+  if (!Array.isArray(list)) return '<p class="lm-muted">点上方「查重合并」，选择要并进这条记忆的重复卡片。</p>';
+  if (!list.length) return '<p class="lm-muted">没有找到相似度足够高的记忆。</p>';
+  const selected = new Set((lm().mergeSelected || []).map(String));
+  return `<div class="lm-memory-list">${list.map((item) => `<label class="lm-memory-row" style="cursor:pointer">
+      <input type="checkbox" data-lm-merge-source="${esc(item.id)}" ${selected.has(String(item.id)) ? 'checked' : ''} style="margin-right:8px" />
+      <span class="lm-memory-main"><strong>${esc(item.summary || '未命名记忆')}</strong>
+        <span class="lm-muted">相似度 ${Math.round((Number(item.similarity) || 0) * 100)}% · ${esc(shortDate(item.updatedAt))}</span></span>
+    </label>`).join('')}</div>
+    <button type="button" class="btn btn-small" data-lm-merge="${esc(memory.id)}">合并所选到这条</button>`;
+}
+
 function memoryDetailHtml(memory) {
   if (!memory) return '';
   const archived = memory.status === 'archived';
@@ -294,9 +315,14 @@ function memoryDetailHtml(memory) {
   const tags = (memory.tags || []).map((tag) => `<span>${esc(tag)}</span>`).join('');
   const participants = (memory.participants || []).map((person) => `<span>${esc(person)} <button type="button" class="btn btn-small" data-lm-forget-person="${esc(person)}" title="忘掉这个人在本会话的全部长期记忆">忘掉</button></span>`).join('');
   const source = memory.source || {};
+  const feedback = memory.feedback === 'useful' ? '已标为有用' : memory.feedback === 'not-useful' ? '已标为没用' : '';
   return `<div class="lm-detail-top">
     <button type="button" class="btn btn-small" data-lm-back>← 返回记忆库</button>
     <div class="lm-detail-actions">
+      <button type="button" class="btn btn-small" data-lm-pin="${esc(memory.id)}" data-lm-pinned="${memory.pinned ? '1' : '0'}">${memory.pinned ? '取消置顶' : '置顶'}</button>
+      <button type="button" class="btn btn-small" data-lm-feedback="${esc(memory.id)}" data-lm-feedback-value="useful">有用</button>
+      <button type="button" class="btn btn-small" data-lm-feedback="${esc(memory.id)}" data-lm-feedback-value="not-useful">没用</button>
+      <button type="button" class="btn btn-small" data-lm-find-duplicates="${esc(memory.id)}">查重合并</button>
       ${archived
         ? `<button type="button" class="btn btn-small" data-lm-restore="${esc(memory.id)}">恢复</button>`
         : `<button type="button" class="btn btn-small" data-lm-archive="${esc(memory.id)}">归档</button>`}
@@ -308,6 +334,8 @@ function memoryDetailHtml(memory) {
       <div class="lm-detail-chips">
         <span class="lm-type">${esc(TYPE_LABELS[memory.type] || memory.type || '记忆')}</span>
         <span class="lm-state ${archived ? 'idle' : 'ok'}"><i></i>${archived ? '已归档' : '活跃'}</span>
+        ${memory.pinned ? '<span class="lm-flag">已置顶</span>' : ''}
+        ${feedback ? `<span class="lm-flag">${esc(feedback)}</span>` : ''}
       </div>
       <h3>${esc(memory.summary || '未命名记忆')}</h3>
       <p>${esc(scopeTitle(memory.scopeKey || selectedScope(), lm().chats))} · 更新于 ${esc(shortDate(memory.updatedAt))}</p>
@@ -324,6 +352,7 @@ function memoryDetailHtml(memory) {
     <section class="lm-detail-section"><h4>涉及的人</h4><div class="lm-tags">${participants || '<span class="is-soft">无</span>'}</div></section>
     <section class="lm-detail-section"><h4>关系</h4>${relations ? `<ul class="lm-relations">${relations}</ul>` : '<p class="lm-muted">暂无关系</p>'}</section>
     <section class="lm-detail-section"><h4>来源</h4><p class="lm-muted">会话：${esc((source.sessionIds || []).join('、') || '手动创建')} · 聚合 ${num(source.turnCount)} 个回合</p></section>
+    <section class="lm-detail-section"><h4>查重合并</h4><div id="lm-duplicates">${duplicatesHtml(memory)}</div></section>
   </article>`;
 }
 
@@ -484,6 +513,7 @@ function renderPage() {
       <div class="lm-head-meta">${num(st.active)} 条活跃 · ${num(st.vectorReady)} 条向量化</div>
     </div>
   </div>
+  ${pageNoticeHtml()}
   ${pageErrorHtml()}
   <div class="plugin-tabs lm-tabs" role="tablist" aria-label="长期记忆页面">
     ${tabs.map(([key, label, count]) => `<button type="button" class="plugin-tab${tab === key ? ' is-on' : ''}" role="tab" aria-selected="${tab === key ? 'true' : 'false'}" data-lm-tab="${key}">${label}${count}</button>`).join('')}
@@ -521,7 +551,10 @@ async function openMemory(id) {
   const result = await api(`/api/living-memory/memories/${encodeURIComponent(id)}`);
   lm().selectedMemoryId = id;
   lm().detail = result.memory || null;
+  lm().duplicates = null;
+  lm().mergeSelected = [];
   lm().pageError = '';
+  lm().pageNotice = '';
   renderMemoryView();
   const scroller = $('#view-living-memory');
   if (scroller) scroller.scrollTop = 0;
@@ -730,6 +763,58 @@ function bindPage(box) {
       renderMemoryView();
       return;
     }
+    const pin = event.target.closest('[data-lm-pin]');
+    if (pin) {
+      try {
+        const result = await api(`/api/living-memory/memories/${encodeURIComponent(pin.dataset.lmPin)}/pin`, {
+          method: 'POST', body: JSON.stringify({ pinned: pin.dataset.lmPinned !== '1' })
+        });
+        lm().detail = result.memory;
+        renderMemoryView();
+      } catch (error) { lm().pageError = `操作失败：${error.message}`; renderPage(); }
+      return;
+    }
+    const feedbackButton = event.target.closest('[data-lm-feedback]');
+    if (feedbackButton) {
+      const value = feedbackButton.dataset.lmFeedbackValue || '';
+      try {
+        const result = await api(`/api/living-memory/memories/${encodeURIComponent(feedbackButton.dataset.lmFeedback)}/feedback`, {
+          method: 'POST', body: JSON.stringify({ feedback: value })
+        });
+        lm().detail = result.memory;
+        renderMemoryView();
+      } catch (error) { lm().pageError = `操作失败：${error.message}`; renderPage(); }
+      return;
+    }
+    const findDuplicates = event.target.closest('[data-lm-find-duplicates]');
+    if (findDuplicates) {
+      lm().duplicates = 'loading';
+      lm().mergeSelected = [];
+      renderMemoryView();
+      try {
+        const data = await api(`/api/living-memory/memories/${encodeURIComponent(findDuplicates.dataset.lmFindDuplicates)}/duplicates`);
+        lm().duplicates = Array.isArray(data.entries) ? data.entries : [];
+      } catch (error) { lm().duplicates = { error: error.message }; }
+      renderMemoryView();
+      return;
+    }
+    const merge = event.target.closest('[data-lm-merge]');
+    if (merge) {
+      const sourceIds = (lm().mergeSelected || []).filter(Boolean);
+      if (!sourceIds.length) { lm().pageError = '请先勾选要合并的重复记忆'; renderPage(); return; }
+      if (!await askForConfirmation(`把选中的 ${sourceIds.length} 条记忆合并进当前记忆？源卡片会被删除。`)) return;
+      try {
+        const result = await api(`/api/living-memory/memories/${encodeURIComponent(merge.dataset.lmMerge)}/merge`, {
+          method: 'POST', body: JSON.stringify({ sourceIds, confirm: true })
+        });
+        lm().duplicates = null;
+        lm().mergeSelected = [];
+        lm().selectedMemoryId = result.memory?.id || '';
+        lm().detail = result.memory || null;
+        await loadLivingMemoryPage();
+      } catch (error) { lm().pageError = `合并失败：${error.message}`; renderPage(); }
+      return;
+    }
     const archive = event.target.closest('[data-lm-archive]');
     if (archive) {
       try { await mutateMemory(archive.dataset.lmArchive, 'archive', '归档这条长期记忆？归档后它不会再参与自动召回。'); }
@@ -761,7 +846,8 @@ function bindPage(box) {
         lm().detail = null;
         lm().selectedMemoryId = '';
         await loadLivingMemoryPage();
-        lm().pageError = `已忘掉 ${Number(result.removed) || 0} 条与「${person}」相关的记忆`;
+        lm().pageError = '';
+        lm().pageNotice = `已忘掉 ${Number(result.removed) || 0} 条与「${person}」相关的记忆`;
         renderPage();
       } catch (error) { lm().pageError = `操作失败：${error.message}`; renderPage(); }
       return;
@@ -805,6 +891,14 @@ function bindPage(box) {
       lm().statusFilter = event.target.value;
       lm().page = 1;
       void loadLivingMemoryPage();
+      return;
+    }
+    if (event.target.matches('[data-lm-merge-source]')) {
+      const id = event.target.dataset.lmMergeSource || '';
+      const selected = new Set((lm().mergeSelected || []).map(String));
+      if (event.target.checked) selected.add(String(id));
+      else selected.delete(String(id));
+      lm().mergeSelected = [...selected];
     }
   });
 
@@ -869,6 +963,7 @@ async function loadLivingMemoryPage() {
     lm().list = list;
     lm().graph = graph;
     lm().pageError = '';
+    lm().pageNotice = '';
     if (lm().detail) {
       const current = (list.entries || []).find((memory) => memory.id === lm().detail.id);
       if (!current) {

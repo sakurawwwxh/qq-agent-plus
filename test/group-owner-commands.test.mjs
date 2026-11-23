@@ -3,11 +3,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGroupCommandService } from '../src/admin/group-commands.js';
 
-function makeService({ enabled = true, chats = [], owner = '900001', decision = null, game = null } = {}) {
+function makeService({ enabled = true, chats = [], owner = '900001', decision = null, game = null, usage = {}, budget = {}, livingMemory = null, livingMemoryStatus = null } = {}) {
   const sent = [];
   const stopped = [];
   const service = createGroupCommandService({
-    getConfig: () => ({ admin: { ownerUin: owner, groupCommands: { enabled, chats } } }),
+    getConfig: () => ({
+      admin: { ownerUin: owner, groupCommands: { enabled, chats } },
+      api: { budget },
+      livingMemory
+    }),
     getStatus: () => ({
       snapshot: () => ({
         cfg: { runtime: { mode: 'active', paused: false } },
@@ -16,7 +20,11 @@ function makeService({ enabled = true, chats = [], owner = '900001', decision = 
         onebot: { connected: true }
       })
     }),
-    getOrchestrator: () => ({ decisionFor: () => decision }),
+    getOrchestrator: () => ({
+      decisionFor: () => decision,
+      sessions: { todayUsage: () => usage },
+      livingMemory: { status: () => livingMemoryStatus || { stats: {} } }
+    }),
     getGroupGame: () => ({
       games: new Map(game ? [['group:1', game]] : []),
       summaryFor: () => '【进行中的游戏】谁是卧底：投票中',
@@ -59,6 +67,33 @@ test('owner 群内状态/行为卡/最近决策/结束游戏都直接回复，�
   assert.match(sent.find((item) => /本群机器人说明/.test(item.text)).text, /回复策略/);
   assert.match(sent.find((item) => /最近决策/.test(item.text)).text, /随机未命中/);
   assert.deepEqual(stopped, ['group:1']);
+});
+
+test('新增只读命令：帮助/今日用量/预算/待处理/记忆概览都不经过模型', async () => {
+  const { service, sent } = makeService({
+    usage: { runs: 3, totalTokens: 1234, estimatedYuan: 0.12, unpricedRuns: 1, byFeature: { chat: { calls: 2 }, 'group-digest': { calls: 1 } } },
+    budget: { enabled: true, dailyYuan: 1, onExceed: 'degrade' },
+    livingMemory: { enabled: true, mode: 'active' },
+    livingMemoryStatus: {
+      stats: { active: 12, total: 14, turns: 30, scopes: [{ scopeKey: 'group:1', count: 4 }] },
+      embedding: { configured: true }
+    }
+  });
+  for (const command of ['帮助', '今日用量', '预算', '待处理', '记忆概览']) {
+    assert.equal(await service.handleGroupMessage({ chatKey: 'group:1', kind: 'group', stored: msg(command) }), true, command);
+  }
+  assert.equal(sent.length, 5);
+  assert.match(sent[0].text, /群主命令/);
+  assert.match(sent[0].text, /今日用量/);
+  assert.match(sent[1].text, /token 1234/);
+  assert.match(sent[1].text, /group-digest 1 次/);
+  assert.match(sent[1].text, /没有价格记录/);
+  assert.match(sent[2].text, /¥0\.12 \/ ¥1\.00/);
+  assert.match(sent[2].text, /只回应 @/);
+  assert.match(sent[3].text, /未处理 2/);
+  assert.match(sent[3].text, /结果不确定 1/);
+  assert.match(sent[4].text, /本群 4 条/);
+  assert.match(sent[4].text, /全局 12 条活跃/);
 });
 
 test('引用/转发里的命令不算 owner 自己输入；backlog 重放也不执行', async () => {

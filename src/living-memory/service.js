@@ -197,7 +197,8 @@ export class LivingMemoryService {
       return this.store.setVectorState(memory.id, {
         status: 'ready',
         model: this.embeddingConfig.model,
-        vector
+        vector,
+        expectedUpdatedAt: memory.updatedAt
       });
     } catch (error) {
       // 编辑时 store 已保留旧向量；这里只记错误，不把旧向量清掉。
@@ -209,7 +210,8 @@ export class LivingMemoryService {
       return this.store.setVectorState(memory.id, {
         status: 'error',
         error: String(error?.message || error),
-        model: this.embeddingConfig.model
+        model: this.embeddingConfig.model,
+        expectedUpdatedAt: memory.updatedAt
       });
     }
   }
@@ -285,8 +287,14 @@ export class LivingMemoryService {
       const lexicalEvidence = Math.max(0, Math.min(1, item.lexical / 4));
       const evidence = Math.max(semanticEvidence, lexicalEvidence);
       const rankScore = Math.max(0, Math.min(1, rrf / 0.033));
+      // 人工置顶/反馈只调整“已经在候选里”的记忆权重，不会让完全无关的卡凭空注入。
+      const pinBoost = item.memory.pinned ? 0.12 : 0;
+      const feedbackBoost = item.memory.feedback === 'useful' ? 0.04
+        : item.memory.feedback === 'not-useful' ? -0.12 : 0;
       const score = evidence > 0
-        ? Math.min(1, evidence * 0.82 + rankScore * 0.1 + (Number(item.memory.importance) || 0) / 10 * 0.05 + recencyScore(item.memory) * 0.03)
+        ? Math.max(0, Math.min(1, evidence * 0.82 + rankScore * 0.1
+          + (Number(item.memory.importance) || 0) / 10 * 0.05 + recencyScore(item.memory) * 0.03
+          + pinBoost + feedbackBoost))
         : 0;
       return {
         ...item.memory,
@@ -382,6 +390,59 @@ export class LivingMemoryService {
 
   removeMemory(id) {
     return this.store.removeMemory(id);
+  }
+
+  pinMemory(id, pinned) {
+    return this.store.pinMemory(id, pinned);
+  }
+
+  feedbackMemory(id, feedback) {
+    return this.store.feedbackMemory(id, feedback);
+  }
+
+  /** 合并重复记忆：目标卡吸收正文/标签/主体/来源，源卡随后彻底删除。 */
+  async mergeMemories(targetId, sourceIds = []) {
+    const target = this.store.getMemory(targetId);
+    if (!target) throw new Error('记忆不存在');
+    const sources = [...new Set(sourceIds.map(String).filter((id) => id && id !== target.id))]
+      .map((id) => this.store.getMemory(id)).filter(Boolean);
+    if (!sources.length) throw new Error('请选择要合并的重复记忆');
+    // 跨会话合并会把 A 群内容搬进 B 群并删掉原卡：接口层必须挡住。
+    if (sources.some((item) => item.scopeKey !== target.scopeKey)) {
+      throw new Error('只能合并同一会话里的记忆');
+    }
+    // 合并会删除源卡片：任何字段超出存储上限都必须先拒绝，不能截断后删源。
+    const union = (key, max, label) => {
+      const list = [...new Set([
+        ...(Array.isArray(target[key]) ? target[key] : []),
+        ...sources.flatMap((item) => Array.isArray(item[key]) ? item[key] : [])
+      ].filter(Boolean))];
+      if (list.length > max) throw new Error(`合并后${label}超过 ${max} 项，请减少要合并的卡片或先精简内容`);
+      return list;
+    };
+    const content = [target.content, ...sources.map((item) => item.content)].filter(Boolean).join('\n---\n');
+    if (content.length > 6000) throw new Error('合并后正文超过 6000 字，请减少要合并的卡片或先精简正文');
+    const relations = [...(target.relations || []), ...sources.flatMap((item) => item.relations || [])];
+    if (relations.length > 64) throw new Error('合并后关系超过 64 条，请减少要合并的卡片');
+    const merged = {
+      ...target,
+      content,
+      importance: Math.max(Number(target.importance) || 0, ...sources.map((item) => Number(item.importance) || 0)),
+      confidence: Math.max(Number(target.confidence) || 0, ...sources.map((item) => Number(item.confidence) || 0)),
+      tags: union('tags', 16, '标签'),
+      topics: union('topics', 8, '主题'),
+      keyFacts: union('keyFacts', 12, '关键事实'),
+      participants: union('participants', 24, '参与人'),
+      entities: union('entities', 32, '实体'),
+      relations,
+      pinned: target.pinned === true || sources.some((item) => item.pinned === true),
+      feedback: target.feedback === 'useful' || sources.some((item) => item.feedback === 'useful')
+        ? 'useful' : target.feedback,
+      source: sources.reduce((acc, item) => mergeSource(acc, item.source), target.source)
+    };
+    const saved = await this.upsertMemory(merged);
+    for (const item of sources) this.store.removeMemory(item.id);
+    return saved;
   }
 
   recordTurn(raw) {

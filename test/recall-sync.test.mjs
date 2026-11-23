@@ -11,7 +11,7 @@ process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const { ChatStore } = await import('../src/core/store.js');
 const { createNoticeDedup } = await import('../src/console/notice-dedup.js');
-const { markRecalled, handleRecallNotice } = await import('../src/console/recall-sync.js');
+const { markRecalled, handleRecallNotice, applyPendingRecall, resetPendingRecalls } = await import('../src/console/recall-sync.js');
 
 function fixture(t) {
   const store = new ChatStore(0, { dataDir: dir, filename: `recall-${Math.random().toString(36).slice(2)}.sqlite` });
@@ -56,6 +56,24 @@ test('deferred 消息撤回会收口为 acked，富化不能再覆盖', (t) => {
   assert.equal(store.findByMid('group:1', 1).state, 'acked');
   assert.equal(store.updateDeferredMessage('group:1', 1, { text: '迟到的富化正文', reply: null, media: [] }), 0);
   assert.equal(store.findByMid('group:1', 1).text, '[消息已撤回]');
+});
+
+test('撤回通知先于消息到达：入库后立刻补标、标已读且只补一次', async (t) => {
+  resetPendingRecalls();
+  const store = fixture(t);
+  const notice = { notice_type: 'group_recall', group_id: 1, message_id: 99, operator_id: '42', time: 777 };
+  assert.equal(handleRecallNotice(notice, { store, dedup: createNoticeDedup() }), true);
+  assert.equal(store.findByMid('group:1', 99), null, '前提：消息此时还没入库');
+  const scrubbed = [];
+  const row = append(store, { mid: 99 });
+  assert.equal(applyPendingRecall(store, 'group:1', 99, { onRecalled: (chatKey, mid) => scrubbed.push([chatKey, mid]) }), true);
+  // 回调是异步派发的，下一轮 microtask 后应已经触发。
+  await Promise.resolve();
+  assert.deepEqual(scrubbed, [['group:1', '99']]);
+  assert.equal(store.findByMid('group:1', 99).text, '[消息已撤回]');
+  assert.equal(store.getMessage('group:1', row.id).state, 'acked');
+  assert.equal(store.peekUnread('group:1', 10).length, 0, '补标后不能再唤醒模型');
+  assert.equal(applyPendingRecall(store, 'group:1', 99), false, '同一条只补一次');
 });
 
 test('handleRecallNotice 处理群/私聊、去重、找不到消息也不抛', () => {

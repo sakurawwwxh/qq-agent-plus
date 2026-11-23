@@ -86,12 +86,36 @@ test('A2（行为）：预算超限 + 停止策略下，自主节奏唤醒一次
   const r = await runPacedWake(t, { onExceed: 'block' });
   assert.equal(r.modelCalls, 0, 'block 期间自主节奏唤醒不许调模型（paced 不能靠 manual:true 绕过闸门）');
   assert.equal(r.unread, 1, '未读要保留（不能当成已处理吞掉）');
+  assert.ok(r.runner.scheduledWakes.get('group:1'), 'paced 被预算拦截后要重新排上，不能永久丢失');
 });
 
 test('A2（行为）：预算超限 + 降级策略下，群里没 @ 同样不调模型', async (t) => {
   const r = await runPacedWake(t, { onExceed: 'degrade' });
   assert.equal(r.modelCalls, 0, 'degrade 下自主节奏唤醒同样要被拦');
   assert.equal(r.unread, 1, '未读保留');
+  assert.ok(r.runner.scheduledWakes.get('group:1'), 'degrade 拦截后也要重新排上下一条 paced');
+});
+
+test('pacingStatus 暴露下次唤醒与最近一次跳过原因（预算拦截）', async (t) => {
+  const r = await runPacedWake(t, { onExceed: 'block' });
+  const status = r.runner.pacingStatus('group:1');
+  assert.equal(status.enabled, true);
+  assert.equal(status.applies, true);
+  assert.ok(status.nextWakeAt > Date.now(), '拦截后已重新排上下一次唤醒');
+  assert.equal(status.nextWakeKind, 'paced');
+  assert.equal(status.lastSkipReason, '今日预算已用完（block）');
+  assert.ok(status.lastSkipAt > 0);
+  assert.equal(r.runner.pacingStatus('private:99').applies, false, '私聊不进入自主节奏');
+});
+
+test('并发已满时的 paced 唤醒不会被重排成普通唤醒', async (t) => {
+  const ctx = makeInstance(t, { onExceed: 'block', spentYuan: 0 });
+  ctx.runner.runningChats.add('group:2');
+  ctx.runner.runningChats.add('group:3');   // 默认 maxConcurrentRuns=2，已满
+  const result = await ctx.runner.wake('group:1', { manual: true, paced: true });
+  assert.equal(result, false);
+  assert.equal(ctx.runner.wakeTimers.has('group:1'), false, '不能排普通 3 秒重试（会丢 paced 语义）');
+  assert.equal(ctx.runner.pacingStatus('group:1').lastSkipReason, '并发已满');
 });
 
 test('A2（反向，行为）：预算未超限时，同一条链路会真的调模型（守卫不能变成"一律不放行"）', async (t) => {

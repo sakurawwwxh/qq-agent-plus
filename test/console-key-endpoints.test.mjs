@@ -26,10 +26,10 @@ async function freePort() {
 }
 
 // 起一个控制台实例，返回 { port, get } —— get(path, headers) 走裸 http（便于伪造 Host）。
-async function boot(t) {
+async function boot(t, token = '') {
   const port = await freePort();
   const cfg = structuredClone(DEFAULT_CONFIG);
-  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token };
   cfg.runtime.mode = 'active';
   cfg.onebot = {
     ...cfg.onebot,
@@ -114,6 +114,20 @@ test('GET /api/onebot-key：未知字段 400；非本机来源读不到令牌', 
   assert.match(src.slice(at, at + 900), /keyEndpoint: true/, '必须走明文密钥端点的守卫');
 });
 
+
+test('设置 server.token 后，本机回环不能无令牌读取明文密钥', async (t) => {
+  const { port, get: fetchPath } = await boot(t, 'localhost-token-123');
+  const host = { host: `127.0.0.1:${port}` };
+  const denied = await fetchPath(port, '/api/onebot-key?field=ws', host);
+  assert.ok([401, 403].includes(denied.status), `无令牌应被拒绝，实际 ${denied.status}`);
+  assert.equal(/ws-secret/.test(denied.text), false, '拒绝时不得泄漏令牌');
+
+  const allowed = await fetchPath(port, '/api/onebot-key?field=ws', {
+    ...host, 'x-console-token': 'localhost-token-123'
+  });
+  assert.equal(allowed.status, 200, allowed.text);
+  assert.equal(allowed.body?.token, 'ws-secret-abcdef');
+});
 
 test('POST /api/config：非法 JSON 返回 400 而不是 500', async (t) => {
   const { port } = await boot(t);

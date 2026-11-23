@@ -70,4 +70,23 @@ test('authenticated model replacement config/catalog API: validation, no secrets
   assert.equal(status.body.modelReplacement.chat.enabled, false);
   assert.equal(status.body.modelReplacement.chat.lastModel, 'A');
   assert.equal(JSON.stringify(status.body).includes('private-provider-key'), false);
+
+  // 整链检查可以针对未保存的草稿；重置只回卷游标，不会泄露密钥。
+  const check = await request('/api/model-replacement/check', {
+    channel: 'chat', entries: [{ source: 'catalog', providerId: 'A', model: 'A' }, { source: 'catalog', providerId: 'A', model: 'deleted' }]
+  });
+  assert.equal(check.status, 200, JSON.stringify(check.body));
+  assert.equal(check.body.result.readyCount, 1);
+  assert.equal(check.body.result.invalidCount, 1);
+  assert.equal(JSON.stringify(check.body).includes('private-provider-key'), false);
+  const readiness = await request('/api/model-replacement/readiness?channel=chat');
+  assert.equal(readiness.status, 200, JSON.stringify(readiness.body));
+  assert.equal(readiness.body.channels.chat.channel, 'chat');
+  const beforeReset = getConfig().modelReplacement.chat;
+  const reset = await request('/api/model-replacement/reset', { channel: 'chat', revision: beforeReset.revision });
+  assert.equal(reset.status, 200, JSON.stringify(reset.body));
+  assert.equal(reset.body.chain.nextIndex, 0);
+  assert.equal(reset.body.chain.lastModel, '');
+  assert.equal(reset.body.chain.history.length >= 1, true, '切换历史保留');
+  assert.equal(JSON.stringify(reset.body).includes('private-provider-key'), false);
 });
