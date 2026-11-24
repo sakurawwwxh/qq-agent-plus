@@ -4,6 +4,42 @@ import { safeFetch } from '../llm/safe-fetch.js';
 
 const POPULAR_URL = 'https://api.bilibili.com/x/web-interface/popular';
 const SEARCH_URL = 'https://api.bilibili.com/x/web-interface/search/type';
+/**
+ * 排除关键词的匹配文本：标题 + 简介 + 标签 + **UP 名**。
+ *
+ * ★ 2026-11-24：这里原来漏了 `up`，而同一文件的 `scoreCandidate()` 是包含 `up` 的 ——
+ * 同一份数据两处拼法不一致。后果是按 UP 名排除永远失效：
+ * 例如 UP 叫「央视农业」的视频，标题里通常不写"央视"，于是无论把"央视"怎么加进
+ * excludeKeywords 都拦不住。用户反馈的「同样是水果腌肉…【主播说三农】」就是这类。
+ *
+ * 抽成公共函数，B 站与 RSS 两个来源共用同一口径（RSS 此前完全没有排除逻辑）。
+ */
+export function excludeHaystack(item) {
+  return `${item?.title || ''} ${item?.desc || ''} ${(item?.tags || []).join(' ')} ${item?.up || ''}`.toLowerCase();
+}
+
+/** 归一化 excludeKeywords：去空、去首尾空白、转小写。 */
+export function normalizeExcludeKeywords(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((word) => String(word || '').trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * 命中的排除词（没命中返回空串）。
+ * 返回命中的词而不只是布尔值，是为了让调用方能记日志说明"为什么被排除" ——
+ * 静默过滤是排查噩梦：配置看着对、结果不对，却不知道是哪条规则生效。
+ *
+ * 入参 `excluded` 允许是原始配置数组（大小写混杂、含空白）：内部统一归一化。
+ * 热路径（逐个候选匹配）可以传 normalizeExcludeKeywords() 的结果避免重复归一化。
+ */
+export function matchExcludeKeyword(item, excluded) {
+  const words = normalizeExcludeKeywords(excluded);
+  if (!words.length) return '';
+  const haystack = excludeHaystack(item);
+  return words.find((word) => haystack.includes(word)) || '';
+}
+
 const HEADERS = {
   Referer: 'https://www.bilibili.com/',
   'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36'
@@ -81,7 +117,7 @@ export async function fetchBilibiliSearch(term, { limit = 10, fetchImpl = safeFe
 
 /** 分数只用于排序：兴趣命中 > 播放量 > 新鲜度，超长视频扣分。 */
 export function scoreCandidate(item, profile = {}) {
-  const haystack = `${item?.title || ''} ${item?.desc || ''} ${(item?.tags || []).join(' ')} ${item?.up || ''}`.toLowerCase();
+  const haystack = excludeHaystack(item);
   let match = 0;
   for (const entry of profile?.terms || []) {
     const term = String(entry?.term || '').toLowerCase();
@@ -130,17 +166,27 @@ export async function forageBilibili({
     else logger(`[life-feed] 一个来源失败：${result.reason?.message || result.reason}`);
   }
 
-  const excluded = excludeKeywords.map((word) => String(word || '').trim().toLowerCase()).filter(Boolean);
+  const excluded = normalizeExcludeKeywords(excludeKeywords);
   const seen = new Set();
   const out = [];
+  const hits = new Map();
   for (const item of items) {
     if (!item?.id || seen.has(item.id)) continue;
     seen.add(item.id);
     if (item.duration && item.duration < minDurationSec) continue;
     if (item.duration && item.duration > maxDurationSec) continue;
-    const haystack = `${item.title} ${item.desc} ${(item.tags || []).join(' ')}`.toLowerCase();
-    if (excluded.some((word) => haystack.includes(word))) continue;
+    const hit = matchExcludeKeyword(item, excluded);
+    if (hit) {
+      hits.set(hit, (hits.get(hit) || 0) + 1);
+      continue;
+    }
     out.push(item);
+  }
+  if (hits.size) {
+    // 记下命中的词与条数：静默过滤排查成本很高 ——
+    // 配置看着对、结果不对时，没有这行日志就只能靠逐条试词。
+    const detail = [...hits.entries()].map(([word, n]) => `${word}×${n}`).join(' ');
+    logger(`[life-feed] B 站排除 ${items.length - out.length}/${items.length} 条（命中：${detail}）`);
   }
   return out;
 }

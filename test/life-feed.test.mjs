@@ -9,7 +9,7 @@ import {
   resolveInterestChatKeys
 } from '../src/features/life-feed.js';
 import { buildInterestProfile, tokenize } from '../src/features/life-feed-interest.js';
-import { forageBilibili, scoreCandidate } from '../src/features/life-feed-source-bilibili.js';
+import { forageBilibili, matchExcludeKeyword, scoreCandidate } from '../src/features/life-feed-source-bilibili.js';
 
 const NOW = 1792900000000;
 
@@ -668,3 +668,138 @@ function tempDirForOnly() {
   process.once('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
   return dir;
 }
+
+// ── 2026-11-24：RSS 来源的排除过滤 ──────────────────────────────────
+//
+// 背景：forageRss 是纯抓取适配器（只解析、不筛选），forageNow 此前也没给它补过滤，
+// 于是 RSS 内容**从来没被 excludeKeywords 过滤过**。实测后果：RSS 源（少数派/IT之家）
+// 的推广位一路进入候选，一条 `[限时特惠] …` 以 536 分排到候选第二，比所有正常内容都高。
+//
+// 修复：forageNow 里给 RSS 补上与 B 站同一口径的过滤（标题+简介+标签+UP 名）。
+
+const RSS_XML = `<?xml version="1.0"?><rss><channel><title>测试源</title>
+  <item><title>[限时特惠] 写作工具促销</title><link>https://example.com/promo</link>
+    <description>限时折扣</description></item>
+  <item><title>某款国产显卡评测</title><link>https://example.com/gpu</link>
+    <description>实测性能</description></item>
+  <item><title>央视农业：水果腌肉</title><link>https://example.com/cctv</link>
+    <description>三农话题</description></item>
+</channel></rss>`;
+
+test('★ 回归：RSS 来源也要走 excludeKeywords（修复前完全不过滤）', async (t) => {
+  const dir = tempDir(t);
+  const cfg = {
+    lifeFeed: {
+      enabled: true,
+      sources: ['rss'],
+      rssUrls: ['https://example.com/feed.xml'],
+      rssPerForage: 10,
+      maxPerForage: 10,
+      maxOffersPerDay: 2,
+      maxPicksPerDay: 10,
+      minDurationSec: 60,
+      maxDurationSec: 3600,
+      // 关键：这两个词必须能把 RSS 条目挡掉
+      excludeKeywords: ['限时特惠', '央视'],
+      groups: []
+    },
+    persona: { templateId: 'xiaojingyu' },
+    allow: { groups: ['123'] },
+    allowAllWhenEmpty: false
+  };
+  const store = { recent: () => [], listChats: () => [] };
+  const logs = [];
+  const manager = new LifeFeedManager({
+    dataDir: dir,
+    store,
+    config: () => cfg,
+    fetchImpl: async () => ({ statusCode: 200, body: RSS_XML }),
+    now: () => NOW,
+    random: () => 0.5,
+    log: (line) => logs.push(String(line))
+  });
+
+  const result = await manager.forageNow({ reason: 'test' });
+  assert.equal(result.ok, true, result.error);
+
+  const titles = manager.state.candidates.map((c) => c.title);
+  // 三条里两条被排除，只剩显卡评测
+  assert.equal(titles.length, 1, `只应留下 1 条，实际：${JSON.stringify(titles)}`);
+  assert.match(titles[0], /显卡评测/);
+  assert.ok(!titles.some((x) => /限时特惠/.test(x)), '促销条目必须被排除');
+  assert.ok(!titles.some((x) => /央视/.test(x)), '央媒条目必须被排除');
+
+  // 可观测性：被排除时要记日志说明命中了哪些词
+  const hitLog = logs.find((line) => /RSS 排除/.test(line));
+  assert.ok(hitLog, `应有"RSS 排除"日志，实际日志：${JSON.stringify(logs)}`);
+  assert.match(hitLog, /限时特惠/, '日志要写明命中的词');
+  assert.match(hitLog, /央视/, '日志要写明命中的词');
+});
+
+test('回归：RSS 排除为空配置时不误伤（全部保留）', async (t) => {
+  const dir = tempDir(t);
+  const cfg = {
+    lifeFeed: {
+      enabled: true,
+      sources: ['rss'],
+      rssUrls: ['https://example.com/feed.xml'],
+      rssPerForage: 10,
+      maxPerForage: 10,
+      maxOffersPerDay: 2,
+      maxPicksPerDay: 10,
+      minDurationSec: 60,
+      maxDurationSec: 3600,
+      excludeKeywords: [],
+      groups: []
+    },
+    persona: { templateId: 'xiaojingyu' },
+    allow: { groups: ['123'] },
+    allowAllWhenEmpty: false
+  };
+  const store = { recent: () => [], listChats: () => [] };
+  const manager = new LifeFeedManager({
+    dataDir: dir,
+    store,
+    config: () => cfg,
+    fetchImpl: async () => ({ statusCode: 200, body: RSS_XML }),
+    now: () => NOW,
+    random: () => 0.5,
+    log: () => {}
+  });
+  const result = await manager.forageNow({ reason: 'test' });
+  assert.equal(result.ok, true, result.error);
+  assert.equal(manager.state.candidates.length, 3, '没配排除词时三条都保留');
+});
+
+test('★ 回归：B 站按 UP 名排除（修复前 haystack 不含 up，必然失败）', async () => {
+  // 构造一条 UP 叫「央视农业」但标题里不含"央视"的视频
+  const popular = {
+    code: 0,
+    data: {
+      list: [
+        {
+          bvid: 'BV1up', title: '同样是水果腌肉 为啥有人是国宴', desc: '', tname: '三农',
+          duration: 300, pubdate: NOW / 1000 - 3600, owner: { name: '央视农业', mid: 77 },
+          stat: { view: 420000 }
+        },
+        {
+          bvid: 'BV1ok', title: '某款显卡评测', desc: '实测', tname: '数码',
+          duration: 600, pubdate: NOW / 1000 - 3600, owner: { name: '普通UP', mid: 88 },
+          stat: { view: 10000 }
+        }
+      ]
+    }
+  };
+  const items = await forageBilibili({
+    profile: { terms: [], searchTerms: [] },
+    limit: 10,
+    minDurationSec: 60,
+    maxDurationSec: 3600,
+    excludeKeywords: ['央视'],
+    fetchImpl: async () => ({ statusCode: 200, body: JSON.stringify(popular) }),
+    log: () => {}
+  });
+  const ids = items.map((x) => x.id);
+  assert.deepEqual(ids, ['BV1ok'], `UP 名含"央视"的必须被排除，实际留下：${JSON.stringify(ids)}`);
+  assert.equal(matchExcludeKeyword({ up: '央视农业', title: 'x' }, ['央视']), '央视');
+});
