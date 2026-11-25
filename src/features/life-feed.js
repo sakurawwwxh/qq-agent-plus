@@ -8,7 +8,7 @@ import path from 'node:path';
 import { chatAllowed } from '../core/access.js';
 import { settleWithDeadline } from '../core/util.js';
 import { buildInterestProfile } from './life-feed-interest.js';
-import { forageBilibili, scoreCandidate } from './life-feed-source-bilibili.js';
+import { forageBilibili, matchExcludeKeyword, normalizeExcludeKeywords, scoreCandidate } from './life-feed-source-bilibili.js';
 import { forageRss } from './life-feed-source-rss.js';
 
 const STATE_FILE = 'life-feed.json';
@@ -508,8 +508,30 @@ export class LifeFeedManager {
             fetchImpl: this.fetchImpl,
             log: this.log
           });
-          items.push(...rss);
-          sourceStatus.rss = { enabled: true, lastCount: rss.length, lastError: '' };
+          // ★ 2026-11-24：RSS 此前**完全不走 excludeKeywords** ——
+          // forageRss 是纯抓取适配器（只解析、不筛选），forageNow 这边也没有补过滤，
+          // 于是 RSS 内容从来没被排除过：少数派/IT之家的推广位会一路进入候选
+          // （实测一条 `[限时特惠] …` 以 536 分排到候选第二，比所有正常内容都高）。
+          // B 站那边有自己的排除逻辑，这里给 RSS 补上同一口径。
+          const rssExcluded = normalizeExcludeKeywords(cfg.excludeKeywords);
+          const rssKept = [];
+          const rssHits = new Map();
+          for (const item of rss) {
+            const hit = matchExcludeKeyword(item, rssExcluded);
+            if (hit) {
+              rssHits.set(hit, (rssHits.get(hit) || 0) + 1);
+              continue;
+            }
+            rssKept.push(item);
+          }
+          if (rssHits.size) {
+            // 记下命中的词与条数：静默过滤是排查噩梦（配置看着对、结果不对，
+            // 却不知道是哪条规则生效、生效了几次）。
+            const detail = [...rssHits.entries()].map(([word, n]) => `${word}×${n}`).join(' ');
+            this.log(`[life-feed] RSS 排除 ${rss.length - rssKept.length}/${rss.length} 条（命中：${detail}）`);
+          }
+          items.push(...rssKept);
+          sourceStatus.rss = { enabled: true, lastCount: rssKept.length, lastError: '' };
         } catch (error) {
           errors.push(error);
           sourceStatus.rss = { enabled: true, lastCount: 0, lastError: String(error?.message ?? error) };
