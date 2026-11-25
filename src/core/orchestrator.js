@@ -248,13 +248,13 @@ export function proactiveProbability(raw) {
   return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.25;
 }
 
-/**
- * 冷场开话题的作用范围。默认群聊开、私聊关（与升级前行为一致）；
- * tick 的早退与候选选择共用这一处，避免两处各写一份默认值后漂移。
- */
-export function proactiveScopes(cfg = {}) {
+/** 冷场开话题的作用范围：默认群聊开、私聊关；tick 早退与候选选择共用这一处。 */
+export function proactiveScopes(cfg = {}, groupId = '') {
+  // perGroup[群号].enabled 是布尔值时覆盖全局 groupEnabled；缺键/非布尔值回落全局。
+  const perGroup = cfg.proactive?.perGroup || {}, override = groupId ? perGroup[String(groupId)]?.enabled : undefined;
   return {
-    groups: cfg.proactive?.groupEnabled !== false,
+    groups: typeof override === 'boolean' ? override
+      : (cfg.proactive?.groupEnabled !== false || (!groupId && Object.values(perGroup).some((v) => v?.enabled === true))),
     private: cfg.proactive?.privateEnabled === true
   };
 }
@@ -282,7 +282,7 @@ export function proactiveCandidates({
   for (const chatKey of chatKeys) {
     const [kind, id] = String(chatKey).split(':');
     if (kind === 'group') {
-      if (!scopes.groups) continue;
+      if (!proactiveScopes(cfg, id).groups) continue;
       if (allowGroups.length > 0 ? !allowGroups.includes(id) : !cfg.allowAllWhenEmpty) continue;
     } else if (kind === 'private') {
       if (!scopes.private) continue;

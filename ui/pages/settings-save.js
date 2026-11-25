@@ -1085,6 +1085,9 @@ async function saveConfig({ quiet = false } = {}) {
       // 控件缺失时都按已保存值回退。
       groupEnabled: chk('#cfg-pro-group', c.proactive?.groupEnabled !== false),
       privateEnabled: chk('#cfg-pro-private', c.proactive?.privateEnabled === true),
+      perGroup: Object.fromEntries(Object.entries(state.proactivePerGroupDraft || c.proactive?.perGroup || {})
+        .filter(([groupId, value]) => /^\d{5,15}$/.test(groupId) && typeof value?.enabled === 'boolean')
+        .map(([groupId, value]) => [groupId, { enabled: value.enabled }])),
       scopeMode: val('#cfg-pro-mode', c.proactive?.scopeMode === 'perChat' ? 'perChat' : 'shared') === 'perChat' ? 'perChat' : 'shared',
       perChatMaxPerTick: Math.round(numKeep(
         val('#cfg-pro-per-max', Number(c.proactive?.perChatMaxPerTick) || 2),

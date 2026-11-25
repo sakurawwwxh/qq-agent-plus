@@ -459,7 +459,7 @@ export const DEFAULT_CONFIG = {
     // 冷场开话题的作用范围（控制台「主动开话题」的两个复选框）：
     // groupEnabled 沿用 allow.groups；privateEnabled 沿用 allow.private（deny 优先）。
     // 群聊默认开（保持升级前行为）；私聊默认关 —— 主动私聊是直接打扰，需显式打开。
-    groupEnabled: true,
+    groupEnabled: true, perGroup: {},
     privateEnabled: false,
     // shared = 群聊/私聊范围各共用一次机会；perChat = 每个群/私聊独立判定。
     scopeMode: 'shared',

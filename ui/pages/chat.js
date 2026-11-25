@@ -16,6 +16,7 @@ import {
 } from '../core/format.js';
 import { state } from '../core/state.js';
 import { loadChatDecisionHistory } from './chat-decisions.js';
+import { bindProactiveGroupEditor, renderProactiveGroupEditor } from './proactive-groups.js';
 
 /** 主动开话题的一个时段行（新增/删除共用同一份 HTML，避免两处漂移）。 */
 export function proactiveWindowRowHtml(window = {}) {
@@ -40,6 +41,7 @@ function proactiveWindowsForUi(activeHours) {
 
 /** 主动发言时段：加一行 / 删一行。保存端按 .pro-window 逐行读取，这里只改 DOM。 */
 function bindProactiveWindowEditor() {
+  bindProactiveGroupEditor();
   const box = $('#pro-windows');
   if (!box) return;
   $('#pro-add-window')?.addEventListener('click', () => {
@@ -326,6 +328,7 @@ return `
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-pro-selfwake" ${c.proactive?.selfWakeEnabled !== false ? 'checked' : ''} />
       <label for="cfg-pro-selfwake">允许模型给自己安排稍后的主动发言</label></div>
+    ${renderProactiveGroupEditor(c)}
     <div class="hint">
       中间的「群聊 / 私聊」是范围：分别沿用「群白名单」与「私聊白名单」（deny 优先），两个都不勾就不主动开话题。
       群聊和私聊各自独立计时；默认「范围共用一次机会」= 每轮在所有群里挑一个、所有私聊里挑一个。选「每个群/私聊独立判定」后，每个会话各自按概率判定，并受「每轮最多开口」限制。

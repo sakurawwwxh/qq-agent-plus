@@ -2649,6 +2649,32 @@ describe('proactiveCandidates（冷场开话题挑会话）', () => {
     assert.deepEqual(proactiveScopes({}), { groups: true, private: false });
     assert.equal(DEFAULT_CONFIG.proactive.groupEnabled, true);
     assert.equal(DEFAULT_CONFIG.proactive.privateEnabled, false);
+    assert.deepEqual(DEFAULT_CONFIG.proactive.perGroup, {});
+  });
+
+  it('proactive.perGroup 可按群覆盖全局开关；无效值回落全局', () => {
+    const metaOf = () => ({ lastTs: quiet, unread: 0 });
+    const keys = ['group:1', 'group:2'];
+    const base = {
+      allow: { groups: ['1', '2'], private: [] },
+      allowAllWhenEmpty: false,
+      proactive: { idleThresholdMs: 1800000, groupEnabled: true }
+    };
+    assert.deepEqual(proactiveCandidates({
+      chatKeys: keys, cfg: { ...base, proactive: { ...base.proactive, perGroup: { 2: { enabled: false } } } }, metaOf, now
+    }), ['group:1'], 'perGroup 关闭的群不参与');
+    assert.deepEqual(proactiveCandidates({
+      chatKeys: keys, cfg: { ...base, proactive: { ...base.proactive, groupEnabled: false, perGroup: { 1: { enabled: true } } } }, metaOf, now
+    }), ['group:1'], '全局关时 perGroup 可以单独开启');
+    assert.deepEqual(proactiveCandidates({
+      chatKeys: keys, cfg: { ...base, proactive: { ...base.proactive, perGroup: { 1: { enabled: 'false' } } } }, metaOf, now
+    }), keys, '非布尔值按未设置处理');
+    assert.equal(proactiveScopes({ proactive: { groupEnabled: true, perGroup: { 1: { enabled: false } } } }, '1').groups, false);
+    assert.equal(proactiveScopes({ proactive: { groupEnabled: true, perGroup: { 1: { enabled: false } } } }).groups, true);
+    assert.equal(proactiveScopes({ proactive: { groupEnabled: false, perGroup: { 1: { enabled: true } } } }).groups, true,
+      '全局关但有单群开启时仍要启动群聊判定循环');
+    assert.equal(proactiveScopes({ proactive: { groupEnabled: false, perGroup: { 1: { enabled: true } } } }, '2').groups, false,
+      '没有覆盖的群仍回落全局');
   });
 
   it('私聊候选受 allow.private / deny.private 约束（与 canRun 同口径）', () => {
