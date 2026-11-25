@@ -1085,9 +1085,10 @@ async function saveConfig({ quiet = false } = {}) {
       // 控件缺失时都按已保存值回退。
       groupEnabled: chk('#cfg-pro-group', c.proactive?.groupEnabled !== false),
       privateEnabled: chk('#cfg-pro-private', c.proactive?.privateEnabled === true),
-      perGroup: Object.fromEntries(Object.entries(state.proactivePerGroupDraft || c.proactive?.perGroup || {})
+      // 整表替换：普通对象 deepMerge 不会删掉控制台里已经移除的群覆盖。
+      perGroup: { __replace__: Object.fromEntries(Object.entries(state.proactivePerGroupDraft || c.proactive?.perGroup || {})
         .filter(([groupId, value]) => /^\d{5,15}$/.test(groupId) && typeof value?.enabled === 'boolean')
-        .map(([groupId, value]) => [groupId, { enabled: value.enabled }])),
+        .map(([groupId, value]) => [groupId, { enabled: value.enabled }])) },
       scopeMode: val('#cfg-pro-mode', c.proactive?.scopeMode === 'perChat' ? 'perChat' : 'shared') === 'perChat' ? 'perChat' : 'shared',
       perChatMaxPerTick: Math.round(numKeep(
         val('#cfg-pro-per-max', Number(c.proactive?.perChatMaxPerTick) || 2),
@@ -1468,6 +1469,7 @@ async function saveConfig({ quiet = false } = {}) {
   // 按群覆盖草稿作废：下次渲染从刚保存的配置重新克隆。不清的话，若别的标签页/直连 API
   // 改过 perGroup，本页再用陈旧草稿提交就会整体覆盖回去（__replace__ 是整表替换，2026-10-07 审计 P3）。
   state.platformPerGroupDraft = undefined;
+  state.proactivePerGroupDraft = undefined;
   // 「平台能力」页的右列（工具清单 + "当前用量 x / 上限 y"）是**渲染时**拉的：保存后不重拉
   // 就会一直挂着旧上限，看起来像"改了没生效"（2026-10-07 用户实测反馈）。
   if (state.settingsSection === 'platform') void hydratePlatformGates();
