@@ -186,7 +186,9 @@ export async function forageBilibili({
     // 记下命中的词与条数：静默过滤排查成本很高 ——
     // 配置看着对、结果不对时，没有这行日志就只能靠逐条试词。
     const detail = [...hits.entries()].map(([word, n]) => `${word}×${n}`).join(' ');
-    logger(`[life-feed] B 站排除 ${items.length - out.length}/${items.length} 条（命中：${detail}）`);
+    // 只统计关键词命中数；items.length - out.length 还会把时长过滤/重复 id 算进去。
+    const excludedCount = [...hits.values()].reduce((sum, n) => sum + n, 0);
+    logger(`[life-feed] B 站排除 ${excludedCount}/${items.length} 条（命中：${detail}）`);
   }
   return out;
 }
