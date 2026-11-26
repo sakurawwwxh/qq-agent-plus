@@ -33,7 +33,7 @@
     "jce": "0.2.3",
     "node-html-parser": "^9.0.7",
     "silk-wasm": "^3.7.1",
-    "undici": "^8.12.4",
+    "undici": "^8.13.1",
     "ws": "^8.23.0"
   },
   "license": "MIT",
