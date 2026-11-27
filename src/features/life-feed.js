@@ -204,6 +204,7 @@ export class LifeFeedManager {
     this.started = false;
     this.timer = null;
     this.forageTask = null;
+    this.intervalMinutes = null;
   }
 
   #cfg() {
@@ -346,7 +347,14 @@ export class LifeFeedManager {
     }
     this.#load();
     this.#prune(this.now());
-    if (!this.state.nextForageAt) {
+    // 改了觅食间隔后不能继续沿用旧的 nextForageAt：否则从 7 天改成 1 小时，
+    // 也可能整整一周不跑。同间隔的 stop/start 仍保留原计划。
+    const intervalChanged = this.intervalMinutes !== null && this.intervalMinutes !== cfg.forageIntervalMinutes;
+    this.intervalMinutes = cfg.forageIntervalMinutes;
+    if (intervalChanged) {
+      this.state.nextForageAt = this.now() + this.#intervalMs(cfg);
+      this.#save();
+    } else if (!this.state.nextForageAt) {
       // 第一次开启：1 分钟后先跑一次，让用户很快看到队列；之后按 interval。
       this.state.nextForageAt = this.now() + 60_000;
       this.#save();

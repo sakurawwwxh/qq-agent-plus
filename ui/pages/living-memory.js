@@ -322,7 +322,7 @@ function memoryDetailHtml(memory) {
       <button type="button" class="btn btn-small" data-lm-pin="${esc(memory.id)}" data-lm-pinned="${memory.pinned ? '1' : '0'}">${memory.pinned ? '取消置顶' : '置顶'}</button>
       <button type="button" class="btn btn-small" data-lm-feedback="${esc(memory.id)}" data-lm-feedback-value="useful">有用</button>
       <button type="button" class="btn btn-small" data-lm-feedback="${esc(memory.id)}" data-lm-feedback-value="not-useful">没用</button>
-      <button type="button" class="btn btn-small" data-lm-find-duplicates="${esc(memory.id)}">查重合并</button>
+      ${archived ? '' : `<button type="button" class="btn btn-small" data-lm-find-duplicates="${esc(memory.id)}">查重合并</button>`}
       ${archived
         ? `<button type="button" class="btn btn-small" data-lm-restore="${esc(memory.id)}">恢复</button>`
         : `<button type="button" class="btn btn-small" data-lm-archive="${esc(memory.id)}">归档</button>`}
@@ -698,7 +698,10 @@ async function createMemory(button) {
   try {
     await api('/api/living-memory/memories', { method: 'POST', body: JSON.stringify({
       scopeKey, summary, content, type: $('#lm-new-type')?.value || 'episode',
-      importance: Number($('#lm-new-importance')?.value) || 5,
+      importance: (() => {
+        const value = Number($('#lm-new-importance')?.value);
+        return Number.isFinite(value) ? Math.max(0, Math.min(10, value)) : 5;
+      })(),
       confidence: 1, tags: String($('#lm-new-tags')?.value || '').split(/[,，]/).map((tag) => tag.trim()).filter(Boolean)
     }) });
     lm().pageError = '';

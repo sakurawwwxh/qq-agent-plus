@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { chatCompletion } from '../llm/llm.js';
-import { safeSlice, settleWithDeadline } from '../core/util.js';
+import { safeSlice, sanitizeUserText, settleWithDeadline } from '../core/util.js';
 import { redactionReason, similarityTokens } from './util.js';
 import { readLivingMemoryEmbeddingConfig } from './embedding.js';
 import { livingMemoryScopeAllowed, normalizeLivingMemoryConfig } from './config.js';
@@ -85,7 +85,7 @@ function cardsPrompt(turns) {
   const transcript = safeSlice(turns.map((turn) => turn.lines
     .map((line) => {
       const at = Number(line.ts) ? new Date(Number(line.ts)).toLocaleString('zh-CN', { hour12: false }) : '未知时间';
-      const name = cleanText(line.senderName || (line.role === 'assistant' ? '机器人' : '群友'), 80);
+      const name = sanitizeUserText(cleanText(line.senderName || (line.role === 'assistant' ? '机器人' : '群友'), 80));
       const id = cleanText(line.senderId || '', 40);
       return `[${line.role === 'assistant' ? 'Bot: ' : ''}${name}${id ? ` | ID: ${id}` : ''} | ${at}] ${line.text}`;
     }).join('\n')).join('\n\n'), MAX_TRANSCRIPT_CHARS);
@@ -107,7 +107,7 @@ function renderContext(entries, maxChars) {
   let used = 0;
   for (const entry of entries || []) {
     const type = cleanText(entry.type || '记忆', 16).replace(/[^\w-]/g, '') || 'memory';
-    const line = `<memory type="${type}" trust="untrusted">${promptSafe(entry.summary || entry.content, 420)}</memory>`;
+    const line = `<memory type="${type}" trust="untrusted">${promptSafe(sanitizeUserText(entry.summary || entry.content), 420)}</memory>`;
     if (used + line.length + 1 > maxChars) break;
     lines.push(line);
     used += line.length + 1;

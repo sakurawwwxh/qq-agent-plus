@@ -426,6 +426,12 @@ export function registerConfigRoutes(router, deps = {}) {
         ? { ...(cfgNow.tts?.keys || {}), [targetId]: keyInput }
         : { ...(cfgNow.tts?.keys || {}) };
       ttsBody.keys = nextTtsKeys;
+      // custom 网关的 Key 绑定主机：换主机没填新 Key 时保留旧归属钉，运行时 ttsKeyFor
+      // 会发现主机不一致并拒绝复用；同主机换模型/路径不受影响。
+      ttsBody.apiKeyHost = keyInput && keyInput !== '******'
+        ? asrEndpointHost(baseForLookup)
+        : (String(cfgNow.tts?.apiKeyHost || '').trim().toLowerCase()
+          || (cfgNow.tts?.baseUrl ? asrEndpointHost(cfgNow.tts.baseUrl) : ''));
       stampServerKeys('tts', nextTtsKeys);
       // 老客户端/手写配置不带 provider：按地址反查预设，免得火山/MiniMax 的地址走了 openai 兼容实现
       if (!ttsBody.provider && ttsBody.baseUrl) {

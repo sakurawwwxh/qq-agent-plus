@@ -420,4 +420,4 @@ function renderLifeFeedSection(c) {
     </div>`;
 }
 
-export { renderLifeFeedSection, candidateCard, groupKeys };
+export { renderLifeFeedSection, candidateCard, groupKeys, loadStatus };

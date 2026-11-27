@@ -281,6 +281,13 @@ export function ttsServiceOf(cfg) {
 export function ttsKeyFor(cfg, serviceId = '') {
   const current = ttsServiceOf(cfg)?.id || '';
   const id = serviceId || current;
+  // 自定义网关的 Key 只属于保存时那个主机：换地址后不能把上一家的 Key 发过去。
+  // 内置服务有固定 hosts，按 service id 本身就完成了归属；custom 没有，只能靠主机钉。
+  if (id === 'custom') {
+    const host = (() => { try { return new URL(String(cfg?.baseUrl || '')).hostname.toLowerCase(); } catch { return ''; } })();
+    const pinned = String(cfg?.apiKeyHost || '').trim().toLowerCase();
+    if (pinned && host && pinned !== host) return '';
+  }
   // 用**自有属性**读映射：serviceId 来自端点查询串（外部可控），`keys['constructor']` 会命中原型链，
   // 把函数源码当成"这家存过的 Key"（与 config-legacy 的 imageGenKeyFor 同款，2026-10-03 全量审查）
   const map = cfg?.keys;

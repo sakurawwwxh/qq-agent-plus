@@ -24,6 +24,7 @@ import { buildPerChatPatch } from './persona-per-chat.js';
 // （键名与 id 约定只维护一处；改名不同步时源码锚点用例会红）。
 import { ALL_GATE_KEYS, QUOTA_ROWS, gateCheckboxId, gateDefaultOn, hydratePlatformGates, privateFileMaxKiBValue } from './platform.js';
 import { currentPersonaId } from './persona.js';
+import { loadStatus } from './life-feed.js';
 import { captureTimeControlRule } from './settings-bind.js';
 import { syncThinkingUi } from './settings.js';
 // 外观的数值夹紧搬到 ui/core/appearance.js 的 resolveAppearance —— 它已经是那条唯一入口，
@@ -321,7 +322,10 @@ async function saveConfig({ quiet = false } = {}) {
       .filter(Boolean)
       .slice(0, 200);
     const lifeNum = (selector, fallback) => {
-      const number = Number(val(selector, fallback));
+      // 清空输入框 = 保持原值，不能把空串 Number('')=0 当成合法极端值。
+      const raw = String(val(selector, fallback) ?? '').trim();
+      if (!raw) return fallback;
+      const number = Number(raw);
       return Number.isFinite(number) ? number : fallback;
     };
     const shareGroups = pickedSessionValues('cfg-lifefeed-sharegroups-box');
@@ -385,8 +389,8 @@ async function saveConfig({ quiet = false } = {}) {
       useLifeFeed: chk('#cfg-moments-lifefeed', c.dailyMoments?.useLifeFeed === true),
       autoPublish: String(val('#cfg-moments-autopublish', c.dailyMoments?.autoPublish === true ? 'auto' : 'draft')) === 'auto',
       startupCatchup: chk('#cfg-moments-catchup', c.dailyMoments?.startupCatchup !== false),
-      hour: clampInt(val('#cfg-moments-hour', c.dailyMoments?.hour), 0, 23, 23),
-      minute: clampInt(val('#cfg-moments-minute', c.dailyMoments?.minute), 0, 59, 30),
+      hour: intKeep(val('#cfg-moments-hour', c.dailyMoments?.hour), c.dailyMoments?.hour, 0, 23, 23),
+      minute: intKeep(val('#cfg-moments-minute', c.dailyMoments?.minute), c.dailyMoments?.minute, 0, 59, 30),
       scheduleWindows: val('#cfg-moments-schedule-mode', 'fixed') === 'windows'
         ? $$('#moment-window-rows .moment-window-row').map((row) => ({
           start: row.querySelector('.moment-window-start').value,
@@ -404,7 +408,7 @@ async function saveConfig({ quiet = false } = {}) {
         val('#cfg-moments-min-messages', c.dailyMoments?.minMessagesPerGroup),
         0, 100, 3
       ),
-      maxGroups: clampInt(val('#cfg-moments-max-groups', c.dailyMoments?.maxGroups), 1, 50, 12),
+      maxGroups: intKeep(val('#cfg-moments-max-groups', c.dailyMoments?.maxGroups), c.dailyMoments?.maxGroups, 1, 50, 12),
       maxMessagesPerGroup: clampInt(
         val('#cfg-moments-max-messages', c.dailyMoments?.maxMessagesPerGroup),
         5, 300, 80
@@ -444,13 +448,13 @@ async function saveConfig({ quiet = false } = {}) {
         if (!valid(start) || !valid(end) || start === end) return c.qzoneInteractions?.activeHours ?? null;
         return { start, end };
       })(),
-      feedIntervalMinutes: clampInt(
+      feedIntervalMinutes: intKeep(
         val('#cfg-qzi-feed-interval', c.qzoneInteractions?.feedIntervalMinutes),
-        5, 1440, 60
+        c.qzoneInteractions?.feedIntervalMinutes, 5, 1440, 60
       ),
-      replyIntervalMinutes: clampInt(
+      replyIntervalMinutes: intKeep(
         val('#cfg-qzi-reply-interval', c.qzoneInteractions?.replyIntervalMinutes),
-        1, 1440, 5
+        c.qzoneInteractions?.replyIntervalMinutes, 1, 1440, 5
       ),
       feedFetchCount: clampInt(
         val('#cfg-qzi-feed-count', c.qzoneInteractions?.feedFetchCount),
@@ -483,13 +487,13 @@ async function saveConfig({ quiet = false } = {}) {
         val('#cfg-qzi-max-replies', c.qzoneInteractions?.maxRepliesPerRun),
         0, 20, 5
       ),
-      commentMaxChars: clampInt(
+      commentMaxChars: intKeep(
         val('#cfg-qzi-comment-chars', c.qzoneInteractions?.commentMaxChars),
-        5, 200, 60
+        c.qzoneInteractions?.commentMaxChars, 5, 200, 60
       ),
-      replyMaxChars: clampInt(
+      replyMaxChars: intKeep(
         val('#cfg-qzi-reply-chars', c.qzoneInteractions?.replyMaxChars),
-        5, 200, 60
+        c.qzoneInteractions?.replyMaxChars, 5, 200, 60
       ),
       actionDelayMinMs: clampInt(
         val('#cfg-qzi-delay-min', c.qzoneInteractions?.actionDelayMinMs),
@@ -1473,6 +1477,7 @@ async function saveConfig({ quiet = false } = {}) {
   // 「平台能力」页的右列（工具清单 + "当前用量 x / 上限 y"）是**渲染时**拉的：保存后不重拉
   // 就会一直挂着旧上限，看起来像"改了没生效"（2026-10-07 用户实测反馈）。
   if (state.settingsSection === 'platform') void hydratePlatformGates();
+  if (state.settingsSection === 'life-feed') void loadStatus();
   state.thinkingTouched = false;
   state.thinkingTouchedHost = '';
   // 思考区（摘要/提示/段位）跟着新配置立即刷新——否则"改了但摘要还是旧值"（2026-09-27 实测）。

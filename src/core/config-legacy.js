@@ -262,7 +262,7 @@ export const DEFAULT_CONFIG = {
     // 按服务分别存 Key（切预设不串用；切回来还能看到已存的那把）：
     //   { "siliconflow": "sk-…", "volc": "<access token>", "doubao": "<api key>", "minimax": "…" }
     keys: {},
-    apiKeyService: '',          // 上面那个单槽 apiKey 是给哪家存的（提交时记；老配置留空 = 按"当前这家"兜底）
+    apiKeyService: '', apiKeyHost: '',          // 单槽 Key 的归属：服务 id + 自定义网关主机名（换主机不沿用）
     // 每家上次用的音色（切预设时恢复，不把小米的 Chloe 原样发给豆包）：
     //   { "doubao": "ICL_uranus_zh_female_bingruoshaonv_tob", "mimo": "Chloe" }
     voices: {},

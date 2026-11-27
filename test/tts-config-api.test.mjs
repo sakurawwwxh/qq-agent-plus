@@ -95,6 +95,44 @@ test('自建网关的 Key 存进 keys.custom，运行时也按 custom 取；/api
   assert.equal(getConfig().tts.keys.custom, 'sk-custom-empty');
 });
 
+test('custom TTS Key 绑定主机：换地址不填新 Key 不会复用旧 Key', async (t) => {
+  const port = await freePort();
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.server = { ...cfg.server, host: '127.0.0.1', port, token: '' };
+  cfg.runtime.mode = 'active';
+  cfg.onebot.wsUrl = 'ws://127.0.0.1:1';
+  cfg.onebot.httpUrl = 'http://127.0.0.1:1';
+  cfg.tts = {
+    ...cfg.tts, enabled: true, provider: 'openai', baseUrl: 'https://gw-a.example/v1',
+    model: 'cosy', voice: 'a', apiKey: '', apiKeyHost: 'gw-a.example', keys: { custom: 'sk-a' }
+  };
+  updateConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(async () => { await app.stop(); fs.rmSync(root, { recursive: true, force: true }); });
+  await app.start();
+  const request = async (body) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/config`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    return { status: response.status, body: await response.json() };
+  };
+
+  const switched = await request({ tts: {
+    enabled: true, service: 'custom', provider: 'openai', baseUrl: 'https://gw-b.example/v1', model: 'cosy', voice: 'b'
+  } });
+  assert.equal(switched.status, 200, JSON.stringify(switched.body));
+  assert.equal(getConfig().tts.apiKeyHost, 'gw-a.example', '没填新 Key 时保留旧主机归属钉');
+  assert.equal(ttsKeyFor(getConfig().tts), '', '旧主机 Key 不得发给新主机');
+
+  const replaced = await request({ tts: {
+    enabled: true, service: 'custom', provider: 'openai', baseUrl: 'https://gw-b.example/v1',
+    model: 'cosy', voice: 'b', apiKeyInput: 'sk-b'
+  } });
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  assert.equal(getConfig().tts.apiKeyHost, 'gw-b.example');
+  assert.equal(ttsKeyFor(getConfig().tts), 'sk-b');
+});
+
 test('TTS 单槽 Key 的归属：切到没存过 Key 的服务会清掉它，切回来能用自己那把（2026-10-03）', async (t) => {
   const port = await freePort();
   const cfg = structuredClone(DEFAULT_CONFIG);

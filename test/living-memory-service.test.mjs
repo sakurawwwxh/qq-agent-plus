@@ -291,6 +291,16 @@ test('撤回同步把来源回合里的原正文改成占位，不影响其他�
   service.close();
 });
 
+test('归档记忆不能作为合并目标，源卡片保留', async () => {
+  const service = fakeService();
+  const target = await service.upsertMemory({ scopeKey: 'group:710', type: 'fact', summary: '归档目标', content: '旧内容' });
+  const source = await service.upsertMemory({ scopeKey: 'group:710', type: 'fact', summary: '活跃源', content: '新内容' });
+  service.archiveMemory(target.id);
+  await assert.rejects(service.mergeMemories(target.id, [source.id]), /归档记忆/);
+  assert.ok(service.store.getMemory(source.id));
+  service.close();
+});
+
 test('跨会话合并被拒绝，源卡片不会被搬走', async () => {
   const service = fakeService();
   const target = await service.upsertMemory({

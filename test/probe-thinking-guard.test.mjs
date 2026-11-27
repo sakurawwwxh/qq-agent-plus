@@ -94,6 +94,18 @@ test('未知地址不回退已存 Key；已知地址才带上', async () => {
   assert.equal(probeHits().at(-1).url, '/v1/chat/completions');
 });
 
+test('只传 providerId 时按该 provider 地址取 Key，不回退主 Key', async () => {
+  const r = await fetch(`http://127.0.0.1:${consolePort}/api/providers/probe-thinking`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ providerId: 'other', apiKey: '', model: 'm1' })
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).ok, true);
+  assert.match(probeHits().at(-1).auth, /^Bearer other-key-456$/, 'providerId 路径必须用该 provider 自己的 Key');
+  assert.equal(probeHits().at(-1).body.includes('saved-extra-secret'), false, '不能把主渠道 extraBody 带到另一家');
+});
+
 test.after(async () => {
   try { await app.stop(); } catch { /* 已停 */ }
   knownTarget.close();

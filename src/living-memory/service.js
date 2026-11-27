@@ -404,6 +404,7 @@ export class LivingMemoryService {
   async mergeMemories(targetId, sourceIds = []) {
     const target = this.store.getMemory(targetId);
     if (!target) throw new Error('记忆不存在');
+    if (target.status !== 'active') throw new Error('只能合并活跃记忆；归档记忆请先恢复');
     const sources = [...new Set(sourceIds.map(String).filter((id) => id && id !== target.id))]
       .map((id) => this.store.getMemory(id)).filter(Boolean);
     if (!sources.length) throw new Error('请选择要合并的重复记忆');

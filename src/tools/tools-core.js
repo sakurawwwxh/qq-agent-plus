@@ -2051,9 +2051,10 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
         required: ['bvid']
       },
       async execute(ctx, args) {
-        // 发送前占用的分享名额；发送确定失败/异常时退回。发送成功后立刻清空，
-        // 后续 cover/feedback 出错不能把已发出的分享额度退回去。
+        // 发送前占用的分享名额；只有确定没进入发送链路/确定发送失败时才退回。
+        // 发送结果未知时保留占位，避免重试把同一条见闻再发一遍。
         let reservation = null;
+        let enteredSend = false;
         try {
           const feed = ctx.getLifeFeed?.();
           if (!feed) return err('生活层没有开启');
@@ -2079,6 +2080,7 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
           const comment = safeSlice(String(args.comment ?? ''), 300);
           const text = buildShareText(item, comment);
           // 先发正文：正文失败时还没发封面，重试不会重复封面；封面失败只降级成文本。
+          enteredSend = true;
           const result = await ctx.sender.sendTextBatch(ctx.chatKey, [text], {
             runId: ctx.session.leaseId, signal: ctx.signal, persona: false
           });
@@ -2123,8 +2125,15 @@ export function buildToolDefs({ kind = '', chatId = '', cfg = getConfig() } = {}
           feed.feedback({ id: item.id, action: 'shared', chatKey: ctx.chatKey, messageId: result.sent[0]?.messageId, manual: humanShare });
           return ok({ sent: result.sent.length, cover: coverSent, note: '已发标题链接和封面；不要再重复发同一条。' });
         } catch (error) {
-          if (reservation) {
+          const { definite, uncertain } = classifyTransportFailure(error);
+          // 还没进发送链路，或协议端明确拒绝/连接未建立 → 可以安全退回；
+          // 已进入发送链路但结果不确定（超时/连接重置/5xx）→ 保留占位，禁止重复分享。
+          if (reservation && (!enteredSend || (definite && !uncertain))) {
             try { reservation.feed.releaseShare?.(reservation.id); } catch { /* 忽略 */ }
+            return sendErr(error);
+          }
+          if (enteredSend && !definite) {
+            return sendErr(error, {}, '分享发送结果未知，已保留额度占位；不要重试同一条，先去群里核对。');
           }
           return sendErr(error);
         }

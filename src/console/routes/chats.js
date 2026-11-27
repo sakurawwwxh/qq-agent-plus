@@ -49,6 +49,12 @@ export function registerChatRoutes(router, deps = {}) {
     const body = await readBody(req);
     const key = `${params[1]}:${params[2]}`;
     if (body.confirm !== true) return json(res, 409, { error: 'Explicit confirmation required' });
+    // 运行中的主动唤醒没有 runs 行；这里清 outbox 会把在途 sending/unknown 证据一起抹掉，
+    // 运行收尾时 hasEffects 判空后可能重复发送。等本轮结束后再核对。
+    if (params[3] === 'resolve-held'
+      && (orchestrator.runningChats?.has(key) || orchestrator.activeRuns?.has(key))) {
+      return json(res, 409, { error: '该会话正在运行，等本轮结束后再核对' });
+    }
     const count = params[3] === 'retry-failed' ? store.retryFailed(key) : store.resolveHeld(key);
     emit('chat-update', key);
     return json(res, 200, { ok: true, count });

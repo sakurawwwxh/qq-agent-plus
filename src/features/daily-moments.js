@@ -66,8 +66,7 @@ function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (error) {
-    // 状态文件坏掉时留档 .broken-<时间戳> 再回默认：直接回默认会让下一次落盘把损坏文件
-    // 覆盖掉，事后无从排查（与 reminders / group-game 同口径；2026-10-12 审查）。
+    // 状态文件坏掉时留档 .broken-<时间戳> 再回默认：直接回默认会让下一次落盘把损坏文件 覆盖掉，事后无从排查（与 reminders / group-game 同口径；2026-10-12 审查）。
     if (error?.code !== 'ENOENT') {
       console.error(`[daily-moments] 读取 ${file} 失败，按默认状态处理，原文件已备份为 .broken-<时间戳>：`, error?.message ?? error);
       try { fs.renameSync(file, `${file}.broken-${Date.now()}`); } catch { /* 备份失败就留在原处 */ }
@@ -107,10 +106,8 @@ function normalizedConfig(cfg = getConfig().dailyMoments || {}) {
     targetUins: (Array.isArray(cfg.targetUins) ? cfg.targetUins : [])
       .map(Number).filter(Number.isFinite).slice(0, 200),
     maxResearchCalls: Math.min(10, Math.max(0, Number(cfg.maxResearchCalls) || 0)),
-    // 省 Token 模式：日说说的工具轮数也夹上限（关闭时上限为 null，原样取用户设置）。
-    // ⚠️ 这里必须用**日说说自己的** cfg.maxRounds，不能借聊天模型的 api.maxRounds ——
-    // 两者是不同的旋钮（日说说默认 8、聊天默认 12），换错了会让"轮次预算"多跑几轮、
-    // 白烧 token（曾把 moment-publish 的用量用例跑成 180 vs 45）。
+    // 省 Token 模式：日说说的工具轮数也夹上限（关闭时上限为 null，原样取用户设置）。 ⚠️ 这里必须用**日说说自己的** cfg.maxRounds，不能借聊天模型的 api.maxRounds ——
+    // 两者是不同的旋钮（日说说默认 8、聊天默认 12），换错了会让"轮次预算"多跑几轮、 白烧 token（曾把 moment-publish 的用量用例跑成 180 vs 45）。
     maxRounds: Math.min(16, Math.max(2, cappedByTokenSaver(
       Number(cfg.maxRounds) || 8,
       tokenSaverCapsOf(getConfig())?.maxRounds
@@ -139,8 +136,7 @@ function scheduledDayAt(now, cfg, startup) {
   return '';
 }
 
-// 固定时刻模式的发送间隔：以上次成功发布为基准，满 intervalDays 天才到期。
-// 没有发布记录（或间隔为 1）时视为到期；失败与跳过不重置基准，次日照常重试。
+// 固定时刻模式的发送间隔：以上次成功发布为基准，满 intervalDays 天才到期。 没有发布记录（或间隔为 1）时视为到期；失败与跳过不重置基准，次日照常重试。
 export function momentIntervalDue(now = Date.now(), cfg = getConfig().dailyMoments || {}, records = []) {
   const c = normalizedConfig(cfg);
   if (c.intervalDays <= 1) return true;
@@ -163,10 +159,8 @@ export function momentIntervalDue(now = Date.now(), cfg = getConfig().dailyMomen
 }
 
 function cleanText(value, max = 500) {
-  // 过 sanitizeUserText：这里处理的全是**外部文本**（群友消息、群名、昵称、印象），而它们最终进的是
-  // 带段头结构的提示词（【群聊材料】【总结日期】…）。伪造段头就能冒充系统段 —— sanitizeUserText 的
-  // 关键词表里本来就收录了 daily-moments 的段头，说明本应洗，只是漏了这条路径（2026-10-01 审查；
-  // 聊天侧 tools-core 的同通道已经洗了，这里是绕过去的第二入口）。
+  // 过 sanitizeUserText：这里处理的全是**外部文本**（群友消息、群名、昵称、印象），而它们最终进的是 带段头结构的提示词（【群聊材料】【总结日期】…）。伪造段头就能冒充系统段 —— sanitizeUserText 的
+  // 关键词表里本来就收录了 daily-moments 的段头，说明本应洗，只是漏了这条路径（2026-10-01 审查； 聊天侧 tools-core 的同通道已经洗了，这里是绕过去的第二入口）。
   return sanitizeUserText(String(value ?? '').replace(/\0/g, '').replace(/[ \t]+/g, ' ').trim()).slice(0, max);
 }
 
@@ -175,8 +169,7 @@ function momentError(code, message, httpStatus = 409) {
 }
 
 function redactPublicContent(value, snapshot) {
-  // 用**数字边界**而不是 \b：`QQ12345678`、`id1234567` 这类紧贴字母的号码，\b 匹配不到会原样外发（2026-10-13 审查 P3）。
-  // 先把链接摘出来：源头链接里带一串数字很常见（`/p/12345`），连它一起换掉会把正文里唯一
+  // 用**数字边界**而不是 \b：`QQ12345678`、`id1234567` 这类紧贴字母的号码，\b 匹配不到会原样外发（2026-10-13 审查 P3）。 先把链接摘出来：源头链接里带一串数字很常见（`/p/12345`），连它一起换掉会把正文里唯一
   // 可核实的东西弄成 `[号码已隐藏]`（2026-10-14 复审）。占位符用 \0 包住，号码替换必然穿不过去。
   const urls = [];
   let text = cleanText(value, 1000).replace(/https?:\/\/[^\s，。！？；、"'”）)】]+/g, (url) => `\0${urls.push(url) - 1}\0`);
@@ -199,8 +192,7 @@ function redactPublicContent(value, snapshot) {
 }
 
 function imageMime(buffer, contentType = '') {
-  // 魔数优先（服务端给的 Content-Type 常是 application/octet-stream）；
-  // 认不出才回退到它，最后兜一个 jpeg —— 视觉接口只认这几家的 MIME。
+  // 魔数优先（服务端给的 Content-Type 常是 application/octet-stream）； 认不出才回退到它，最后兜一个 jpeg —— 视觉接口只认这几家的 MIME。
   return imageType(buffer) || String(contentType || 'image/jpeg').split(';')[0];
 }
 
@@ -330,17 +322,13 @@ export function fabricationReason(text) {
 export function dayRecapReason(text) {
   const t = String(text || '');
   if (!t.trim()) return '';
-  // 「N 点」类时间点：裸的「一点」不算（快一点 / 简单一点 / 差一点 / 多留一点 都是口语，
-  // 一篇正常动态里出现三次很常见）；带时间前缀的（下午一点）才算。
-  // 比较前先把"时间前缀"归一掉：同一个时刻写成「凌晨三点」+「三点」+「三点」时，那本是
-  // 同一件事说了三遍，原来会被算成"两种写法"而误判成时间线（2026-10-14 复审）。
-  // 后缀 `(?!式)` 放行「三点式支架 / 五点式安全带」这类不含时间的用法。
-  // 阿拉伯数字也收（3点起床 / 5点跑步）：提示词的反例是中文数字，模型混用时闸门不能等于不存在。
+  // 「N 点」类时间点：裸的「一点」不算（快一点 / 简单一点 / 差一点 / 多留一点 都是口语， 一篇正常动态里出现三次很常见）；带时间前缀的（下午一点）才算。
+  // 比较前先把"时间前缀"归一掉：同一个时刻写成「凌晨三点」+「三点」+「三点」时，那本是 同一件事说了三遍，原来会被算成"两种写法"而误判成时间线（2026-10-14 复审）。
+  // 后缀 `(?!式)` 放行「三点式支架 / 五点式安全带」这类不含时间的用法。 阿拉伯数字也收（3点起床 / 5点跑步）：提示词的反例是中文数字，模型混用时闸门不能等于不存在。
   const clockPrefix = /^(?:凌晨|早上|上午|中午|下午|傍晚|晚上|半夜|清晨|夜里)/;
   const clockOf = (token) => token.replace(/\s+/g, '').replace(clockPrefix, '');
   const all = t.match(/(?:凌晨|早上|上午|中午|下午|傍晚|晚上|半夜|清晨|夜里)?\s*[零〇一二三四五六七八九十百两\d]{1,3}\s*点(?:半|整|\d{1,2}\s*分?)?(?!式)/g) || [];
-  // 只滤掉口语里的**裸「一点」**（快一点 / 简单一点 / 差一点 / 多留一点，一篇正常动态出现三次很常见）；
-  // 「一点半/一点整」是真时间，不能一起滤掉，否则"一点半、三点、五点"这种时间线会漏过去。
+  // 只滤掉口语里的**裸「一点」**（快一点 / 简单一点 / 差一点 / 多留一点，一篇正常动态出现三次很常见）； 「一点半/一点整」是真时间，不能一起滤掉，否则"一点半、三点、五点"这种时间线会漏过去。
   const clocks = all.map(clockOf).filter((token) => !/^一点$/.test(token))
     .concat(t.match(/\d{1,2}\s*[:：]\s*\d{2}/g) || []);
   // 三处以上、且有至少两种写法，才算"按时间线讲当天"
@@ -581,8 +569,7 @@ export class DailyMomentsManager {
 
   async #exclusive(task, execute) {
     if (this.running) throw momentError('MOMENT_BUSY', '已有动态任务正在执行，请等待完成');
-    // 「核对 / 确认结果 / 编辑草稿」都是本地操作：编辑不在活跃时段也应该能做
-    //（否则管理员只能等窗口，草稿会被卡住 —— 2026-10-24 审查 P2）。
+    // 「核对 / 确认结果 / 编辑草稿」都是本地操作：编辑不在活跃时段也应该能做 （否则管理员只能等窗口，草稿会被卡住 —— 2026-10-24 审查 P2）。
     if (!['reconcile', 'resolve-record', 'edit-draft'].includes(task)) assertTimeAllowed('');
     this.setProactiveSuppressed(true);
     this.task = task;
@@ -623,13 +610,11 @@ export class DailyMomentsManager {
       this.#schedule(timeState.nextActiveAt ? timeState.nextActiveAt - this.now() + 1 : 60000);
       return;
     }
-    // 暂停/观察期间不跑：run() 要等模型返回后才在发布闸门抛 MOMENT_INACTIVE，而那个错误
-    // 会被记成 failed 并进入阻断集合 —— 当天剩下的定时轮次全被挡掉（白花一次模型调用）。
+    // 暂停/观察期间不跑：run() 要等模型返回后才在发布闸门抛 MOMENT_INACTIVE，而那个错误 会被记成 failed 并进入阻断集合 —— 当天剩下的定时轮次全被挡掉（白花一次模型调用）。
     // 每分钟再检查一次，恢复后由正常的到期判定决定补发还是等下一个点。
     const runtime = getConfig().runtime || {};
     if (runtime.mode !== 'active' || runtime.paused) {
-      // 不要在这里钉 deferredDay：暂停跨天后它会把"旧的一天"带进恢复后的运行。
-      // 恢复时由 scheduledDayAt 重新判断（当天已过点就补发当天，未到点就等）；
+      // 不要在这里钉 deferredDay：暂停跨天后它会把"旧的一天"带进恢复后的运行。 恢复时由 scheduledDayAt 重新判断（当天已过点就补发当天，未到点就等）；
       // startup 要继续传，否则启动时暂停会把"昨天错过点"的启动补发吞掉。
       this.#schedule(60000, startup);
       return;
@@ -656,8 +641,7 @@ export class DailyMomentsManager {
         try {
           await this.run({ dayKey, publish: cfg.autoPublish === true, source: startup ? 'startup-catchup' : 'scheduled' });
         } catch (error) {
-          // MOMENT_BUSY（腾讯侧忙）与 TIME_CONTROL_INACTIVE 同样要"保持到期"：
-          // 丢了 deferredDay 就等于跳过今天（窗口模式本来就把它判 pending，
+          // MOMENT_BUSY（腾讯侧忙）与 TIME_CONTROL_INACTIVE 同样要"保持到期"： 丢了 deferredDay 就等于跳过今天（窗口模式本来就把它判 pending，
           // 固定时刻模式却直接放走 —— 2026-10-10 审查 C3）。
           if (error?.code === 'TIME_CONTROL_INACTIVE' || error?.code === 'MOMENT_BUSY') this.deferredDay = dayKey;
           else this.log('[daily-moments] run failed:', error);
@@ -1096,10 +1080,21 @@ export class DailyMomentsManager {
       const release = watchTimeWindow((error) => this.controller?.abort(error), scopes);
       try {
         const snapshot = { imageMap: new Map((record.imageRefs || []).map((ref) => [ref.id, { ...ref }])) };
-        return await this.#publishRecord(record, snapshot, this.controller.signal, {
+        const result = await this.#publishRecord(record, snapshot, this.controller.signal, {
           force,
           confirmDuplicateRisk
         });
+        // 手动发布草稿后，随机窗口计划也要从“草稿”切到真实结果；否则控制台计划表与记录矛盾。
+        const slot = this.state.scheduleSlots.find((item) => item.id === record.scheduleSlotId);
+        if (slot) {
+          Object.assign(slot, {
+            status: record.status,
+            recordId: record.id,
+            reason: record.error || record.reason || ''
+          });
+          this.#saveRecord(record);
+        }
+        return result;
       } catch (error) {
         if (!record.publishAttempted) {
           record.error = cleanText(error?.message ?? error, 1000);
@@ -1251,17 +1246,20 @@ export class DailyMomentsManager {
     const groups = picked.map((group) => {
       const messages = group.messages.map((message) => {
         const media = [];
+        // mediaIndex 必须是“图片段里的序号”，不能只数已通过校验的图片：
+        // getMsg()/row.media 里可能还有缺 URL 的图片、表情、语音。用错误序号会选中另一张图。
         let imageIndex = 0;
-        for (let index = 0; index < (message.media || []).length; index++) {
-          const item = message.media[index];
-          if (!cfg.allowImages || item?.kind !== 'image' || !item.url || imageMap.size >= 24) continue;
+        for (const item of message.media || []) {
+          if (item?.kind !== 'image') continue;
+          const imageOrdinal = imageIndex++;
+          if (!cfg.allowImages || !item.url || imageMap.size >= 24) continue;
           const id = `image-${++imageSeq}`;
           imageMap.set(id, {
             id,
             type: 'message',
             chatKey: group.chatKey,
             mid: message.mid,
-            mediaIndex: imageIndex++,
+            mediaIndex: imageOrdinal,
             fallbackUrl: String(item.url),
             label: `${group.groupName} / ${message.self ? '我' : displayNameOf(String(message.senderId || ''), message.senderName || '群友')} / ${cleanText(message.text, 100)}`
           });
@@ -1740,7 +1738,8 @@ export class DailyMomentsManager {
         const message = await this.onebot.getMsg(candidate.mid);
         const images = (Array.isArray(message?.message) ? message.message : [])
           .filter((segment) => segment?.type === 'image');
-        const image = images[candidate.mediaIndex] || images[0];
+        // 不能回退到 images[0]：序号对不上时宁可走落库地址，也不能发一张模型没选的图。
+        const image = images[candidate.mediaIndex];
         const fresh = String(image?.data?.url || image?.data?.file || '').trim();
         if (fresh) return fresh;
       } catch { /* 使用落库地址兜底 */ }
@@ -1748,7 +1747,8 @@ export class DailyMomentsManager {
       // 不把易过期 URL 写进状态文件（2026-11-03 复核 P2）。
       try {
         const row = this.store.findByMid?.(candidate.chatKey, candidate.mid);
-        const media = Array.isArray(row?.media) ? row.media[candidate.mediaIndex] || row.media[0] : null;
+        const images = Array.isArray(row?.media) ? row.media.filter((item) => item?.kind === 'image') : [];
+        const media = images[candidate.mediaIndex] || null;
         const stored = String(media?.url || media?.file || '').trim();
         if (stored) return stored;
       } catch { /* 继续走 fallbackUrl */ }

@@ -223,23 +223,29 @@ export function registerProviderRoutes(router, deps = {}) {
       const extraInput = (body.extraBody && typeof body.extraBody === 'object' && !Array.isArray(body.extraBody))
         ? body.extraBody : undefined;
       const baseUrlIn = String(body.baseUrl ?? '');
+      const providerId = String(body.providerId ?? '');
       const submitted = String(body.apiKey ?? '').trim();
       const cfgNow = getConfig();
+      // Key 解析和实际探测必须用同一个目标地址：只传 providerId 时 probeThinking 会回退到
+      // 该 provider 的 baseURL，若这里仍按当前主渠道取 Key，就会把主 Key 发给另一家。
+      const effectiveBaseUrl = baseUrlIn
+        || currentProviders().find((item) => item.id === providerId)?.baseURL
+        || cfgNow.api.baseUrl;
       // 与「测试连通性」「获取列表」同一条守卫：掩码/空 Key 时只把服务端已存的明文 Key
       // 发给配置里已知的地址——不能因为调用方随手填个地址就把 Key 送出去（终审发现漏了这条）。
       const apiKeyResolved = (submitted && submitted !== '******')
         ? submitted
-        : savedKeyForBaseUrl(cfgNow, baseUrlIn || cfgNow.api.baseUrl);
+        : savedKeyForBaseUrl(cfgNow, effectiveBaseUrl);
       const normalized = (value) => String(value || '').trim().replace(/\/+$/, '').toLowerCase();
       // 只有探测当前主渠道时，才允许把主渠道保存的 extraBody / thinkingParams 当作默认值；
       // 探测其他地址一律按调用方传入的参数（没传就为空），避免把一家密钥发给另一家。
-      const useSavedParams = !baseUrlIn || normalized(baseUrlIn) === normalized(cfgNow.api?.baseUrl);
+      const useSavedParams = normalized(effectiveBaseUrl) === normalized(cfgNow.api?.baseUrl);
       const result = await probeThinking({
-        providerId: String(body.providerId ?? ''),
+        providerId,
         model: String(body.model ?? ''),
         thinking: thinkingInput,
         extraBody: extraInput,
-        baseUrl: baseUrlIn,
+        baseUrl: effectiveBaseUrl,
         apiKey: apiKeyResolved,
         useSavedParams
       });
