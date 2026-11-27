@@ -280,10 +280,13 @@ function memoryListHtml() {
   const page = Math.min(Math.max(1, Number(lm().page) || 1), totalPages);
   lm().page = page;
   const entries = all.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const filtered = Boolean(lm().statusFilter || lm().search);
   const hint = lm().list?.entries?.length === 0
-    ? (selectedScope()
-      ? '这个会话还没有长期记忆。启用影子模式后，让机器人完成若干轮有价值的对话即可自动提炼。'
-      : '先选择一个会话；没有可选项时，请在设置里放宽记忆范围。')
+    ? (filtered
+      ? '当前搜索或状态筛选没有匹配的记忆，换个条件试试。'
+      : (selectedScope()
+        ? '这个会话还没有长期记忆。启用影子模式后，让机器人完成若干轮有价值的对话即可自动提炼。'
+        : '先选择一个会话；没有可选项时，请在设置里放宽记忆范围。'))
     : '没有匹配当前搜索或状态筛选的记忆。';
   const loaded = lm().list?.entries?.length || 0;
   const serverTotal = Number(lm().list?.total) || all.length;
@@ -524,6 +527,14 @@ function renderPage() {
   <div class="lm-tabpanel" data-lm-panel="settings" ${tab === 'settings' ? '' : 'hidden'}>${settingsHtml()}</div>`;
   setHtmlIfChanged(box, html, { force: true });
   bindPage(box);
+}
+
+function showMemoryError(message) {
+  lm().pageError = message;
+  renderPage();
+  // 合并按钮在详情底部，错误横幅在页面顶部：不滚动会看起来像按钮没反应。
+  const view = $('#view-living-memory');
+  if (view) view.scrollTop = 0;
 }
 
 function setTab(tab) {
@@ -804,7 +815,7 @@ function bindPage(box) {
     const merge = event.target.closest('[data-lm-merge]');
     if (merge) {
       const sourceIds = (lm().mergeSelected || []).filter(Boolean);
-      if (!sourceIds.length) { lm().pageError = '请先勾选要合并的重复记忆'; renderPage(); return; }
+      if (!sourceIds.length) { showMemoryError('请先勾选要合并的重复记忆'); return; }
       if (!await askForConfirmation(`把选中的 ${sourceIds.length} 条记忆合并进当前记忆？源卡片会被删除。`)) return;
       try {
         const result = await api(`/api/living-memory/memories/${encodeURIComponent(merge.dataset.lmMerge)}/merge`, {
@@ -815,7 +826,7 @@ function bindPage(box) {
         lm().selectedMemoryId = result.memory?.id || '';
         lm().detail = result.memory || null;
         await loadLivingMemoryPage();
-      } catch (error) { lm().pageError = `合并失败：${error.message}`; renderPage(); }
+      } catch (error) { showMemoryError(`合并失败：${error.message}`); }
       return;
     }
     const archive = event.target.closest('[data-lm-archive]');

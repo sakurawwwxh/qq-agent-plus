@@ -110,6 +110,16 @@ test('feature model routes validate, save per-task, and ignore forged full-confi
   assert.deepEqual(getConfig().api.extraBody, {});
   assert.deepEqual(getConfig().api.thinkingParams, {});
 
+  // api 整节替换（__replace__）时也必须清空，不能把内层 __replace__ 当普通字段落盘。
+  updateConfig({ api: { extraBody: { nested: true }, thinkingParams: { off: { x: 'old' } } } });
+  const replaced = await request(port, '/api/config', {
+    api: { __replace__: { provider: 'main', baseUrl: 'https://replaced.example/v1', model: 'main-model', apiKey: '' } }
+  });
+  assert.equal(replaced.status, 200, replaced.text);
+  assert.deepEqual(getConfig().api.extraBody, {});
+  assert.deepEqual(getConfig().api.thinkingParams, {});
+  assert.equal(JSON.stringify(getConfig().api.extraBody).includes('__replace__'), false);
+
   // 通过「添加提供商」切换主渠道时同样要清掉旧渠道的额外请求头。
   updateConfig({ api: { extraBody: { authorization: 'Bearer old-secret-2' }, thinkingParams: { off: { x: 'old' } } } });
   const added = await request(port, '/api/providers', {

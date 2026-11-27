@@ -141,8 +141,8 @@ function renderSettingsSidebar() {
       state.modelReplacementDirty = {};
       state.modelReplacementTriggerDirty = {};
       state.featureModelDirty = {};
-      renderSettingsSidebar();
-      renderSettings();
+      renderSettingsSidebar(); renderSettings();
+      const view = $('#view-settings'); if (view) view.scrollTop = 0;
     });
   });
   const search = $('#settings-search');

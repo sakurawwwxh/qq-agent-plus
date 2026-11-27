@@ -3,7 +3,12 @@ import { esc } from '../core/dom.js';
 import { state } from '../core/state.js';
 
 function proactiveGroupDraft() {
-  state.proactivePerGroupDraft ||= {};
+  // 保存成功后 settings-save 会清空草稿；下一次交互必须从刚保存的配置重建，
+  // 不能从空对象开始，否则再保存一次会把其他群覆盖全部删掉。
+  if (!state.proactivePerGroupDraft || typeof state.proactivePerGroupDraft !== 'object'
+    || Array.isArray(state.proactivePerGroupDraft)) {
+    state.proactivePerGroupDraft = structuredClone(state.config?.proactive?.perGroup || {});
+  }
   return state.proactivePerGroupDraft;
 }
 
@@ -20,7 +25,7 @@ function proactiveGroupRowsHtml() {
     return `<div class="field-row" data-proactive-group-row="${esc(groupId)}" style="align-items:flex-end">
       <div class="field"><label>${esc(proactiveGroupLabel(groupId))}</label><div class="hint">${esc(groupId)}</div></div>
       <div class="field"><label>主动开话题</label>
-        <select data-proactive-group-value="${esc(groupId)}">
+        <select data-proactive-group-value="${esc(groupId)}" aria-label="群 ${esc(groupId)} 主动开话题">
           <option value="follow" ${mode === 'follow' ? 'selected' : ''}>跟随全局</option>
           <option value="on" ${mode === 'on' ? 'selected' : ''}>开启</option>
           <option value="off" ${mode === 'off' ? 'selected' : ''}>关闭</option>

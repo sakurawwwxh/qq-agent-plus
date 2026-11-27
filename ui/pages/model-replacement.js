@@ -67,11 +67,11 @@ function rowsHtml(channel) {
     return `<div class="field" style="margin:10px 0">
     <label for="replacement-${channel}-${i}">替换模型 ${i + 1} ${badge}</label>
     <div style="display:flex;gap:6px;min-width:0">
-      <input type="text" readonly id="replacement-${channel}-${i}" data-replacement-pick="${i}" value="${esc(entryLabel(entries[i]))}" placeholder="点击选择模型（可留空）" style="flex:1;min-width:0;cursor:pointer" />
+      <input type="text" readonly id="replacement-${channel}-${i}" data-replacement-pick="${i}" value="${esc(entryLabel(entries[i]))}" placeholder="点击选择模型（可留空）" role="button" aria-haspopup="dialog" aria-label="选择替换模型 ${i + 1}" style="flex:1;min-width:0;cursor:pointer" />
       <button type="button" class="btn btn-small" data-replacement-clear="${i}" aria-label="清空第 ${i + 1} 个模型">清空</button>
       ${i >= 3 ? `<button type="button" class="btn btn-small" data-replacement-remove="${i}" aria-label="删除第 ${i + 1} 个选择框">−</button>` : ''}
     </div>
-    ${channel === 'tts' && entries[i] ? `<input type="text" data-replacement-voice="${i}" value="${esc(entries[i].voice || '')}" placeholder="目标音色（留空 = 使用目标服务已保存/默认音色）" style="margin-top:6px" />` : ''}
+    ${channel === 'tts' && entries[i] ? `<input type="text" data-replacement-voice="${i}" aria-label="替换模型 ${i + 1} 的目标音色" value="${esc(entries[i].voice || '')}" placeholder="目标音色（留空 = 使用目标服务已保存/默认音色）" style="margin-top:6px" />` : ''}
     </div>`;
   }).join('');
 }
@@ -373,9 +373,19 @@ function bindModelReplacementControls() {
     // 音色变化只改草稿，不参与“自动替换触发条件”的保存。
     state.modelReplacementReadiness ||= {};
     state.modelReplacementReadiness[channel] = null;
+    // 逐行清掉旧徽标，但不重绘整行（否则输入框会失去焦点）。
+    document.querySelectorAll(`[data-replacement-rows="${channel}"] .lm-flag`).forEach((badge) => badge.remove());
     const readiness = document.querySelector(`[data-replacement-readiness="${channel}"]`);
     if (readiness) readiness.innerHTML = readinessHtml(channel);
     dirty(channel);
+  });
+  root.addEventListener('keydown', (event) => {
+    const input = event.target.closest('[data-replacement-pick]');
+    if (!input || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    const channel = input.closest('[data-replacement-channel]').dataset.replacementChannel;
+    if (state.modelReplacementSaving[channel] || state.modelReplacementTriggerSaving) return;
+    void pickModel(channel, Number(input.dataset.replacementPick));
   });
   root.addEventListener('click', (event) => {
     const button = event.target.closest('[data-replacement-pick], [data-replacement-clear], [data-replacement-add], [data-replacement-remove], [data-replacement-save], [data-replacement-reload], [data-replacement-check], [data-replacement-reset]');

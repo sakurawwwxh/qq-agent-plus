@@ -339,6 +339,8 @@ export function registerConfigRoutes(router, deps = {}) {
     // 带着上一家的 Authorization。和自动替换/兜底同口径：换主机且用户没显式重填就清空。
     if (patch?.api && typeof patch.api === 'object') {
       const apiGuard = sectionBody(patch.api);
+      const apiReplacement = Boolean(patch.api.__replace__ && typeof patch.api.__replace__ === 'object'
+        && !Array.isArray(patch.api.__replace__));
       const hostOfUrl = (value) => {
         try { return new URL(String(value || '')).host.toLowerCase(); } catch { return ''; }
       };
@@ -346,8 +348,10 @@ export function registerConfigRoutes(router, deps = {}) {
       if (hostOfUrl(nextBase) !== hostOfUrl(cfgNow.api?.baseUrl)) {
         // 即使同一表单里还提交了 extraBody，也以清空为准：其中可能含 hasXxx 回填出的
         // 旧渠道密钥。换好提供商后重新填一次，比把上一家的 Authorization 发出去安全。
-        apiGuard.extraBody = { __replace__: {} };
-        apiGuard.thinkingParams = { __replace__: {} };
+        // __replace__ 整节替换时 body 会被整个克隆，不能把内层 {__replace__:{}} 写进去；
+        // 那种写法会把 __replace__ 当成普通字段落盘，并跟到每一次模型请求。
+        apiGuard.extraBody = apiReplacement ? {} : { __replace__: {} };
+        apiGuard.thinkingParams = apiReplacement ? {} : { __replace__: {} };
       }
     }
     // imageGen.extraBody 是同一个"文本域回填脱敏视图"的坑：Moss 的自定义参数也可能

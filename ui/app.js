@@ -291,6 +291,8 @@ function switchTab(name) {
   if (state.tab === 'plugins' && name !== 'plugins') stopQrPoll();
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
+  const activeView = document.getElementById(`view-${name}`);
+  if (activeView) activeView.scrollTop = 0;
   state.tab = name;
   // 侧栏：把"会滑动的选中块"挪到新页签上，并同步 aria-current（都按 .active 现推，见 core/side-nav.js）
   syncSideNav();

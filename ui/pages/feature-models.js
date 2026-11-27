@@ -44,8 +44,8 @@ function rowHtml(config, key, label, hint) {
       <label for="feature-${key}-enabled">${esc(label)}</label></div>
     <div class="hint">${esc(hint)}。关闭时跟随主模型。</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
-      <select data-feature-provider style="min-width:140px">${providerOptions(list, entry.providerId || '')}</select>
-      <select data-feature-model style="min-width:180px;flex:1">${modelOptions(list, entry.providerId || '', entry.model || '')}</select>
+      <select data-feature-provider aria-label="${esc(label)}提供商" style="min-width:140px">${providerOptions(list, entry.providerId || '')}</select>
+      <select data-feature-model aria-label="${esc(label)}模型" style="min-width:180px;flex:1">${modelOptions(list, entry.providerId || '', entry.model || '')}</select>
       <button type="button" class="btn btn-small" data-feature-save>保存</button>
     </div>
     <div class="hint" data-feature-status role="status"></div>
